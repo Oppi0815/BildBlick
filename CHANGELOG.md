@@ -2,6 +2,14 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.1.1 – 21.07.2026
+
+### Verbessert
+
+- Vorheriges Bild, Dateiname und Nächstes Bild werden jetzt platzsparend in einer gemeinsamen Zeile angezeigt.
+- Der große Bildbereich erhält dadurch mehr vertikalen Platz.
+- Lange Dateinamen werden kompakt dargestellt und vollständig als Tooltip angezeigt.
+
 ## [1.1.0] – 2026-07-21
 
 ### Neu

@@ -67,7 +67,7 @@ from duplicate_finder import DuplicateFinderDialog
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter für Linux"
 
 ROOT_DIRECTORY = Path("/")
@@ -475,6 +475,13 @@ class ImageViewer(QObject):
         self.previous_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.next_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.file_name_label = self._widget(QLabel, "fileNameLabel")
+        navigation_button_width = max(
+            self.previous_button.sizeHint().width(),
+            self.next_button.sizeHint().width(),
+        )
+        self.previous_button.setFixedWidth(navigation_button_width)
+        self.next_button.setFixedWidth(navigation_button_width)
+        self._file_name_text = ""
         self.splitter = self._widget(QSplitter, "mainSplitter")
         self.right_splitter = self._widget(QSplitter, "rightSplitter")
         self.directory_panel = self.directory_tree.parentWidget()
@@ -585,6 +592,7 @@ class ImageViewer(QObject):
         self.right_splitter.splitterMoved.connect(self._schedule_image_render)
         self.image_label.installEventFilter(self)
         self.image_scroll_area.viewport().installEventFilter(self)
+        self.file_name_label.installEventFilter(self)
         self.window.installEventFilter(self)
         self.escape_shortcut = QShortcut(QKeySequence("Escape"), self.window)
         self.escape_shortcut.activated.connect(self._handle_escape)
@@ -1225,7 +1233,7 @@ class ImageViewer(QObject):
             self.image_label.clear()
             self.image_label.resize(self.image_scroll_area.viewport().size())
             self.image_label.setText("Bild anklicken, um es anzuzeigen")
-            self.file_name_label.setText("0 Bilder")
+            self._set_file_name_text("0 Bilder")
             self._update_view_actions()
             self._update_navigation_buttons()
         elif slideshow_was_running:
@@ -1520,13 +1528,13 @@ class ImageViewer(QObject):
         self.image_label.clear()
         self.image_label.resize(self.image_scroll_area.viewport().size())
         self.image_label.setText("Bild anklicken, um es anzuzeigen")
-        self.file_name_label.setText("Suche nach Bildern …")
+        self._set_file_name_text("Suche nach Bildern …")
         self._clipboard_changed()
 
         try:
             self._directory_iterator = os.scandir(directory)
         except OSError:
-            self.file_name_label.setText("Ordner konnte nicht gelesen werden")
+            self._set_file_name_text("Ordner konnte nicht gelesen werden")
             return
 
         self.settings.setValue(LAST_DIRECTORY_KEY, str(directory.resolve(strict=False)))
@@ -1560,10 +1568,10 @@ class ImageViewer(QObject):
         except OSError:
             self._directory_iterator.close()
             self._directory_iterator = None
-            self.file_name_label.setText("Ordner konnte nicht vollständig gelesen werden")
+            self._set_file_name_text("Ordner konnte nicht vollständig gelesen werden")
             return
 
-        self.file_name_label.setText(
+        self._set_file_name_text(
             f"Suche nach Bildern … ({len(self._pending_images)} gefunden)"
         )
         QTimer.singleShot(0, lambda: self._scan_directory_batch(generation))
@@ -1691,7 +1699,7 @@ class ImageViewer(QObject):
             self._start_more_thumbnail_jobs(generation)
 
     def _update_loading_text(self) -> None:
-        self.file_name_label.setText(
+        self._set_file_name_text(
             f"Lade Vorschaubilder: {self._completed_jobs} von {len(self._pending_images)}"
         )
 
@@ -1699,10 +1707,12 @@ class ImageViewer(QObject):
         if generation != self._load_generation:
             return
         if self.current_image is not None:
-            self.file_name_label.setText(self.current_image.name)
+            self._set_file_name_text(self.current_image.name)
             return
         count = self.thumbnail_list.count()
-        self.file_name_label.setText(f"{count} Bild" if count == 1 else f"{count} Bilder")
+        self._set_file_name_text(
+            f"{count} Bild" if count == 1 else f"{count} Bilder"
+        )
 
     def _thumbnail_selected(
         self,
@@ -1713,7 +1723,7 @@ class ImageViewer(QObject):
             self._update_navigation_buttons()
             return
         self.current_image = Path(item.data(Qt.ItemDataRole.UserRole))
-        self.file_name_label.setText(self.current_image.name)
+        self._set_file_name_text(self.current_image.name)
         self._load_current_image()
         self._update_navigation_buttons()
         if self._slideshow_running:
@@ -1769,6 +1779,17 @@ class ImageViewer(QObject):
         target_item = self.thumbnail_list.item(row)
         self.thumbnail_list.setCurrentItem(target_item)
         self.thumbnail_list.scrollToItem(target_item)
+
+    def _set_file_name_text(self, text: str) -> None:
+        self._file_name_text = text
+        available_width = max(0, self.file_name_label.width() - 12)
+        displayed_text = self.file_name_label.fontMetrics().elidedText(
+            text,
+            Qt.TextElideMode.ElideMiddle,
+            available_width,
+        )
+        self.file_name_label.setText(displayed_text)
+        self.file_name_label.setToolTip(text)
 
     def _update_navigation_buttons(self) -> None:
         current_row = self.thumbnail_list.currentRow()
@@ -1952,6 +1973,8 @@ class ImageViewer(QObject):
         self._schedule_image_render()
 
     def eventFilter(self, watched, event) -> bool:
+        if watched is self.file_name_label and event.type() == QEvent.Type.Resize:
+            self._set_file_name_text(self._file_name_text)
         image_widgets = (self.image_label, self.image_scroll_area.viewport())
         if self._fullscreen_mode and watched in image_widgets:
             if event.type() == QEvent.Type.ToolTip:
