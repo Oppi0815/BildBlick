@@ -4,6 +4,10 @@
 
 # BildBlick
 
+![BildBlick Screenshot](docs/bildblick-screenshot.png)
+
+*BildBlick 1.1.0 unter Linux Mint*
+
 **Version 1.1.0**
 
 BildBlick ist ein schneller und komfortabler Bildbetrachter für Linux. Die Anwendung wurde unter Linux Mint entwickelt und getestet und verbindet eine übersichtliche Verzeichnisnavigation mit schnellen Vorschaubildern und praktischen Werkzeugen für die Bildverwaltung.
@@ -75,10 +79,6 @@ Das Ergebnis wird als `dist/BildBlick` erzeugt. Diese Binärdatei gehört nicht 
 BildBlick löscht Bilder nicht dauerhaft, sondern verschiebt sie mit Send2Trash in den Linux-Papierkorb. Vor Papierkorbaktionen ist eine Bestätigung erforderlich.
 
 Die Duplikatsuche erkennt in der aktuellen Version ausschließlich bytegenau identische Dateien. Sie gruppiert zunächst nach Dateigröße, berechnet anschließend SHA-256-Hashes und bestätigt Treffer durch einen blockweisen Inhaltsvergleich. Ähnliche, verkleinerte oder neu komprimierte Bilder gelten nicht als Duplikate.
-
-## Bildschirmfoto
-
-_Hier kann später ein öffentliches Bildschirmfoto von BildBlick ergänzt werden._
 
 ## Lizenz
 
