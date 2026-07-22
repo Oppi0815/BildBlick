@@ -9,6 +9,7 @@ analysis = Analysis(
         ("bildbetrachter.ui", "."),
         ("assets/bildblick.png", "assets"),
         ("assets/duplicate-*.svg", "assets"),
+        ("assets/selection-*.svg", "assets"),
     ],
     hiddenimports=[],
     hookspath=[],

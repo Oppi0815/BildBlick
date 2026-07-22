@@ -1,28 +1,34 @@
 import hashlib
 import os
+import random
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
+from io import BytesIO
 from datetime import datetime
 from functools import cmp_to_key
 from pathlib import Path
 
-from PIL import Image as PillowImage
+from PIL import Image as PillowImage, ImageOps
 from send2trash import send2trash
 from PySide6.QtCore import (
     QDir,
     QEvent,
+    QEasingCurve,
     QFile,
     QIODevice,
     QItemSelectionModel,
+    QLineF,
     QMimeData,
     QObject,
+    QPropertyAnimation,
     QRunnable,
     QSettings,
     QSize,
+    QRectF,
     QStandardPaths,
     QCommandLineParser,
     QCollator,
@@ -42,6 +48,10 @@ from PySide6.QtGui import (
     QImage,
     QImageReader,
     QKeySequence,
+    QPainter,
+    QPainterPath,
+    QPalette,
+    QPen,
     QPixmap,
     QShortcut,
     QTransform,
@@ -51,11 +61,17 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QCheckBox,
+    QComboBox,
     QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFileSystemModel,
+    QFormLayout,
+    QGroupBox,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListView,
     QListWidget,
     QListWidgetItem,
@@ -63,10 +79,15 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QProgressBar,
+    QProxyStyle,
     QScrollArea,
     QSlider,
+    QSpinBox,
     QSizePolicy,
     QSplitter,
+    QStyle,
+    QStyleOptionMenuItem,
     QToolButton,
     QToolTip,
     QTreeView,
@@ -78,7 +99,7 @@ from duplicate_finder import DuplicateFinderDialog
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter für Linux"
 
 ROOT_DIRECTORY = Path("/")
@@ -96,7 +117,7 @@ THUMBNAIL_MAXIMUM = 256
 THUMBNAIL_STEP = 16
 THUMBNAIL_DEFAULT = 160
 FOLDER_HISTORY_LIMIT = 50
-TOOLTIP_METADATA_VERSION = 2
+TOOLTIP_METADATA_VERSION = 3
 DIRECTORY_ENTRIES_PER_BATCH = 100
 LIST_ITEMS_PER_BATCH = 100
 CACHE_DIRECTORY = Path.home() / f".cache/{APP_NAME}/vorschaubilder"
@@ -111,10 +132,22 @@ LAST_DIRECTORY_KEY = "lastDirectory"
 SLIDESHOW_INTERVAL_KEY = "slideshowInterval"
 SLIDESHOW_REPEAT_KEY = "slideshowRepeat"
 SLIDESHOW_FULLSCREEN_KEY = "slideshowFullscreen"
+SLIDESHOW_SELECTED_ONLY_KEY = "slideshow/selectedOnly"
+SLIDESHOW_RANDOM_KEY = "slideshow/randomOrder"
+SLIDESHOW_METADATA_KEY = "slideshow/showMetadata"
+SLIDESHOW_FADE_KEY = "slideshow/softFade"
 COLOR_SCHEME_KEY = "colorScheme"
 THUMBNAIL_SIZE_KEY = "thumbnailSize"
 SORT_CRITERION_KEY = "sortCriterion"
 SORT_ASCENDING_KEY = "sortAscending"
+EXPORT_WIDTH_KEY = "export/maxWidth"
+EXPORT_HEIGHT_KEY = "export/maxHeight"
+EXPORT_QUALITY_KEY = "export/jpegQuality"
+EXPORT_ENLARGE_KEY = "export/enlargeSmaller"
+EXPORT_SUFFIX_KEY = "export/nameSuffix"
+EXPORT_DIRECTORY_KEY = "export/lastDirectory"
+EXPORT_METADATA_KEY = "export/keepMetadata"
+EXPORT_REMOVE_GPS_KEY = "export/removeGps"
 SLIDESHOW_INTERVALS = (3, 5, 10, 15)
 SORT_CRITERIA = ("name", "recording_date", "modified", "size")
 ZOOM_STEP = 1.15
@@ -122,6 +155,7 @@ MIN_ZOOM = 0.10
 MAX_ZOOM = 8.0
 FULLSCREEN_TOOLTIP_DURATION = 3000
 ZOOM_INDICATOR_DURATION = 1500
+CHECK_ACCENT_COLOR = "#D32F2F"
 ZOOM_INDICATOR_STYLESHEET = (
     "QLabel { background-color: rgba(24, 24, 24, 210);"
     " color: #f7f7f7; border: 1px solid rgba(255, 255, 255, 45);"
@@ -167,16 +201,183 @@ COLOR_SCHEMES = {
 }
 
 
+class SelectionAccentStyle(QProxyStyle):
+    """Draws selection indicators consistently, independently of the theme."""
+
+    INDICATOR_SIZE = 18
+
+    def pixelMetric(self, metric, option=None, widget=None) -> int:
+        if metric in (
+            QStyle.PixelMetric.PM_IndicatorWidth,
+            QStyle.PixelMetric.PM_IndicatorHeight,
+            QStyle.PixelMetric.PM_ExclusiveIndicatorWidth,
+            QStyle.PixelMetric.PM_ExclusiveIndicatorHeight,
+        ):
+            return self.INDICATOR_SIZE
+        return super().pixelMetric(metric, option, widget)
+
+    @staticmethod
+    def _indicator_rect(rect) -> QRectF:
+        size = min(SelectionAccentStyle.INDICATOR_SIZE, rect.width(), rect.height())
+        return QRectF(
+            rect.x() + (rect.width() - size) / 2,
+            rect.y() + (rect.height() - size) / 2,
+            size,
+            size,
+        )
+
+    @staticmethod
+    def _draw_checkmark(painter: QPainter, rect: QRectF, color: QColor) -> None:
+        path = QPainterPath()
+        path.moveTo(rect.left() + rect.width() * 0.23, rect.center().y())
+        path.lineTo(
+            rect.left() + rect.width() * 0.43,
+            rect.top() + rect.height() * 0.70,
+        )
+        path.lineTo(
+            rect.left() + rect.width() * 0.79,
+            rect.top() + rect.height() * 0.29,
+        )
+        pen = QPen(color, max(2.0, rect.width() * 0.14))
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(path)
+
+    def drawPrimitive(self, element, option, painter, widget=None) -> None:
+        if element not in (
+            QStyle.PrimitiveElement.PE_IndicatorCheckBox,
+            QStyle.PrimitiveElement.PE_IndicatorRadioButton,
+        ):
+            super().drawPrimitive(element, option, painter, widget)
+            return
+
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = self._indicator_rect(option.rect).adjusted(1, 1, -1, -1)
+        enabled = bool(option.state & QStyle.StateFlag.State_Enabled)
+        hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        focused = bool(option.state & QStyle.StateFlag.State_HasFocus)
+        checked = bool(option.state & QStyle.StateFlag.State_On)
+        partial = bool(option.state & QStyle.StateFlag.State_NoChange)
+        accent = QColor(CHECK_ACCENT_COLOR if enabled else "#8B8B8B")
+        if hovered and enabled:
+            accent = accent.lighter(110)
+        normal_fill = option.palette.color(
+            QPalette.ColorRole.Base if enabled else QPalette.ColorRole.Button
+        )
+        border = accent if checked or partial or hovered else option.palette.color(
+            QPalette.ColorRole.Mid
+        )
+        painter.setPen(QPen(border, 1.5))
+
+        if element == QStyle.PrimitiveElement.PE_IndicatorRadioButton:
+            painter.setBrush(normal_fill)
+            painter.drawEllipse(rect)
+            if checked or partial:
+                dot_rect = rect.adjusted(
+                    rect.width() * 0.25,
+                    rect.height() * 0.25,
+                    -rect.width() * 0.25,
+                    -rect.height() * 0.25,
+                )
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(accent)
+                painter.drawEllipse(dot_rect)
+        else:
+            painter.setBrush(accent if checked or partial else normal_fill)
+            painter.drawRoundedRect(rect, 3, 3)
+            if checked:
+                self._draw_checkmark(painter, rect, QColor("#FFFFFF"))
+            elif partial:
+                pen = QPen(QColor("#FFFFFF"), max(2.0, rect.width() * 0.14))
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                painter.setPen(pen)
+                painter.drawLine(QLineF(
+                    rect.left() + rect.width() * 0.24,
+                    rect.center().y(),
+                    rect.right() - rect.width() * 0.24,
+                    rect.center().y(),
+                ))
+
+        if focused:
+            focus_rect = rect.adjusted(-2, -2, 2, 2)
+            focus_pen = QPen(accent, 1)
+            focus_pen.setStyle(Qt.PenStyle.DotLine)
+            painter.setPen(focus_pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            if element == QStyle.PrimitiveElement.PE_IndicatorRadioButton:
+                painter.drawEllipse(focus_rect)
+            else:
+                painter.drawRoundedRect(focus_rect, 4, 4)
+        painter.restore()
+
+    def drawControl(self, element, option, painter, widget=None) -> None:
+        super().drawControl(element, option, painter, widget)
+        if element != QStyle.ControlElement.CE_MenuItem:
+            return
+        if not isinstance(option, QStyleOptionMenuItem):
+            return
+        if (
+            option.checkType == QStyleOptionMenuItem.CheckType.NotCheckable
+            or not option.checked
+        ):
+            return
+
+        indicator_size = 16
+        if option.direction == Qt.LayoutDirection.RightToLeft:
+            indicator_x = option.rect.right() - indicator_size - 7
+        else:
+            indicator_x = option.rect.left() + 7
+        indicator_rect = QRectF(
+            indicator_x,
+            option.rect.y() + (option.rect.height() - indicator_size) / 2,
+            indicator_size,
+            indicator_size,
+        )
+        enabled = bool(option.state & QStyle.StateFlag.State_Enabled)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        accent = QColor(CHECK_ACCENT_COLOR if enabled else "#8B8B8B")
+        painter.setPen(QPen(accent.darker(115), 1))
+        painter.setBrush(accent)
+        painter.drawRoundedRect(indicator_rect, 3, 3)
+        self._draw_checkmark(painter, indicator_rect, QColor("#FFFFFF"))
+        painter.restore()
+
+
+def install_selection_accent_style(application: QApplication) -> None:
+    application.setStyle(SelectionAccentStyle(application.style()))
+
+
+def selection_menu_stylesheet() -> str:
+    checked_icon = resource_path("assets/selection-menu-checked.svg").as_posix()
+    disabled_icon = resource_path(
+        "assets/selection-menu-checked-disabled.svg"
+    ).as_posix()
+    return f"""
+QMenu::indicator:checked {{
+    width: 18px; height: 18px;
+    image: url("{checked_icon}");
+}}
+QMenu::indicator:checked:disabled {{
+    image: url("{disabled_icon}");
+}}
+"""
+
+
 def color_scheme_stylesheet(colors: dict[str, str] | None) -> str:
     if colors is None:
-        return ""
-    return f"""
+        return selection_menu_stylesheet()
+    return selection_menu_stylesheet() + f"""
 QMainWindow, QWidget#centralwidget {{
     background-color: {colors['window']}; color: {colors['text']};
 }}
 QWidget#directoryPanel, QWidget#previewPanel {{
     background-color: {colors['panel']}; color: {colors['text']};
 }}
+QLabel#directoryPathLabel {{ color: {colors['muted']}; }}
 QTreeView, QListWidget {{
     background-color: {colors['panel']}; color: {colors['text']};
     border: 1px solid {colors['border']}; outline: 0;
@@ -346,6 +547,122 @@ def format_date(value: object) -> str | None:
     return parsed_date.strftime("%d.%m.%Y, %H:%M")
 
 
+def format_status_date(value: object) -> str | None:
+    formatted = format_date(value)
+    return formatted.replace(",", "", 1) if formatted is not None else None
+
+
+def exif_text(value: object) -> str | None:
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    if not isinstance(value, str):
+        return None
+    cleaned = " ".join(value.strip(" \0").split())
+    return cleaned or None
+
+
+def rational_float(value: object) -> float | None:
+    try:
+        if isinstance(value, (tuple, list)) and len(value) == 2:
+            denominator = float(value[1])
+            return float(value[0]) / denominator if denominator else None
+        number = float(value)
+    except (TypeError, ValueError, OverflowError, ZeroDivisionError):
+        return None
+    return number if number >= 0 else None
+
+
+def format_decimal(value: float, maximum_decimals: int = 1) -> str:
+    text = f"{value:.{maximum_decimals}f}".rstrip("0").rstrip(".")
+    return text.replace(".", ",")
+
+
+def format_exposure(value: object) -> str | None:
+    seconds = rational_float(value)
+    if seconds is None or seconds <= 0:
+        return None
+    if seconds < 1:
+        denominator = max(1, round(1 / seconds))
+        if abs(seconds - 1 / denominator) <= max(0.000001, seconds * 0.02):
+            return f"1/{denominator} s"
+    return f"{format_decimal(seconds, 2)} s"
+
+
+def compact_camera_name(make_value: object, model_value: object) -> str | None:
+    make = exif_text(make_value)
+    model = exif_text(model_value)
+    if make is not None:
+        make = re.sub(
+            r"\s+(camera\s+ag|corporation|corp\.?|inc\.?|co\.?\s*,?\s*ltd\.?)$",
+            "",
+            make,
+            flags=re.IGNORECASE,
+        ).strip()
+        if make.isupper():
+            make = make.title()
+    if model is not None and model.isupper():
+        model = model.title()
+    if model is None:
+        return make
+    if make is None or model.casefold().startswith(make.casefold()):
+        return model
+    return f"{make} {model}"
+
+
+def format_lens_specification(value: object) -> str | None:
+    if not isinstance(value, (tuple, list)) or len(value) < 2:
+        return None
+    numbers = [rational_float(entry) for entry in value]
+    if numbers[0] is None or numbers[1] is None:
+        return None
+    focal = format_decimal(numbers[0])
+    if abs(numbers[0] - numbers[1]) > 0.01:
+        focal += f"–{format_decimal(numbers[1])}"
+    result = f"{focal} mm"
+    if len(numbers) >= 4 and numbers[2] and numbers[3]:
+        aperture = format_decimal(numbers[2])
+        if abs(numbers[2] - numbers[3]) > 0.01:
+            aperture += f"–{format_decimal(numbers[3])}"
+        result += f" f/{aperture}"
+    return result
+
+
+def gps_coordinate(value: object, reference: object) -> float | None:
+    if not isinstance(value, (tuple, list)) or len(value) < 3:
+        return None
+    components = [rational_float(entry) for entry in value[:3]]
+    if any(component is None for component in components):
+        return None
+    coordinate = components[0] + components[1] / 60 + components[2] / 3600
+    ref = exif_text(reference)
+    if ref is not None and ref.upper() in ("S", "W"):
+        coordinate = -coordinate
+    return coordinate
+
+
+def extract_gps(exif) -> tuple[str | None, str | None]:
+    try:
+        gps = exif.get_ifd(0x8825)
+    except Exception:
+        gps = {}
+    latitude = gps_coordinate(gps.get(2), gps.get(1))
+    longitude = gps_coordinate(gps.get(4), gps.get(3))
+    if latitude is None or longitude is None:
+        return None, None
+    latitude_compact = f"{latitude:.5f}".rstrip("0").rstrip(".").replace(".", ",")
+    longitude_compact = (
+        f"{longitude:.5f}".rstrip("0").rstrip(".").replace(".", ",")
+    )
+    compact = f"GPS {latitude_compact} / {longitude_compact}"
+    latitude_detail = f"{latitude:.6f}".replace(".", ",")
+    longitude_detail = f"{longitude:.6f}".replace(".", ",")
+    detail = (
+        f"Breitengrad: {latitude_detail}°\n"
+        f"Längengrad: {longitude_detail}°"
+    )
+    return compact, detail
+
+
 def format_iso_value(value: object) -> str | None:
     if isinstance(value, bytes):
         value = value.decode("utf-8", errors="replace")
@@ -391,12 +708,13 @@ def extract_iso_value(exif) -> str | None:
     return None
 
 
-def build_image_tooltip(path: Path) -> str:
+def build_image_metadata(path: Path) -> tuple[str, dict[str, str]]:
     lines = [path.name]
     file_info = None
     dimensions = None
     recording_date = None
     iso_value = None
+    status_metadata: dict[str, str] = {}
 
     try:
         file_info = path.stat()
@@ -407,11 +725,49 @@ def build_image_tooltip(path: Path) -> str:
         with PillowImage.open(path) as image:
             dimensions = image.size
             exif = image.getexif()
+            try:
+                exif_ifd = exif.get_ifd(0x8769)
+            except Exception:
+                exif_ifd = {}
+
+            def metadata_value(tag: int):
+                value = exif_ifd.get(tag)
+                return exif.get(tag) if value is None else value
+
             for tag in (36867, 36868, 306):
-                recording_date = format_date(exif.get(tag))
+                tag_value = metadata_value(tag)
+                recording_date = format_date(tag_value)
                 if recording_date is not None:
+                    status_metadata["recording_time"] = format_status_date(
+                        tag_value
+                    ) or recording_date.replace(",", "", 1)
                     break
             iso_value = extract_iso_value(exif)
+            camera = compact_camera_name(exif.get(271), exif.get(272))
+            if camera:
+                status_metadata["camera"] = camera
+            lens = exif_text(metadata_value(42036))
+            if lens is None:
+                lens = format_lens_specification(metadata_value(42034))
+            if lens is None:
+                lens = exif_text(metadata_value(42035))
+            if lens:
+                status_metadata["lens"] = lens
+            exposure = format_exposure(metadata_value(33434))
+            if exposure:
+                status_metadata["exposure"] = exposure
+            aperture = rational_float(metadata_value(33437))
+            if aperture and aperture > 0:
+                status_metadata["aperture"] = f"f/{format_decimal(aperture)}"
+            focal_length = rational_float(metadata_value(37386))
+            if focal_length and focal_length > 0:
+                status_metadata["focal_length"] = (
+                    f"{format_decimal(focal_length)} mm"
+                )
+            gps_compact, gps_detail = extract_gps(exif)
+            if gps_compact:
+                status_metadata["gps"] = gps_compact
+                status_metadata["gps_detail"] = gps_detail or gps_compact
     except Exception:
         reader_size = QImageReader(str(path)).size()
         if reader_size.isValid():
@@ -430,11 +786,16 @@ def build_image_tooltip(path: Path) -> str:
         lines.append(f"Geändert: {changed_date}")
     if iso_value is not None:
         lines.append(f"ISO: {iso_value}")
-    return "\n".join(lines)
+        status_metadata["iso"] = iso_value
+    return "\n".join(lines), status_metadata
+
+
+def build_image_tooltip(path: Path) -> str:
+    return build_image_metadata(path)[0]
 
 
 class ThumbnailSignals(QObject):
-    ready = Signal(int, int, QImage, str, object)
+    ready = Signal(int, int, QImage, str, object, object)
 
 
 class ThumbnailTask(QRunnable):
@@ -445,6 +806,7 @@ class ThumbnailTask(QRunnable):
         generation: int,
         metadata_key: tuple[str, int, int, int],
         cached_tooltip: str | None,
+        cached_metadata: dict[str, str] | None,
         thumbnail_size: QSize = THUMBNAIL_SIZE,
     ) -> None:
         super().__init__()
@@ -453,14 +815,20 @@ class ThumbnailTask(QRunnable):
         self.generation = generation
         self.metadata_key = metadata_key
         self.cached_tooltip = cached_tooltip
+        self.cached_metadata = cached_metadata
         self.thumbnail_size = QSize(thumbnail_size)
         self.signals = ThumbnailSignals()
 
     def run(self) -> None:
         image = QImage()
         tooltip = self.path.name
+        metadata: dict[str, str] = {}
         try:
-            tooltip = self.cached_tooltip or build_image_tooltip(self.path)
+            if self.cached_tooltip is not None and self.cached_metadata is not None:
+                tooltip = self.cached_tooltip
+                metadata = self.cached_metadata
+            else:
+                tooltip, metadata = build_image_metadata(self.path)
         except Exception:
             pass
         try:
@@ -474,6 +842,7 @@ class ThumbnailTask(QRunnable):
                 image,
                 tooltip,
                 self.metadata_key,
+                metadata,
             )
         except RuntimeError:
             pass
@@ -521,6 +890,683 @@ class ThumbnailTask(QRunnable):
                 except OSError:
                     pass
         return image
+
+
+def export_target_size(
+    source_size: tuple[int, int],
+    maximum_width: int,
+    maximum_height: int,
+    enlarge_smaller: bool,
+) -> tuple[int, int]:
+    width, height = source_size
+    if width <= 0 or height <= 0:
+        raise ValueError("Das Bild hat ungültige Abmessungen.")
+    scale = min(maximum_width / width, maximum_height / height)
+    if not enlarge_smaller:
+        scale = min(1.0, scale)
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
+def prepare_jpeg_export(
+    image_path: Path,
+    rotation: int,
+    maximum_width: int,
+    maximum_height: int,
+    enlarge_smaller: bool,
+    keep_metadata: bool,
+    remove_gps: bool,
+) -> tuple[object, dict[str, object]]:
+    with PillowImage.open(image_path) as source:
+        if bool(getattr(source, "is_animated", False)):
+            raise ValueError("Animierte Bilder werden nicht unterstützt.")
+        source.load()
+        exif = source.getexif() if keep_metadata else None
+        icc_profile = source.info.get("icc_profile") if keep_metadata else None
+        dpi = source.info.get("dpi") if keep_metadata else None
+        image = ImageOps.exif_transpose(source)
+        if rotation % 360:
+            image = image.rotate(-(rotation % 360), expand=True)
+        target_size = export_target_size(
+            image.size, maximum_width, maximum_height, enlarge_smaller
+        )
+        if image.size != target_size:
+            image = image.resize(target_size, PillowImage.Resampling.LANCZOS)
+
+        if image.mode in ("RGBA", "LA") or (
+            image.mode == "P" and "transparency" in image.info
+        ):
+            rgba_image = image.convert("RGBA")
+            white_background = PillowImage.new("RGB", rgba_image.size, "white")
+            white_background.paste(rgba_image, mask=rgba_image.getchannel("A"))
+            image = white_background
+        elif image.mode != "RGB":
+            image = image.convert("RGB")
+        else:
+            image = image.copy()
+
+    metadata: dict[str, object] = {}
+    export_exif = exif if keep_metadata and exif is not None else PillowImage.Exif()
+    try:
+        export_exif[274] = 1
+        if remove_gps and 34853 in export_exif:
+            del export_exif[34853]
+        metadata["exif"] = export_exif.tobytes()
+    except Exception:
+        try:
+            orientation_exif = PillowImage.Exif()
+            orientation_exif[274] = 1
+            metadata["exif"] = orientation_exif.tobytes()
+        except Exception:
+            pass
+    if keep_metadata:
+        if icc_profile:
+            metadata["icc_profile"] = icc_profile
+        if dpi:
+            metadata["dpi"] = dpi
+    return image, metadata
+
+
+def jpeg_export_options(quality: int) -> dict[str, object]:
+    return {
+        "format": "JPEG",
+        "quality": quality,
+        "optimize": True,
+        "progressive": True,
+    }
+
+
+class ExportEstimateSignals(QObject):
+    finished = Signal(int, object, str)
+
+
+class ExportEstimateTask(QRunnable):
+    def __init__(
+        self,
+        generation: int,
+        paths: list[Path],
+        rotations: dict[str, int],
+        options: dict[str, object],
+    ) -> None:
+        super().__init__()
+        self.generation = generation
+        self.paths = paths
+        self.rotations = rotations
+        self.options = options
+        self.signals = ExportEstimateSignals()
+
+    def run(self) -> None:
+        try:
+            sample_count = min(10, len(self.paths))
+            if sample_count == 0:
+                self.signals.finished.emit(self.generation, 0, "")
+                return
+            if sample_count == 1:
+                sample_indices = [0]
+            else:
+                sample_indices = sorted(
+                    {
+                        round(index * (len(self.paths) - 1) / (sample_count - 1))
+                        for index in range(sample_count)
+                    }
+                )
+            sampled_bytes = 0
+            sampled_pixels = 0
+            total_pixels = 0
+            for index, path in enumerate(self.paths):
+                rotation = self.rotations.get(str(path.resolve(strict=False)), 0)
+                if index in sample_indices:
+                    try:
+                        image, metadata = prepare_jpeg_export(
+                            path,
+                            rotation,
+                            int(self.options["width"]),
+                            int(self.options["height"]),
+                            bool(self.options["enlarge"]),
+                            bool(self.options["metadata"]),
+                            bool(self.options["remove_gps"]),
+                        )
+                        buffer = BytesIO()
+                        image.save(
+                            buffer,
+                            **jpeg_export_options(int(self.options["quality"])),
+                            **metadata,
+                        )
+                        pixels = image.width * image.height
+                        sampled_pixels += pixels
+                        sampled_bytes += buffer.tell()
+                        total_pixels += pixels
+                    except Exception:
+                        continue
+                else:
+                    try:
+                        with PillowImage.open(path) as source:
+                            if bool(getattr(source, "is_animated", False)):
+                                continue
+                            oriented = ImageOps.exif_transpose(source)
+                            width, height = oriented.size
+                            if rotation % 180:
+                                width, height = height, width
+                            target_width, target_height = export_target_size(
+                                (width, height),
+                                int(self.options["width"]),
+                                int(self.options["height"]),
+                                bool(self.options["enlarge"]),
+                            )
+                            total_pixels += target_width * target_height
+                    except Exception:
+                        continue
+            estimate = (
+                round(total_pixels * sampled_bytes / sampled_pixels)
+                if sampled_pixels
+                else 0
+            )
+            self.signals.finished.emit(self.generation, estimate, "")
+        except Exception as error:
+            self.signals.finished.emit(self.generation, None, str(error))
+
+
+class ImageExportSignals(QObject):
+    progress = Signal(int, int, str)
+    finished = Signal(object)
+
+
+class ImageExportTask(QRunnable):
+    def __init__(
+        self,
+        paths: list[Path],
+        rotations: dict[str, int],
+        destination: Path,
+        suffix: str,
+        options: dict[str, object],
+    ) -> None:
+        super().__init__()
+        self.paths = paths
+        self.rotations = rotations
+        self.destination = destination
+        self.suffix = suffix
+        self.options = options
+        self.cancel_event = threading.Event()
+        self.signals = ImageExportSignals()
+
+    def cancel(self) -> None:
+        self.cancel_event.set()
+
+    def _available_destination(self, source: Path, reserved: set[str]) -> Path:
+        base_name = f"{source.stem}{self.suffix}"
+        counter = 0
+        while True:
+            extra = "" if counter == 0 else f"-{counter}"
+            candidate = self.destination / f"{base_name}{extra}.jpg"
+            candidate_key = candidate.name.casefold()
+            if candidate_key not in reserved and not candidate.exists():
+                reserved.add(candidate_key)
+                return candidate
+            counter += 1
+
+    def run(self) -> None:
+        successful: list[str] = []
+        skipped: list[str] = []
+        failures: list[str] = []
+        total_size = 0
+        try:
+            self.destination.mkdir(parents=True, exist_ok=True)
+            if not os.access(self.destination, os.W_OK | os.X_OK):
+                raise OSError("Der Zielordner ist nicht beschreibbar.")
+        except OSError as error:
+            self.signals.finished.emit(
+                {
+                    "successful": successful,
+                    "skipped": skipped,
+                    "failures": [str(error)],
+                    "total_size": 0,
+                    "cancelled": False,
+                    "destination": str(self.destination),
+                }
+            )
+            return
+
+        reserved: set[str] = set()
+        for index, path in enumerate(self.paths, start=1):
+            if self.cancel_event.is_set():
+                break
+            self.signals.progress.emit(index, len(self.paths), path.name)
+            temporary_path: Path | None = None
+            try:
+                rotation = self.rotations.get(str(path.resolve(strict=False)), 0)
+                image, metadata = prepare_jpeg_export(
+                    path,
+                    rotation,
+                    int(self.options["width"]),
+                    int(self.options["height"]),
+                    bool(self.options["enlarge"]),
+                    bool(self.options["metadata"]),
+                    bool(self.options["remove_gps"]),
+                )
+                target = self._available_destination(path, reserved)
+                with tempfile.NamedTemporaryFile(
+                    prefix=f".{target.stem}-",
+                    suffix=".jpg",
+                    dir=self.destination,
+                    delete=False,
+                ) as temporary_file:
+                    temporary_path = Path(temporary_file.name)
+                image.save(
+                    temporary_path,
+                    **jpeg_export_options(int(self.options["quality"])),
+                    **metadata,
+                )
+                if not temporary_path.is_file() or temporary_path.stat().st_size <= 0:
+                    raise OSError("Die temporäre Exportdatei ist leer.")
+                if not QFile.rename(str(temporary_path), str(target)):
+                    raise OSError(
+                        "Die fertige Exportdatei konnte nicht sicher benannt werden."
+                    )
+                temporary_path = None
+                total_size += target.stat().st_size
+                successful.append(str(target))
+            except ValueError as error:
+                skipped.append(f"{path.name}: {error}")
+            except Exception as error:
+                failures.append(f"{path.name}: {error}")
+            finally:
+                if temporary_path is not None:
+                    try:
+                        temporary_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+        self.signals.finished.emit(
+            {
+                "successful": successful,
+                "skipped": skipped,
+                "failures": failures,
+                "total_size": total_size,
+                "cancelled": self.cancel_event.is_set(),
+                "destination": str(self.destination),
+            }
+        )
+
+
+class ImageExportDialog(QDialog):
+    PRESETS = (
+        ("Benutzerdefiniert", None),
+        ("1280 × 720", (1280, 720)),
+        ("1600 × 1200", (1600, 1200)),
+        ("1920 × 1080", (1920, 1080)),
+        ("2560 × 1440", (2560, 1440)),
+        ("3840 × 2160", (3840, 2160)),
+    )
+
+    def __init__(
+        self,
+        paths: list[Path],
+        rotations: dict[str, int],
+        settings: QSettings,
+        default_directory: Path,
+        colors: dict[str, str],
+        open_folder_callback,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.paths = paths
+        self.rotations = rotations
+        self.settings = settings
+        self.default_directory = default_directory
+        self.open_folder_callback = open_folder_callback
+        self._estimate_generation = 0
+        self._updating_preset = False
+        self._export_running = False
+        self.estimate_task = None
+        self.export_task = None
+        self.worker_pool = QThreadPool(self)
+        self.worker_pool.setMaxThreadCount(2)
+
+        self.setWindowTitle("Bilder verkleinert exportieren")
+        self.setMinimumSize(590, 650)
+        self.resize(670, 720)
+        self.setStyleSheet(message_box_stylesheet(colors))
+        main_layout = QVBoxLayout(self)
+        heading = QLabel(f"{len(paths)} Bilder ausgewählt", self)
+        heading.setStyleSheet("font-size: 16px; font-weight: 600;")
+        main_layout.addWidget(heading)
+
+        size_group = QGroupBox("Zielgröße", self)
+        size_form = QFormLayout(size_group)
+        self.preset_combo = QComboBox(size_group)
+        for label, _size in self.PRESETS:
+            self.preset_combo.addItem(label)
+        size_form.addRow("Voreinstellung:", self.preset_combo)
+        size_row = QHBoxLayout()
+        self.width_spin = QSpinBox(size_group)
+        self.height_spin = QSpinBox(size_group)
+        for spin in (self.width_spin, self.height_spin):
+            spin.setRange(100, 20000)
+            spin.setSuffix(" Pixel")
+        self.width_spin.setValue(
+            settings.value(EXPORT_WIDTH_KEY, 1920, type=int)
+        )
+        self.height_spin.setValue(
+            settings.value(EXPORT_HEIGHT_KEY, 1080, type=int)
+        )
+        size_row.addWidget(self.width_spin)
+        size_row.addWidget(QLabel("×", size_group))
+        size_row.addWidget(self.height_spin)
+        size_form.addRow("Maximale Breite × Höhe:", size_row)
+        self.enlarge_checkbox = QCheckBox("Kleinere Bilder vergrößern", size_group)
+        self.enlarge_checkbox.setChecked(
+            settings.value(EXPORT_ENLARGE_KEY, False, type=bool)
+        )
+        size_form.addRow("", self.enlarge_checkbox)
+        main_layout.addWidget(size_group)
+
+        quality_group = QGroupBox("JPEG-Qualität", self)
+        quality_layout = QVBoxLayout(quality_group)
+        self.quality_label = QLabel(quality_group)
+        self.quality_slider = QSlider(Qt.Orientation.Horizontal, quality_group)
+        self.quality_slider.setRange(40, 100)
+        self.quality_slider.setValue(
+            settings.value(EXPORT_QUALITY_KEY, 90, type=int)
+        )
+        quality_layout.addWidget(self.quality_label)
+        quality_layout.addWidget(self.quality_slider)
+        quality_layout.addWidget(
+            QLabel(
+                "70: kleine Dateien · 85: gute Qualität · 90: sehr gute "
+                "Qualität · 95: sehr hohe Qualität",
+                quality_group,
+            )
+        )
+        main_layout.addWidget(quality_group)
+
+        naming_group = QGroupBox("Dateinamen und Zielordner", self)
+        naming_form = QFormLayout(naming_group)
+        self.suffix_edit = QLineEdit(
+            settings.value(EXPORT_SUFFIX_KEY, "-klein", type=str), naming_group
+        )
+        naming_form.addRow("Dateinamen-Zusatz:", self.suffix_edit)
+        destination_row = QHBoxLayout()
+        saved_directory = settings.value(EXPORT_DIRECTORY_KEY, "", type=str)
+        suggested_directory = (
+            Path(saved_directory).expanduser()
+            if saved_directory
+            else default_directory / "Export"
+        )
+        self.destination_edit = QLineEdit(str(suggested_directory), naming_group)
+        browse_button = QPushButton("Durchsuchen …", naming_group)
+        browse_button.clicked.connect(self._browse_destination)
+        destination_row.addWidget(self.destination_edit, 1)
+        destination_row.addWidget(browse_button)
+        naming_form.addRow("Zielordner:", destination_row)
+        main_layout.addWidget(naming_group)
+
+        metadata_group = QGroupBox("Metadaten", self)
+        metadata_layout = QVBoxLayout(metadata_group)
+        self.metadata_checkbox = QCheckBox(
+            "Aufnahmedaten übernehmen", metadata_group
+        )
+        self.metadata_checkbox.setChecked(
+            settings.value(EXPORT_METADATA_KEY, True, type=bool)
+        )
+        self.gps_checkbox = QCheckBox("GPS-Daten entfernen", metadata_group)
+        self.gps_checkbox.setChecked(
+            settings.value(EXPORT_REMOVE_GPS_KEY, True, type=bool)
+        )
+        metadata_layout.addWidget(self.metadata_checkbox)
+        metadata_layout.addWidget(self.gps_checkbox)
+        main_layout.addWidget(metadata_group)
+
+        estimate_group = QGroupBox("Größenabschätzung", self)
+        estimate_layout = QVBoxLayout(estimate_group)
+        self.estimate_label = QLabel("Dateigröße wird geschätzt …", estimate_group)
+        self.average_label = QLabel("", estimate_group)
+        estimate_layout.addWidget(self.estimate_label)
+        estimate_layout.addWidget(self.average_label)
+        main_layout.addWidget(estimate_group)
+
+        progress_group = QGroupBox("Exportfortschritt", self)
+        progress_layout = QVBoxLayout(progress_group)
+        self.progress_bar = QProgressBar(progress_group)
+        self.progress_bar.setRange(0, len(paths))
+        self.progress_label = QLabel("Bereit zum Exportieren", progress_group)
+        progress_layout.addWidget(self.progress_bar)
+        progress_layout.addWidget(self.progress_label)
+        main_layout.addWidget(progress_group)
+
+        buttons = QDialogButtonBox(self)
+        self.export_button = buttons.addButton(
+            "Exportieren", QDialogButtonBox.ButtonRole.AcceptRole
+        )
+        self.cancel_button = buttons.addButton(
+            "Abbrechen", QDialogButtonBox.ButtonRole.RejectRole
+        )
+        self.cancel_button.setDefault(True)
+        self.cancel_button.setFocus()
+        self.export_button.clicked.connect(self._start_export)
+        self.cancel_button.clicked.connect(self._cancel_or_close)
+        main_layout.addWidget(buttons)
+
+        self.estimate_timer = QTimer(self)
+        self.estimate_timer.setSingleShot(True)
+        self.estimate_timer.setInterval(400)
+        self.estimate_timer.timeout.connect(self._start_estimate)
+        self.preset_combo.currentIndexChanged.connect(self._preset_changed)
+        self.width_spin.valueChanged.connect(self._manual_size_changed)
+        self.height_spin.valueChanged.connect(self._manual_size_changed)
+        self.quality_slider.valueChanged.connect(self._options_changed)
+        self.enlarge_checkbox.toggled.connect(self._options_changed)
+        self.metadata_checkbox.toggled.connect(self._options_changed)
+        self.gps_checkbox.toggled.connect(self._options_changed)
+        self._update_quality_label()
+        self._select_matching_preset()
+        self._schedule_estimate()
+
+    def _options(self) -> dict[str, object]:
+        return {
+            "width": self.width_spin.value(),
+            "height": self.height_spin.value(),
+            "quality": self.quality_slider.value(),
+            "enlarge": self.enlarge_checkbox.isChecked(),
+            "metadata": self.metadata_checkbox.isChecked(),
+            "remove_gps": self.gps_checkbox.isChecked(),
+        }
+
+    def _select_matching_preset(self) -> None:
+        selected_index = 0
+        size = (self.width_spin.value(), self.height_spin.value())
+        for index, (_label, preset_size) in enumerate(self.PRESETS):
+            if preset_size == size:
+                selected_index = index
+                break
+        self._updating_preset = True
+        self.preset_combo.setCurrentIndex(selected_index)
+        self._updating_preset = False
+
+    def _preset_changed(self, index: int) -> None:
+        if self._updating_preset:
+            return
+        preset_size = self.PRESETS[index][1]
+        if preset_size is None:
+            return
+        self._updating_preset = True
+        self.width_spin.setValue(preset_size[0])
+        self.height_spin.setValue(preset_size[1])
+        self._updating_preset = False
+        self._schedule_estimate()
+
+    def _manual_size_changed(self) -> None:
+        if not self._updating_preset:
+            self._updating_preset = True
+            self.preset_combo.setCurrentIndex(0)
+            self._updating_preset = False
+        self._schedule_estimate()
+
+    def _options_changed(self) -> None:
+        self._update_quality_label()
+        self._schedule_estimate()
+
+    def _update_quality_label(self) -> None:
+        self.quality_label.setText(
+            f"JPEG-Qualität: {self.quality_slider.value()} %"
+        )
+
+    def _schedule_estimate(self) -> None:
+        self._estimate_generation += 1
+        self.estimate_label.setText("Dateigröße wird geschätzt …")
+        self.average_label.clear()
+        self.estimate_timer.start()
+
+    def _start_estimate(self) -> None:
+        generation = self._estimate_generation
+        task = ExportEstimateTask(
+            generation, self.paths, self.rotations, self._options()
+        )
+        self.estimate_task = task
+        task.signals.finished.connect(self._estimate_finished)
+        self.worker_pool.start(task)
+
+    def _estimate_finished(
+        self, generation: int, estimated_size: object, error: str
+    ) -> None:
+        if generation != self._estimate_generation:
+            return
+        if estimated_size is None:
+            self.estimate_label.setText("Größe konnte nicht geschätzt werden.")
+            self.estimate_label.setToolTip(error)
+            self.average_label.clear()
+            return
+        size = int(estimated_size)
+        self.estimate_label.setText(
+            f"Geschätzte Gesamtgröße: ca. {format_file_size(size)}"
+        )
+        average = round(size / len(self.paths)) if self.paths else 0
+        self.average_label.setText(
+            f"Durchschnittlich ca. {format_file_size(average)} pro Bild"
+        )
+
+    def _browse_destination(self) -> None:
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Zielordner auswählen",
+            self.destination_edit.text() or str(self.default_directory),
+        )
+        if directory:
+            self.destination_edit.setText(directory)
+
+    def _start_export(self) -> None:
+        destination_text = self.destination_edit.text().strip()
+        suffix = self.suffix_edit.text().strip()
+        if not destination_text:
+            self._show_input_error("Bitte wähle einen Zielordner aus.")
+            return
+        if "/" in suffix or "\0" in suffix:
+            self._show_input_error(
+                "Der Dateinamen-Zusatz darf weder „/“ noch Nullzeichen enthalten."
+            )
+            return
+        destination = Path(destination_text).expanduser()
+        existing_parent = destination
+        while not existing_parent.exists() and existing_parent != existing_parent.parent:
+            existing_parent = existing_parent.parent
+        if not existing_parent.is_dir() or not os.access(
+            existing_parent, os.W_OK | os.X_OK
+        ):
+            self._show_input_error(
+                "Der Zielordner kann nicht angelegt oder beschrieben werden."
+            )
+            return
+
+        self.settings.setValue(EXPORT_WIDTH_KEY, self.width_spin.value())
+        self.settings.setValue(EXPORT_HEIGHT_KEY, self.height_spin.value())
+        self.settings.setValue(EXPORT_QUALITY_KEY, self.quality_slider.value())
+        self.settings.setValue(EXPORT_ENLARGE_KEY, self.enlarge_checkbox.isChecked())
+        self.settings.setValue(EXPORT_SUFFIX_KEY, suffix)
+        self.settings.setValue(EXPORT_DIRECTORY_KEY, str(destination))
+        self.settings.setValue(EXPORT_METADATA_KEY, self.metadata_checkbox.isChecked())
+        self.settings.setValue(EXPORT_REMOVE_GPS_KEY, self.gps_checkbox.isChecked())
+        self.settings.sync()
+
+        self._export_running = True
+        self.export_button.setEnabled(False)
+        self.cancel_button.setText("Abbrechen")
+        self.progress_bar.setValue(0)
+        task = ImageExportTask(
+            self.paths,
+            self.rotations,
+            destination,
+            suffix,
+            self._options(),
+        )
+        self.export_task = task
+        task.signals.progress.connect(self._export_progress)
+        task.signals.finished.connect(self._export_finished)
+        self.worker_pool.start(task)
+
+    def _export_progress(self, current: int, total: int, filename: str) -> None:
+        self.progress_bar.setMaximum(total)
+        self.progress_bar.setValue(current - 1)
+        self.progress_label.setText(f"Bild {current} von {total}: {filename}")
+
+    def _cancel_or_close(self) -> None:
+        if self._export_running and self.export_task is not None:
+            self.export_task.cancel()
+            self.cancel_button.setEnabled(False)
+            self.progress_label.setText("Export wird abgebrochen …")
+            return
+        self.reject()
+
+    def reject(self) -> None:
+        if self._export_running:
+            self._cancel_or_close()
+            return
+        super().reject()
+
+    def _export_finished(self, result: dict[str, object]) -> None:
+        self._export_running = False
+        self.cancel_button.setEnabled(True)
+        self.cancel_button.setText("Schließen")
+        self.export_button.setEnabled(True)
+        successful = list(result["successful"])
+        skipped = list(result["skipped"])
+        failures = list(result["failures"])
+        if result["cancelled"]:
+            self.progress_label.setText("Export abgebrochen")
+        else:
+            self.progress_bar.setValue(self.progress_bar.maximum())
+            self.progress_label.setText("Export abgeschlossen")
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Bilder verkleinert exportieren")
+        dialog.setIcon(QMessageBox.Icon.Information if not failures else QMessageBox.Icon.Warning)
+        dialog.setText(
+            f"{len(successful)} Bilder wurden erfolgreich exportiert."
+        )
+        dialog.setInformativeText(
+            f"Zielordner: {result['destination']}\n"
+            f"Tatsächliche Gesamtgröße: {format_file_size(int(result['total_size']))}\n"
+            f"Übersprungen: {len(skipped)}\n"
+            f"Fehlgeschlagen: {len(failures)}"
+            + ("\nDer Export wurde abgebrochen." if result["cancelled"] else "")
+        )
+        details = skipped + failures
+        if details:
+            dialog.setDetailedText("\n".join(details))
+        open_button = dialog.addButton(
+            "Zielordner öffnen", QMessageBox.ButtonRole.ActionRole
+        )
+        close_button = dialog.addButton(
+            "Schließen", QMessageBox.ButtonRole.RejectRole
+        )
+        dialog.setDefaultButton(close_button)
+        dialog.exec()
+        if dialog.clickedButton() is open_button:
+            self.open_folder_callback(Path(str(result["destination"])))
+
+    def _show_input_error(self, message: str) -> None:
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Bilder verkleinert exportieren")
+        dialog.setIcon(QMessageBox.Icon.Warning)
+        dialog.setText(message)
+        dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+        dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+        dialog.exec()
 
 
 class ComparisonImageView(QWidget):
@@ -929,6 +1975,18 @@ class ImageViewer(QObject):
         self._slideshow_fullscreen = self.settings.value(
             SLIDESHOW_FULLSCREEN_KEY, False, type=bool
         )
+        self._slideshow_selected_only = self.settings.value(
+            SLIDESHOW_SELECTED_ONLY_KEY, False, type=bool
+        )
+        self._slideshow_random = self.settings.value(
+            SLIDESHOW_RANDOM_KEY, False, type=bool
+        )
+        self._slideshow_show_metadata = self.settings.value(
+            SLIDESHOW_METADATA_KEY, False, type=bool
+        )
+        self._slideshow_soft_fade = self.settings.value(
+            SLIDESHOW_FADE_KEY, True, type=bool
+        )
         saved_color_scheme = self.settings.value(
             COLOR_SCHEME_KEY, "System", type=str
         )
@@ -964,8 +2022,22 @@ class ImageViewer(QObject):
         self.status_bar = self.window.statusBar()
         self.status_bar.setSizeGripEnabled(False)
         self.status_bar.setContentsMargins(4, 0, 4, 0)
-        self.status_bar.showMessage("Kein Bild ausgewählt")
+        self.status_info_label = QLabel("Kein Bild ausgewählt", self.status_bar)
+        self.status_info_label.setObjectName("statusInfoLabel")
+        self.status_info_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        self.status_info_label.installEventFilter(self)
+        self.status_zoom_label = QLabel("", self.status_bar)
+        self.status_zoom_label.setObjectName("statusZoomLabel")
+        self.status_zoom_label.setSizePolicy(
+            QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Preferred
+        )
+        self.status_bar.addWidget(self.status_info_label, 1)
+        self.status_bar.addPermanentWidget(self.status_zoom_label)
+        self._status_full_text = "Kein Bild ausgewählt"
         self.directory_tree = self._widget(QTreeView, "directoryTreeView")
+        self.directory_heading_label = self._widget(QLabel, "computerLabel")
         self.thumbnail_list = self._widget(QListWidget, "thumbnailList")
         self.image_scroll_area = self._widget(QScrollArea, "imageScrollArea")
         self.image_label = self._widget(QLabel, "imageLabel")
@@ -986,6 +2058,7 @@ class ImageViewer(QObject):
         self.previous_button.setFixedWidth(navigation_button_width)
         self.next_button.setFixedWidth(navigation_button_width)
         self._file_name_text = ""
+        self._directory_path_text = ""
         self.splitter = self._widget(QSplitter, "mainSplitter")
         self.right_splitter = self._widget(QSplitter, "rightSplitter")
         self.directory_panel = self.directory_tree.parentWidget()
@@ -1006,13 +2079,20 @@ class ImageViewer(QObject):
         self._display_rotation_by_path: dict[str, int] = {}
         self._rotation_context_path: Path | None = None
         self._file_manager_context_path: Path | None = None
+        self._rename_context_path: Path | None = None
+        self._export_context_path: Path | None = None
         self._zoom_mode = "fit"
         self._zoom_factor = 1.0
         self._mouse_press_position = None
         self._pan_last_position = None
         self._dragging_image = False
         self._slideshow_running = False
+        self._slideshow_paused = False
         self._slideshow_entered_fullscreen = False
+        self._slideshow_paths: list[Path] = []
+        self._slideshow_index = -1
+        self._slideshow_fade_animation: QPropertyAnimation | None = None
+        self._slideshow_opacity_effect: QGraphicsOpacityEffect | None = None
         self._image_render_pending = False
         self._fullscreen_mode = False
         self._normal_geometry = None
@@ -1030,6 +2110,10 @@ class ImageViewer(QObject):
         self._active_jobs = 0
         self._directory_iterator = None
         self._metadata_cache: dict[tuple[str, int, int, int], str] = {}
+        self._image_metadata_cache: dict[
+            tuple[str, int, int, int], dict[str, str]
+        ] = {}
+        self._image_metadata_by_path: dict[str, dict[str, str]] = {}
         self._file_sort_metadata: dict[str, tuple[int, int]] = {}
         self._recording_date_cache: dict[str, datetime | None] = {}
         self._resolved_sort_path_cache: dict[str, str] = {}
@@ -1037,7 +2121,19 @@ class ImageViewer(QObject):
         self.thread_pool = QThreadPool(self)
         self.thread_pool.setMaxThreadCount(3)
         self.slideshow_timer = QTimer(self)
+        self.slideshow_timer.setSingleShot(True)
         self.slideshow_timer.timeout.connect(self._advance_slideshow)
+        self.slideshow_message_timer = QTimer(self)
+        self.slideshow_message_timer.setSingleShot(True)
+        self.slideshow_message_timer.timeout.connect(
+            lambda: self.slideshow_message_label.hide()
+        )
+        self.slideshow_cursor_timer = QTimer(self)
+        self.slideshow_cursor_timer.setSingleShot(True)
+        self.slideshow_cursor_timer.setInterval(2000)
+        self.slideshow_cursor_timer.timeout.connect(
+            self._hide_slideshow_cursor
+        )
         self.fullscreen_tooltip_timer = QTimer(self)
         self.fullscreen_tooltip_timer.setSingleShot(True)
         self.fullscreen_tooltip_timer.timeout.connect(
@@ -1090,6 +2186,27 @@ class ImageViewer(QObject):
         )
         self.zoom_indicator.setStyleSheet(ZOOM_INDICATOR_STYLESHEET)
         self.zoom_indicator.hide()
+
+        self.slideshow_message_label = QLabel(
+            self.image_scroll_area.viewport()
+        )
+        self.slideshow_message_label.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+        self.slideshow_message_label.setStyleSheet(ZOOM_INDICATOR_STYLESHEET)
+        self.slideshow_message_label.hide()
+        self.slideshow_metadata_label = QLabel(
+            self.image_scroll_area.viewport()
+        )
+        self.slideshow_metadata_label.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+        self.slideshow_metadata_label.setStyleSheet(
+            "QLabel { background-color: rgba(20, 20, 20, 205); color: #F7F7F7;"
+            " border: 1px solid rgba(255, 255, 255, 40); border-radius: 6px;"
+            " padding: 8px 11px; font-size: 13px; }"
+        )
+        self.slideshow_metadata_label.hide()
 
         self.directory_model = QFileSystemModel(self.window)
         self.directory_model.setFilter(
@@ -1161,6 +2278,25 @@ class ImageViewer(QObject):
 
     def _create_application_menus(self) -> None:
         self.file_menu = self.window.menuBar().addMenu("Datei")
+        self.rename_image_action = QAction("Umbenennen …", self.window)
+        self.rename_image_action.setShortcut(QKeySequence("F2"))
+        self.rename_image_action.setShortcutContext(
+            Qt.ShortcutContext.WindowShortcut
+        )
+        self.rename_image_action.triggered.connect(
+            lambda: self._rename_image(self._rename_context_path)
+        )
+        self.file_menu.addAction(self.rename_image_action)
+        self.export_resized_action = QAction(
+            "Ausgewählte Bilder verkleinert exportieren …", self.window
+        )
+        self.export_resized_action.triggered.connect(
+            lambda: self._show_resized_export_dialog(self._export_context_path)
+        )
+        self.file_menu.addAction(self.export_resized_action)
+        self.file_menu.addSeparator()
+        self.window.addAction(self.rename_image_action)
+
         self.quit_action = QAction("Beenden", self.window)
         self.quit_action.setShortcut(QKeySequence("Alt+F4"))
         self.quit_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
@@ -1451,7 +2587,11 @@ class ImageViewer(QObject):
         self.first_image_action = QAction("Erstes Bild", self.window)
         self.first_image_action.setShortcut(QKeySequence("Home"))
         self.first_image_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
-        self.first_image_action.triggered.connect(lambda: self._select_image(0))
+        self.first_image_action.triggered.connect(
+            lambda: self._select_slideshow_endpoint(False)
+            if self._slideshow_running
+            else self._select_image(0)
+        )
         self.navigation_menu.addAction(self.first_image_action)
 
         self.previous_image_action = QAction("Vorheriges Bild", self.window)
@@ -1472,7 +2612,9 @@ class ImageViewer(QObject):
         self.last_image_action.setShortcut(QKeySequence("End"))
         self.last_image_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.last_image_action.triggered.connect(
-            lambda: self._select_image(self.thumbnail_list.count() - 1)
+            lambda: self._select_slideshow_endpoint(True)
+            if self._slideshow_running
+            else self._select_image(self.thumbnail_list.count() - 1)
         )
         self.navigation_menu.addAction(self.last_image_action)
         for action in (
@@ -1521,6 +2663,9 @@ class ImageViewer(QObject):
         self._set_file_manager_action_state(
             self.current_image if image_loaded else None
         )
+        self._set_rename_action_state(
+            self.current_image if image_loaded else None
+        )
         self._set_rotation_action_states(
             self.current_image if image_loaded else None
         )
@@ -1528,12 +2673,22 @@ class ImageViewer(QObject):
         self.trash_image_action.setEnabled(has_selection)
         self.copy_image_action.setEnabled(has_selection)
         self.cut_image_action.setEnabled(has_selection)
+        self.export_resized_action.setEnabled(has_selection or image_loaded)
         self.compare_images_action.setEnabled(True)
         self.select_all_action.setEnabled(self.thumbnail_list.count() > 0)
 
     def _set_file_manager_action_state(self, image_path: Path | None) -> None:
         self.show_in_file_manager_action.setEnabled(
             image_path is not None and image_path.is_file()
+        )
+
+    def _set_rename_action_state(self, image_path: Path | None) -> None:
+        self.rename_image_action.setEnabled(
+            image_path is not None
+            and image_path.is_file()
+            and image_path.suffix.lower() in IMAGE_EXTENSIONS
+            and image_path.parent.is_dir()
+            and os.access(image_path.parent, os.W_OK | os.X_OK)
         )
 
     def _set_rotation_action_states(self, image_path: Path | None) -> None:
@@ -1740,8 +2895,14 @@ class ImageViewer(QObject):
             )
 
     def _style_message_box(self, dialog: QMessageBox) -> None:
+        self._restore_slideshow_cursor()
         dialog.setStyleSheet(
             message_box_stylesheet(COLOR_SCHEMES[self._color_scheme])
+        )
+        dialog.finished.connect(
+            lambda _result: QTimer.singleShot(
+                0, self._restart_slideshow_cursor_timer
+            )
         )
 
     def _show_thumbnail_size_dialog(self) -> None:
@@ -1957,6 +3118,355 @@ class ImageViewer(QObject):
             Path(item.data(Qt.ItemDataRole.UserRole))
             for item in self.thumbnail_list.selectedItems()
         ]
+
+    def _show_resized_export_dialog(
+        self, context_image_path: Path | None = None
+    ) -> None:
+        paths = [path for path in self._selected_image_paths() if path.is_file()]
+        if context_image_path is not None and context_image_path.is_file():
+            context_key = self._resolved_sort_path(context_image_path)
+            if all(self._resolved_sort_path(path) != context_key for path in paths):
+                paths.append(context_image_path)
+        if not paths and self.current_image is not None and self.current_image.is_file():
+            paths = [self.current_image]
+        if not paths:
+            return
+        unique_paths = []
+        seen_paths = set()
+        for path in paths:
+            key = self._resolved_sort_path(path)
+            if key not in seen_paths:
+                seen_paths.add(key)
+                unique_paths.append(path)
+        rotations = {
+            key: self._display_rotation_by_path.get(key, 0)
+            for key in seen_paths
+        }
+        default_directory = self.current_directory or unique_paths[0].parent
+        dialog = ImageExportDialog(
+            unique_paths,
+            rotations,
+            self.settings,
+            default_directory,
+            COLOR_SCHEMES[self._color_scheme],
+            self._open_export_folder,
+            self.window,
+        )
+        self._restore_slideshow_cursor()
+        dialog.exec()
+        self._restart_slideshow_cursor_timer()
+
+    def _open_export_folder(self, directory: Path) -> None:
+        if not directory.is_dir():
+            return
+        errors: list[str] = []
+        if not self._start_file_manager_fallback(directory, errors):
+            self._show_file_manager_error(
+                directory,
+                "Der Zielordner konnte nicht im Dateimanager geöffnet werden."
+                + (f"\n\n{'\n'.join(errors)}" if errors else ""),
+            )
+
+    def _rename_image(self, image_path: Path | None = None) -> None:
+        source_path = image_path or self.current_image
+        if source_path is None:
+            return
+        source_path = Path(source_path)
+        if not source_path.is_file():
+            self._show_rename_error(
+                "Die Bilddatei wurde nicht gefunden.", str(source_path)
+            )
+            return
+        if source_path.suffix.lower() not in IMAGE_EXTENSIONS:
+            self._show_rename_error(
+                "Dieses Bildformat wird nicht unterstützt.", str(source_path)
+            )
+            return
+        if not (
+            source_path.parent.is_dir()
+            and os.access(source_path.parent, os.W_OK | os.X_OK)
+        ):
+            self._show_rename_error(
+                "Der Ordner ist schreibgeschützt oder nicht beschreibbar.",
+                str(source_path.parent),
+            )
+            return
+
+        extension = source_path.suffix
+        base_name = source_path.name[: -len(extension)] if extension else source_path.name
+        dialog = QDialog(self.window)
+        dialog.setWindowTitle("Bild umbenennen")
+        dialog.setModal(True)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(8)
+        layout.addWidget(QLabel(f"Bisher:\n{source_path.name}", dialog))
+        layout.addWidget(QLabel("Neuer Name:", dialog))
+        name_edit = QLineEdit(base_name, dialog)
+        name_edit.selectAll()
+        layout.addWidget(name_edit)
+        extension_label = QLabel(
+            f"Dateiendung: {extension or '(keine)'}", dialog
+        )
+        layout.addWidget(extension_label)
+        buttons = QDialogButtonBox(dialog)
+        rename_button = buttons.addButton(
+            "Umbenennen", QDialogButtonBox.ButtonRole.AcceptRole
+        )
+        cancel_button = buttons.addButton(
+            "Abbrechen", QDialogButtonBox.ButtonRole.RejectRole
+        )
+        rename_button.setAutoDefault(False)
+        rename_button.setDefault(False)
+        cancel_button.setDefault(True)
+        cancel_button.setFocus()
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.setStyleSheet(
+            message_box_stylesheet(COLOR_SCHEMES[self._color_scheme])
+        )
+        self._restore_slideshow_cursor()
+
+        def attempt_rename() -> None:
+            new_base_name = name_edit.text().strip()
+            validation_error = self._validate_rename_base_name(
+                source_path, new_base_name
+            )
+            if validation_error is not None:
+                self._show_rename_error(validation_error, parent=dialog)
+                name_edit.setFocus()
+                name_edit.selectAll()
+                return
+            target_path = source_path.with_name(new_base_name + extension)
+            if target_path.name == source_path.name:
+                self._show_rename_error(
+                    "Der neue Dateiname ist mit dem bisherigen Namen identisch.",
+                    parent=dialog,
+                )
+                name_edit.setFocus()
+                name_edit.selectAll()
+                return
+            try:
+                target_exists = target_path.exists()
+                same_file = (
+                    target_exists
+                    and os.path.samefile(source_path, target_path)
+                )
+            except OSError:
+                target_exists = target_path.exists()
+                same_file = False
+            case_only_target = (
+                source_path.name != target_path.name
+                and source_path.name.casefold() == target_path.name.casefold()
+            )
+            if target_exists and not (same_file and case_only_target):
+                self._show_rename_error(
+                    "Eine Datei mit diesem Namen existiert bereits.",
+                    str(target_path),
+                    dialog,
+                )
+                name_edit.setFocus()
+                name_edit.selectAll()
+                return
+
+            selected_paths = self._selected_image_paths()
+            if source_path not in selected_paths:
+                selected_paths.append(source_path)
+            try:
+                rename_state = self._prepare_rename_state(source_path)
+                self._perform_filesystem_rename(source_path, target_path)
+                self._complete_image_rename(
+                    source_path,
+                    target_path,
+                    selected_paths,
+                    rename_state,
+                )
+            except OSError as error:
+                self._show_rename_error(
+                    "Die Bilddatei konnte nicht umbenannt werden.",
+                    str(error),
+                    dialog,
+                )
+                return
+            dialog.accept()
+
+        rename_button.clicked.connect(attempt_rename)
+        dialog.exec()
+        self._restart_slideshow_cursor_timer()
+
+    @staticmethod
+    def _validate_rename_base_name(
+        source_path: Path, base_name: str
+    ) -> str | None:
+        if not base_name:
+            return "Bitte gib einen Dateinamen ein."
+        if base_name in (".", ".."):
+            return "Dieser Dateiname ist nicht zulässig."
+        if "/" in base_name or "\0" in base_name:
+            return "Der Dateiname darf weder „/“ noch Nullzeichen enthalten."
+        extension = source_path.suffix
+        old_base_name = (
+            source_path.name[: -len(extension)] if extension else source_path.name
+        )
+        if base_name == old_base_name:
+            return "Der neue Dateiname ist mit dem bisherigen Namen identisch."
+        return None
+
+    @staticmethod
+    def _perform_filesystem_rename(source_path: Path, target_path: Path) -> None:
+        case_only_change = (
+            source_path.name != target_path.name
+            and source_path.name.casefold() == target_path.name.casefold()
+        )
+        if not case_only_change:
+            source_path.rename(target_path)
+            return
+
+        temporary_path = None
+        for counter in range(1000):
+            candidate = source_path.with_name(
+                f".bildblick-umbenennen-{os.getpid()}-{counter}{source_path.suffix}"
+            )
+            if not candidate.exists():
+                temporary_path = candidate
+                break
+        if temporary_path is None:
+            raise OSError("Es konnte kein sicherer Zwischenname erzeugt werden.")
+        source_path.rename(temporary_path)
+        try:
+            temporary_path.rename(target_path)
+        except OSError:
+            try:
+                temporary_path.rename(source_path)
+            except OSError:
+                pass
+            raise
+
+    def _prepare_rename_state(self, source_path: Path) -> dict[str, object]:
+        cache_files: list[tuple[Path, int]] = []
+        for pixels in range(
+            THUMBNAIL_MINIMUM, THUMBNAIL_MAXIMUM + 1, THUMBNAIL_STEP
+        ):
+            thumbnail_size = thumbnail_size_for_pixels(pixels)
+            try:
+                old_cache_name = thumbnail_cache_name(source_path, thumbnail_size)
+            except OSError:
+                continue
+            for cache_directory in (CACHE_DIRECTORY, LEGACY_CACHE_DIRECTORY):
+                cache_path = cache_directory / old_cache_name
+                if cache_path.is_file():
+                    cache_files.append((cache_path, pixels))
+        return {
+            "cache_files": cache_files,
+            "old_resolved": self._resolved_sort_path(source_path),
+        }
+
+    def _complete_image_rename(
+        self,
+        source_path: Path,
+        target_path: Path,
+        selected_paths: list[Path],
+        rename_state: dict[str, object],
+    ) -> None:
+        old_resolved = str(rename_state["old_resolved"])
+        self._resolved_sort_path_cache.clear()
+        new_resolved = self._resolved_sort_path(target_path)
+
+        for old_cache_path, pixels in rename_state["cache_files"]:
+            try:
+                new_cache_name = thumbnail_cache_name(
+                    target_path, thumbnail_size_for_pixels(int(pixels))
+                )
+                new_cache_path = old_cache_path.parent / new_cache_name
+                if not new_cache_path.exists():
+                    old_cache_path.rename(new_cache_path)
+            except (OSError, TypeError, ValueError):
+                pass
+
+        transferred_tooltips = {}
+        for key, tooltip in self._metadata_cache.items():
+            if key[0] != old_resolved:
+                transferred_tooltips[key] = tooltip
+                continue
+            lines = tooltip.splitlines() or [source_path.name]
+            lines[0] = target_path.name
+            transferred_tooltips[(new_resolved, *key[1:])] = "\n".join(lines)
+        self._metadata_cache = transferred_tooltips
+        self._image_metadata_cache = {
+            ((new_resolved, *key[1:]) if key[0] == old_resolved else key): value
+            for key, value in self._image_metadata_cache.items()
+        }
+        if old_resolved in self._image_metadata_by_path:
+            self._image_metadata_by_path[new_resolved] = (
+                self._image_metadata_by_path.pop(old_resolved)
+            )
+        if old_resolved in self._recording_date_cache:
+            self._recording_date_cache[new_resolved] = (
+                self._recording_date_cache.pop(old_resolved)
+            )
+        if old_resolved in self._file_sort_metadata:
+            self._file_sort_metadata[new_resolved] = (
+                self._file_sort_metadata.pop(old_resolved)
+            )
+        if old_resolved in self._display_rotation_by_path:
+            self._display_rotation_by_path[new_resolved] = (
+                self._display_rotation_by_path.pop(old_resolved)
+            )
+
+        if self.startup_image is not None and self._resolved_path_equals(
+            self.startup_image, source_path
+        ):
+            self.startup_image = target_path
+        self._pending_images = [
+            target_path if self._resolved_path_equals(path, source_path) else path
+            for path in self._pending_images
+        ]
+
+        clipboard_changed = False
+        updated_clipboard_paths = []
+        for path in self._clipboard_source_paths:
+            if self._resolved_path_equals(path, source_path):
+                updated_clipboard_paths.append(target_path)
+                clipboard_changed = True
+            else:
+                updated_clipboard_paths.append(path)
+        if clipboard_changed and self._clipboard_operation is not None:
+            self._set_image_clipboard(
+                updated_clipboard_paths, self._clipboard_operation
+            )
+
+        restored_selection = [target_path]
+        restored_selection.extend(
+            path
+            for path in selected_paths
+            if not self._resolved_path_equals(path, source_path)
+        )
+        self.current_image = target_path
+        self._show_directory(source_path.parent, restored_selection)
+
+    @staticmethod
+    def _resolved_path_equals(first: Path, second: Path) -> bool:
+        try:
+            return first.resolve(strict=False) == second.resolve(strict=False)
+        except (OSError, RuntimeError):
+            return first.absolute() == second.absolute()
+
+    def _show_rename_error(
+        self,
+        message: str,
+        detail: str | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        error_dialog = QMessageBox(parent or self.window)
+        error_dialog.setWindowTitle("Bild umbenennen")
+        error_dialog.setIcon(QMessageBox.Icon.Warning)
+        error_dialog.setText(message)
+        if detail:
+            error_dialog.setInformativeText(detail)
+        error_dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+        error_dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+        self._style_message_box(error_dialog)
+        error_dialog.exec()
 
     def show_in_file_manager(self, image_path: Path | None = None) -> None:
         target_path = image_path or self.current_image
@@ -2355,7 +3865,7 @@ class ImageViewer(QObject):
 
         if confirmation.clickedButton() is not trash_button:
             if slideshow_was_running:
-                self.slideshow_timer.start(self._slideshow_interval * 1000)
+                self._restart_slideshow_timer()
             return
 
         successful = []
@@ -2383,6 +3893,12 @@ class ImageViewer(QObject):
                 for key, value in self._metadata_cache.items()
                 if key[0] != resolved_path
             }
+            self._image_metadata_cache = {
+                key: value
+                for key, value in self._image_metadata_cache.items()
+                if key[0] != resolved_path
+            }
+            self._image_metadata_by_path.pop(resolved_path, None)
 
         successful_paths = {
             path.resolve(strict=False) for _row, path in successful
@@ -2424,7 +3940,7 @@ class ImageViewer(QObject):
             self._update_view_actions()
             self._update_navigation_buttons()
         elif slideshow_was_running:
-            self.slideshow_timer.start(self._slideshow_interval * 1000)
+            self._restart_slideshow_timer()
 
         if failures:
             self._show_file_operation_error(
@@ -2449,6 +3965,12 @@ class ImageViewer(QObject):
             "• Alt+Oben: Übergeordneter Ordner<br>"
             "• Strg+Links: Aktuelles Bild nach links drehen<br>"
             "• Strg+Rechts: Aktuelles Bild nach rechts drehen<br>"
+            "• F2: Aktuelles Bild umbenennen<br>"
+            "• Beim Umbenennen bleibt die Dateiendung erhalten. Die "
+            "Bilddatei wird nicht neu gespeichert.<br>"
+            "• Ausgewählte Bilder verkleinert exportieren erstellt neue "
+            "JPEG-Kopien mit frei wählbarer Auflösung und Qualität. Die "
+            "Originalbilder bleiben unverändert.<br>"
             "• Die Drehung verändert die Originaldatei nicht<br>"
             "• „Gedrehte Kopie speichern …“ speichert ein neues Bild.<br>"
             "• „Drehung im Original speichern …“ überschreibt die Originaldatei "
@@ -2462,6 +3984,11 @@ class ImageViewer(QObject):
             "• 0: Bild einpassen<br>"
             "• 1: Originalgröße<br>"
             "• F5: Diashow starten oder stoppen<br>"
+            "• Leertaste: Diashow pausieren oder fortsetzen<br>"
+            "• Pfeiltasten: Während der Diashow vor und zurück<br>"
+            "• Nur markierte Bilder: Diashow auf die aktuelle Auswahl begrenzen<br>"
+            "• Zufällige Reihenfolge: Alle Diashow-Bilder einmal zufällig anzeigen<br>"
+            "• Im Vollbild wird der Mauszeiger nach kurzer Inaktivität ausgeblendet<br>"
             "• F11: Vollbild<br>"
             "• Escape: Diashow beziehungsweise Vollbild beenden<br>"
             "• Strg + Klick: Mehrere einzelne Bilder auswählen<br>"
@@ -2557,12 +4084,63 @@ class ImageViewer(QObject):
     def _create_slideshow_menu(self) -> None:
         self.slideshow_menu = self.window.menuBar().addMenu("Diashow")
 
-        self.slideshow_action = QAction("Diashow starten", self.window)
+        self.slideshow_action = QAction("Diashow starten / beenden", self.window)
         self.slideshow_action.setShortcut(QKeySequence("F5"))
         self.slideshow_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.slideshow_action.triggered.connect(self._toggle_slideshow)
         self.slideshow_menu.addAction(self.slideshow_action)
 
+        self.slideshow_pause_action = QAction("Pause / fortsetzen", self.window)
+        self.slideshow_pause_action.setShortcut(QKeySequence("Space"))
+        self.slideshow_pause_action.setShortcutContext(
+            Qt.ShortcutContext.WindowShortcut
+        )
+        self.slideshow_pause_action.triggered.connect(
+            self._toggle_slideshow_pause
+        )
+        self.slideshow_menu.addAction(self.slideshow_pause_action)
+        self.window.addAction(self.slideshow_pause_action)
+
+        self.slideshow_menu.addSeparator()
+        option_specs = (
+            (
+                "slideshow_selected_only_action",
+                "Nur markierte Bilder",
+                self._slideshow_selected_only,
+                SLIDESHOW_SELECTED_ONLY_KEY,
+            ),
+            (
+                "slideshow_random_action",
+                "Zufällige Reihenfolge",
+                self._slideshow_random,
+                SLIDESHOW_RANDOM_KEY,
+            ),
+            (
+                "slideshow_metadata_action",
+                "Aufnahmeinformationen anzeigen",
+                self._slideshow_show_metadata,
+                SLIDESHOW_METADATA_KEY,
+            ),
+            (
+                "slideshow_fade_action",
+                "Sanfte Überblendung",
+                self._slideshow_soft_fade,
+                SLIDESHOW_FADE_KEY,
+            ),
+        )
+        for attribute, text, checked, settings_key in option_specs:
+            action = QAction(text, self.window)
+            action.setCheckable(True)
+            action.setChecked(checked)
+            action.toggled.connect(
+                lambda enabled, key=settings_key: self._set_slideshow_option(
+                    key, enabled
+                )
+            )
+            self.slideshow_menu.addAction(action)
+            setattr(self, attribute, action)
+
+        self.slideshow_menu.addSeparator()
         self.interval_menu = self.slideshow_menu.addMenu("Intervall")
         self.interval_action_group = QActionGroup(self.window)
         self.interval_action_group.setExclusive(True)
@@ -2577,7 +4155,7 @@ class ImageViewer(QObject):
 
         self.slideshow_menu.addSeparator()
         self.slideshow_fullscreen_action = QAction(
-            "Vollbild bei Diashow", self.window
+            "Im Vollbild starten", self.window
         )
         self.slideshow_fullscreen_action.setCheckable(True)
         self.slideshow_fullscreen_action.setChecked(self._slideshow_fullscreen)
@@ -2593,17 +4171,31 @@ class ImageViewer(QObject):
         self.slideshow_menu.addAction(self.slideshow_repeat_action)
         self._update_slideshow_actions()
 
+    def _set_slideshow_option(self, key: str, enabled: bool) -> None:
+        if key == SLIDESHOW_SELECTED_ONLY_KEY:
+            self._slideshow_selected_only = enabled
+        elif key == SLIDESHOW_RANDOM_KEY:
+            self._slideshow_random = enabled
+        elif key == SLIDESHOW_METADATA_KEY:
+            self._slideshow_show_metadata = enabled
+            self._update_slideshow_metadata_overlay()
+        elif key == SLIDESHOW_FADE_KEY:
+            self._slideshow_soft_fade = enabled
+        self.settings.setValue(key, enabled)
+        self.settings.sync()
+
     def _set_slideshow_interval(self, action: QAction) -> None:
         self._slideshow_interval = int(action.data())
         self.settings.setValue(SLIDESHOW_INTERVAL_KEY, self._slideshow_interval)
         self.settings.sync()
         if self._slideshow_running:
-            self.slideshow_timer.start(self._slideshow_interval * 1000)
+            self._restart_slideshow_timer()
 
     def _set_slideshow_repeat(self, enabled: bool) -> None:
         self._slideshow_repeat = enabled
         self.settings.setValue(SLIDESHOW_REPEAT_KEY, enabled)
         self.settings.sync()
+        self._update_navigation_buttons()
 
     def _set_slideshow_fullscreen(self, enabled: bool) -> None:
         self._slideshow_fullscreen = enabled
@@ -2619,45 +4211,307 @@ class ImageViewer(QObject):
     def _start_slideshow(self) -> None:
         if self._slideshow_running or self.thumbnail_list.count() == 0:
             return
-        if self.thumbnail_list.currentRow() < 0:
-            self._select_relative_image(1)
+        slideshow_paths = [
+            Path(self.thumbnail_list.item(row).data(Qt.ItemDataRole.UserRole))
+            for row in range(self.thumbnail_list.count())
+            if (
+                not self._slideshow_selected_only
+                or self.thumbnail_list.item(row).isSelected()
+            )
+        ]
+        if self._slideshow_selected_only and not slideshow_paths:
+            dialog = QMessageBox(self.window)
+            dialog.setWindowTitle("Diashow")
+            dialog.setIcon(QMessageBox.Icon.Information)
+            dialog.setText("Bitte markieren Sie zuerst mindestens ein Bild.")
+            dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+            dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+            self._style_message_box(dialog)
+            dialog.exec()
+            return
+        if not slideshow_paths:
+            return
+        if self._slideshow_random:
+            random.shuffle(slideshow_paths)
+        self._slideshow_paths = slideshow_paths
+        self._slideshow_index = 0
+        self._slideshow_paused = False
         self._slideshow_running = True
         self._slideshow_entered_fullscreen = False
         if self._slideshow_fullscreen and not self._fullscreen_mode:
             self._enter_fullscreen()
             self._slideshow_entered_fullscreen = self._fullscreen_mode
-        self.slideshow_timer.start(self._slideshow_interval * 1000)
+        self._show_slideshow_path(self._slideshow_paths[0], animated=False)
+        self._restart_slideshow_timer()
+        self._update_slideshow_metadata_overlay()
+        self._restart_slideshow_cursor_timer()
         self._update_slideshow_actions()
 
     def _stop_slideshow(self) -> None:
         if not self._slideshow_running:
             return
         self._slideshow_running = False
+        self._slideshow_paused = False
         self.slideshow_timer.stop()
+        self.slideshow_message_timer.stop()
+        self.slideshow_message_label.hide()
+        self.slideshow_metadata_label.hide()
+        self._stop_slideshow_fade()
+        self._restore_slideshow_cursor()
         if self._slideshow_entered_fullscreen:
             self._leave_fullscreen()
         self._slideshow_entered_fullscreen = False
+        self._slideshow_paths = []
+        self._slideshow_index = -1
         self._update_slideshow_actions()
+        self._update_navigation_buttons()
 
     def _advance_slideshow(self) -> None:
-        last_row = self.thumbnail_list.count() - 1
-        current_row = self.thumbnail_list.currentRow()
-        if last_row < 0:
+        if not self._slideshow_running or self._slideshow_paused:
+            return
+        if not self._slideshow_paths:
             self._stop_slideshow()
-        elif current_row < last_row:
-            self._select_relative_image(1)
-        elif self._slideshow_repeat:
-            first_item = self.thumbnail_list.item(0)
-            self.thumbnail_list.setCurrentItem(first_item)
-            self.thumbnail_list.scrollToItem(first_item)
+            return
+        next_index = self._slideshow_index + 1
+        if next_index >= len(self._slideshow_paths):
+            if not self._slideshow_repeat:
+                self._stop_slideshow()
+                return
+            if self._slideshow_random and len(self._slideshow_paths) > 1:
+                previous_last = self._slideshow_paths[-1]
+                random.shuffle(self._slideshow_paths)
+                if self._slideshow_paths[0] == previous_last:
+                    swap_index = next(
+                        (
+                            index
+                            for index, path in enumerate(self._slideshow_paths[1:], 1)
+                            if path != previous_last
+                        ),
+                        None,
+                    )
+                    if swap_index is not None:
+                        self._slideshow_paths[0], self._slideshow_paths[swap_index] = (
+                            self._slideshow_paths[swap_index],
+                            self._slideshow_paths[0],
+                        )
+            next_index = 0
+        if len(self._slideshow_paths) == 1:
+            self._restart_slideshow_timer()
+            return
+        self._slideshow_index = next_index
+        self._show_slideshow_path(
+            self._slideshow_paths[next_index],
+            animated=self._slideshow_soft_fade,
+        )
+
+    def _toggle_slideshow_pause(self) -> None:
+        if not self._slideshow_running:
+            return
+        self._slideshow_paused = not self._slideshow_paused
+        if self._slideshow_paused:
+            self.slideshow_timer.stop()
+            self._show_slideshow_message("Diashow pausiert")
         else:
-            self._stop_slideshow()
+            self._restart_slideshow_timer()
+            self._show_slideshow_message("Diashow fortgesetzt")
+        self._update_slideshow_actions()
+
+    def _restart_slideshow_timer(self) -> None:
+        self.slideshow_timer.stop()
+        if self._slideshow_running and not self._slideshow_paused:
+            self.slideshow_timer.start(self._slideshow_interval * 1000)
+
+    def _show_slideshow_path(self, path: Path, animated: bool) -> None:
+        if animated and self._slideshow_running:
+            self._start_slideshow_fade(path)
+            return
+        self._stop_slideshow_fade()
+        self._select_slideshow_path(path)
+        self._restart_slideshow_timer()
+
+    def _select_slideshow_path(self, path: Path) -> None:
+        item = self._thumbnail_item_for_path(path)
+        if item is None:
+            return
+        self.thumbnail_list.setCurrentItem(
+            item, QItemSelectionModel.SelectionFlag.NoUpdate
+        )
+        self.thumbnail_list.scrollToItem(item)
+        self._update_slideshow_metadata_overlay()
+
+    def _start_slideshow_fade(self, path: Path) -> None:
+        self._stop_slideshow_fade(restore_opacity=False)
+        effect = QGraphicsOpacityEffect(self.image_label)
+        effect.setOpacity(1.0)
+        self.image_label.setGraphicsEffect(effect)
+        self._slideshow_opacity_effect = effect
+        fade_out = QPropertyAnimation(effect, b"opacity", self)
+        fade_out.setDuration(200)
+        fade_out.setStartValue(1.0)
+        fade_out.setEndValue(0.0)
+        fade_out.setEasingCurve(QEasingCurve.Type.InOutQuad)
+
+        def show_next_image() -> None:
+            if not self._slideshow_running:
+                self._stop_slideshow_fade()
+                return
+            self._select_slideshow_path(path)
+            fade_in = QPropertyAnimation(effect, b"opacity", self)
+            fade_in.setDuration(250)
+            fade_in.setStartValue(0.0)
+            fade_in.setEndValue(1.0)
+            fade_in.setEasingCurve(QEasingCurve.Type.InOutQuad)
+            fade_in.finished.connect(self._finish_slideshow_fade)
+            self._slideshow_fade_animation = fade_in
+            fade_in.start()
+
+        fade_out.finished.connect(show_next_image)
+        self._slideshow_fade_animation = fade_out
+        fade_out.start()
+
+    def _finish_slideshow_fade(self) -> None:
+        self._stop_slideshow_fade()
+        self._restart_slideshow_timer()
+
+    def _stop_slideshow_fade(self, restore_opacity: bool = True) -> None:
+        if self._slideshow_fade_animation is not None:
+            self._slideshow_fade_animation.stop()
+            self._slideshow_fade_animation = None
+        if self._slideshow_opacity_effect is not None:
+            if restore_opacity:
+                self._slideshow_opacity_effect.setOpacity(1.0)
+                self.image_label.setGraphicsEffect(None)
+                self._slideshow_opacity_effect = None
+
+    def _navigate_slideshow(self, offset: int) -> None:
+        if not self._slideshow_running or not self._slideshow_paths:
+            return
+        self._stop_slideshow_fade()
+        target_index = self._slideshow_index + offset
+        if self._slideshow_repeat:
+            target_index %= len(self._slideshow_paths)
+        else:
+            target_index = max(0, min(len(self._slideshow_paths) - 1, target_index))
+        self._slideshow_index = target_index
+        self._select_slideshow_path(self._slideshow_paths[target_index])
+        self._restart_slideshow_timer()
+
+    def _select_slideshow_endpoint(self, last: bool) -> None:
+        if not self._slideshow_running or not self._slideshow_paths:
+            return
+        self._stop_slideshow_fade()
+        self._slideshow_index = len(self._slideshow_paths) - 1 if last else 0
+        self._select_slideshow_path(self._slideshow_paths[self._slideshow_index])
+        self._restart_slideshow_timer()
+
+    def _show_slideshow_message(self, text: str) -> None:
+        self.slideshow_message_label.setText(text)
+        self.slideshow_message_label.adjustSize()
+        self.slideshow_message_label.show()
+        self.slideshow_message_label.raise_()
+        self._position_slideshow_overlays()
+        self.slideshow_message_timer.start(1500)
+
+    def _update_slideshow_metadata_overlay(self) -> None:
+        if (
+            not self._slideshow_running
+            or not self._slideshow_show_metadata
+            or self.current_image is None
+        ):
+            self.slideshow_metadata_label.hide()
+            return
+        metadata = self._image_metadata_by_path.get(
+            self._resolved_sort_path(self.current_image), {}
+        )
+        lines = []
+        if metadata.get("recording_time"):
+            lines.append(metadata["recording_time"])
+        camera_line = " · ".join(
+            value
+            for value in (metadata.get("camera"), metadata.get("lens"))
+            if value
+        )
+        if camera_line:
+            lines.append(camera_line)
+        exposure_line = " · ".join(
+            value
+            for value in (
+                metadata.get("exposure"),
+                metadata.get("aperture"),
+                metadata.get("focal_length"),
+                f"ISO {metadata['iso']}" if metadata.get("iso") else None,
+            )
+            if value
+        )
+        if exposure_line:
+            lines.append(exposure_line)
+        if not lines:
+            self.slideshow_metadata_label.hide()
+            return
+        viewport_width = self.image_scroll_area.viewport().width()
+        maximum_text_width = max(
+            80, min(max(80, viewport_width - 32), round(viewport_width * 0.55))
+        )
+        metrics = self.slideshow_metadata_label.fontMetrics()
+        displayed_lines = [
+            metrics.elidedText(
+                line, Qt.TextElideMode.ElideRight, maximum_text_width
+            )
+            for line in lines
+        ]
+        self.slideshow_metadata_label.setText("\n".join(displayed_lines))
+        self.slideshow_metadata_label.setToolTip("\n".join(lines))
+        self.slideshow_metadata_label.adjustSize()
+        self.slideshow_metadata_label.show()
+        self.slideshow_metadata_label.raise_()
+        self._position_slideshow_overlays()
+
+    def _position_slideshow_overlays(self) -> None:
+        viewport = self.image_scroll_area.viewport()
+        if self.slideshow_message_label.isVisible():
+            self.slideshow_message_label.move(
+                max(12, (viewport.width() - self.slideshow_message_label.width()) // 2),
+                max(12, (viewport.height() - self.slideshow_message_label.height()) // 2),
+            )
+        if self.slideshow_metadata_label.isVisible():
+            self.slideshow_metadata_label.move(
+                16,
+                max(16, viewport.height() - self.slideshow_metadata_label.height() - 16),
+            )
+
+    def _restart_slideshow_cursor_timer(self) -> None:
+        self._restore_slideshow_cursor()
+        if self._slideshow_running and self._fullscreen_mode:
+            self.slideshow_cursor_timer.start()
+
+    def _hide_slideshow_cursor(self) -> None:
+        if self._slideshow_running and self._fullscreen_mode:
+            self.image_scroll_area.viewport().setCursor(
+                Qt.CursorShape.BlankCursor
+            )
+
+    def _restore_slideshow_cursor(self) -> None:
+        self.slideshow_cursor_timer.stop()
+        try:
+            self.image_scroll_area.viewport().unsetCursor()
+            self.window.unsetCursor()
+        except RuntimeError:
+            pass
 
     def _update_slideshow_actions(self) -> None:
         action_text = (
-            "Diashow stoppen" if self._slideshow_running else "Diashow starten"
+            "Diashow beenden" if self._slideshow_running else "Diashow starten"
         )
         self.slideshow_action.setText(action_text)
+        self.slideshow_pause_action.setEnabled(self._slideshow_running)
+        self.slideshow_pause_action.setText(
+            "Fortsetzen" if self._slideshow_paused else "Pause / fortsetzen"
+        )
+        self.slideshow_selected_only_action.setEnabled(
+            not self._slideshow_running
+        )
+        self.slideshow_random_action.setEnabled(not self._slideshow_running)
+        self.slideshow_fullscreen_action.setEnabled(not self._slideshow_running)
 
     def _handle_escape(self) -> None:
         if self._slideshow_running:
@@ -2944,6 +4798,7 @@ class ImageViewer(QObject):
                 generation,
                 metadata_key,
                 self._metadata_cache.get(metadata_key),
+                self._image_metadata_cache.get(metadata_key),
                 self._thumbnail_size,
             )
             try:
@@ -2962,6 +4817,7 @@ class ImageViewer(QObject):
         image: QImage,
         tooltip: str,
         metadata_key: tuple[str, int, int, int],
+        metadata: dict[str, str],
     ) -> None:
         if generation != self._load_generation:
             return
@@ -2969,6 +4825,8 @@ class ImageViewer(QObject):
         self._completed_jobs += 1
         try:
             self._metadata_cache[metadata_key] = tooltip
+            self._image_metadata_cache[metadata_key] = metadata
+            self._image_metadata_by_path[metadata_key[0]] = metadata
             self._recording_date_cache[metadata_key[0]] = (
                 self._recording_date_from_tooltip(tooltip)
             )
@@ -2988,6 +4846,7 @@ class ImageViewer(QObject):
                     item.setSizeHint(self._thumbnail_grid_size)
                 if item is self.thumbnail_list.currentItem():
                     self._update_status_bar()
+                    self._update_slideshow_metadata_overlay()
         except (OSError, RuntimeError, TypeError, ValueError):
             pass
         self._update_loading_text()
@@ -3038,7 +4897,19 @@ class ImageViewer(QObject):
         self._load_current_image()
         self._update_navigation_buttons()
         if self._slideshow_running:
-            self.slideshow_timer.start(self._slideshow_interval * 1000)
+            current_key = self._resolved_sort_path(self.current_image)
+            matching_index = next(
+                (
+                    index
+                    for index, path in enumerate(self._slideshow_paths)
+                    if self._resolved_sort_path(path) == current_key
+                ),
+                None,
+            )
+            if matching_index is not None:
+                self._slideshow_index = matching_index
+            self._restart_slideshow_timer()
+            self._update_slideshow_metadata_overlay()
 
     def _selection_changed(self) -> None:
         self._update_view_actions()
@@ -3064,13 +4935,17 @@ class ImageViewer(QObject):
     ) -> None:
         self._rotation_context_path = image_path
         self._file_manager_context_path = image_path
+        self._rename_context_path = image_path
         self._set_file_manager_action_state(image_path)
+        self._set_rename_action_state(image_path)
         self._add_rotation_context_submenu(context_menu, image_path)
         try:
             context_menu.exec(global_position)
         finally:
             self._rotation_context_path = None
             self._file_manager_context_path = None
+            self._rename_context_path = None
+            self._export_context_path = None
             self._update_view_actions()
 
     def _show_image_context_menu(self, global_position) -> None:
@@ -3078,6 +4953,10 @@ class ImageViewer(QObject):
         image_path = (
             self.current_image if not self.original_image.isNull() else None
         )
+        self._export_context_path = image_path
+        self._set_rename_action_state(image_path)
+        context_menu.addAction(self.rename_image_action)
+        context_menu.addAction(self.export_resized_action)
         context_menu.addAction(self.show_in_file_manager_action)
         context_menu.addSeparator()
         self._exec_rotation_context_menu(
@@ -3111,6 +4990,11 @@ class ImageViewer(QObject):
             context_menu.addSeparator()
             self._file_manager_context_path = context_image_path
             self._set_file_manager_action_state(context_image_path)
+            self._rename_context_path = context_image_path
+            self._export_context_path = context_image_path
+            self._set_rename_action_state(context_image_path)
+            context_menu.addAction(self.rename_image_action)
+            context_menu.addAction(self.export_resized_action)
             context_menu.addAction(self.show_in_file_manager_action)
             context_menu.addSeparator()
             self._rotation_context_path = context_image_path
@@ -3126,6 +5010,11 @@ class ImageViewer(QObject):
             context_menu.addSeparator()
             self._file_manager_context_path = None
             self._set_file_manager_action_state(None)
+            self._rename_context_path = None
+            self._export_context_path = None
+            self._set_rename_action_state(None)
+            context_menu.addAction(self.rename_image_action)
+            context_menu.addAction(self.export_resized_action)
             context_menu.addAction(self.show_in_file_manager_action)
             context_menu.addSeparator()
             self._rotation_context_path = None
@@ -3140,6 +5029,8 @@ class ImageViewer(QObject):
         finally:
             self._rotation_context_path = None
             self._file_manager_context_path = None
+            self._rename_context_path = None
+            self._export_context_path = None
             self._update_view_actions()
 
     def _select_all_images(self) -> None:
@@ -3151,6 +5042,9 @@ class ImageViewer(QObject):
             )
 
     def _select_relative_image(self, offset: int) -> None:
+        if self._slideshow_running:
+            self._navigate_slideshow(offset)
+            return
         self._select_image(self.thumbnail_list.currentRow() + offset)
 
     def _select_image(self, row: int) -> None:
@@ -3180,10 +5074,37 @@ class ImageViewer(QObject):
         self.previous_image_action.setEnabled(current_row > 0)
         self.next_image_action.setEnabled(last_row >= 0 and current_row < last_row)
         self.last_image_action.setEnabled(last_row >= 0 and current_row != last_row)
+        if self._slideshow_running and self._slideshow_paths:
+            multiple = len(self._slideshow_paths) > 1
+            can_go_back = multiple and (
+                self._slideshow_repeat or self._slideshow_index > 0
+            )
+            can_go_forward = multiple and (
+                self._slideshow_repeat
+                or self._slideshow_index < len(self._slideshow_paths) - 1
+            )
+            self.previous_button.setEnabled(can_go_back)
+            self.next_button.setEnabled(can_go_forward)
+            self.previous_image_action.setEnabled(can_go_back)
+            self.next_image_action.setEnabled(can_go_forward)
+            self.first_image_action.setEnabled(
+                multiple and self._slideshow_index != 0
+            )
+            self.last_image_action.setEnabled(
+                multiple and self._slideshow_index != len(self._slideshow_paths) - 1
+            )
         self.select_all_action.setEnabled(last_row >= 0)
+        if hasattr(self, "directory_path_label"):
+            self._update_directory_heading()
         self._update_status_bar()
 
     def _create_directory_navigation_buttons(self) -> None:
+        self.directory_path_label = QLabel(self.directory_panel)
+        self.directory_path_label.setObjectName("directoryPathLabel")
+        self.directory_path_label.setStyleSheet("font-size: 11px;")
+        self.directory_path_label.setToolTip("")
+        self.directory_path_label.installEventFilter(self)
+
         navigation_row = QHBoxLayout()
         navigation_row.setContentsMargins(0, 0, 0, 0)
         navigation_row.setSpacing(4)
@@ -3205,7 +5126,9 @@ class ImageViewer(QObject):
         navigation_row.addStretch(1)
         directory_layout = self.directory_panel.layout()
         if isinstance(directory_layout, QVBoxLayout):
-            directory_layout.insertLayout(1, navigation_row)
+            directory_layout.insertWidget(1, self.directory_path_label)
+            directory_layout.insertLayout(2, navigation_row)
+        self._update_directory_heading()
         self._update_folder_navigation_actions()
 
     def _update_folder_navigation_actions(self) -> None:
@@ -3227,6 +5150,37 @@ class ImageViewer(QObject):
             if button is not None:
                 button.setText(text)
 
+    def _update_directory_heading(self) -> None:
+        if self.current_directory is None:
+            self.directory_heading_label.setText("Kein Ordner")
+            self._directory_path_text = ""
+        else:
+            directory = self.current_directory
+            self.directory_heading_label.setText(
+                directory.name or str(directory)
+            )
+            try:
+                relative_path = directory.relative_to(HOME_DIRECTORY)
+                display_path = str(Path("~") / relative_path)
+            except ValueError:
+                display_path = str(directory)
+            image_count = self.thumbnail_list.count()
+            count_text = (
+                f"{image_count} Bild"
+                if image_count == 1
+                else f"{image_count} Bilder"
+            )
+            self._directory_path_text = f"{display_path} · {count_text}"
+
+        available_width = max(0, self.directory_path_label.width() - 4)
+        displayed_text = self.directory_path_label.fontMetrics().elidedText(
+            self._directory_path_text,
+            Qt.TextElideMode.ElideMiddle,
+            available_width,
+        )
+        self.directory_path_label.setText(displayed_text)
+        self.directory_path_label.setToolTip(self._directory_path_text)
+
     def _update_status_bar(self) -> None:
         current_row = self.thumbnail_list.currentRow()
         if (
@@ -3234,29 +5188,78 @@ class ImageViewer(QObject):
             or self.original_image.isNull()
             or current_row < 0
         ):
-            self.status_bar.showMessage("Kein Bild ausgewählt")
+            self._status_full_text = "Kein Bild ausgewählt"
+            self.status_info_label.setText(self._status_full_text)
+            self.status_info_label.setToolTip("")
+            self.status_zoom_label.clear()
+            self.status_zoom_label.setToolTip("")
             return
 
+        resolved_path = self._resolved_sort_path(self.current_image)
+        metadata = self._image_metadata_by_path.get(resolved_path, {})
         parts = [
             f"Bild {current_row + 1} von {self.thumbnail_list.count()}",
             f"{self.original_image.width()} × {self.original_image.height()} Pixel",
         ]
         if self._current_file_size is not None:
             parts.append(format_file_size(self._current_file_size))
-        current_item = self.thumbnail_list.currentItem()
-        if current_item is not None:
-            iso_value = next(
-                (
-                    line.removeprefix("ISO: ")
-                    for line in current_item.toolTip().splitlines()
-                    if line.startswith("ISO: ")
-                ),
-                None,
+        for key, prefix in (
+            ("recording_time", "Aufgenommen "),
+            ("camera", "Kamera "),
+            ("lens", "Objektiv "),
+            ("exposure", ""),
+            ("aperture", ""),
+            ("focal_length", ""),
+            ("iso", "ISO "),
+            ("gps", ""),
+        ):
+            value = metadata.get(key)
+            if value:
+                parts.append(f"{prefix}{value}")
+
+        self._status_full_text = " | ".join(parts)
+        self._refresh_status_info_text()
+        zoom_text = f"Zoom {round(self._zoom_factor * 100)} %"
+        self.status_zoom_label.setText(zoom_text)
+
+        tooltip_lines = [
+            f"Datei: {self.current_image.name}",
+            f"Pfad: {self.current_image}",
+            f"Position: Bild {current_row + 1} von {self.thumbnail_list.count()}",
+            f"Abmessungen: {self.original_image.width()} × "
+            f"{self.original_image.height()} Pixel",
+        ]
+        if self._current_file_size is not None:
+            tooltip_lines.append(
+                f"Dateigröße: {format_file_size(self._current_file_size)}"
             )
-            if iso_value is not None:
-                parts.append(f"ISO {iso_value}")
-        parts.append(f"Zoom {round(self._zoom_factor * 100)} %")
-        self.status_bar.showMessage(" | ".join(parts))
+        for key, label in (
+            ("recording_time", "Aufnahmezeit"),
+            ("camera", "Kamera"),
+            ("lens", "Objektiv"),
+            ("exposure", "Belichtungszeit"),
+            ("aperture", "Blende"),
+            ("focal_length", "Brennweite"),
+            ("iso", "ISO"),
+        ):
+            value = metadata.get(key)
+            if value:
+                tooltip_lines.append(f"{label}: {value}")
+        if metadata.get("gps_detail"):
+            tooltip_lines.append(metadata["gps_detail"])
+        tooltip_lines.append(zoom_text)
+        complete_tooltip = "\n".join(tooltip_lines)
+        self.status_info_label.setToolTip(complete_tooltip)
+        self.status_zoom_label.setToolTip(complete_tooltip)
+
+    def _refresh_status_info_text(self) -> None:
+        available_width = max(0, self.status_info_label.width() - 8)
+        displayed_text = self.status_info_label.fontMetrics().elidedText(
+            self._status_full_text,
+            Qt.TextElideMode.ElideRight,
+            available_width,
+        )
+        self.status_info_label.setText(displayed_text)
 
     def _load_current_image(self) -> None:
         self._hide_zoom_indicator()
@@ -3683,6 +5686,12 @@ class ImageViewer(QObject):
             for key, value in self._metadata_cache.items()
             if key[0] != resolved_path
         }
+        self._image_metadata_cache = {
+            key: value
+            for key, value in self._image_metadata_cache.items()
+            if key[0] != resolved_path
+        }
+        self._image_metadata_by_path.pop(resolved_path, None)
         self._recording_date_cache.pop(resolved_path, None)
         self._file_sort_metadata.pop(resolved_path, None)
 
@@ -3867,12 +5876,15 @@ class ImageViewer(QObject):
         self.window.showFullScreen()
         self._schedule_image_render()
         self._show_fullscreen_tooltip(QCursor.pos())
+        self._position_slideshow_overlays()
+        self._restart_slideshow_cursor_timer()
 
     def _leave_fullscreen(self) -> None:
         if not self._fullscreen_mode:
             return
 
         self._fullscreen_mode = False
+        self._restore_slideshow_cursor()
         self.fullscreen_tooltip_timer.stop()
         self._hide_fullscreen_tooltip()
         self.fullscreen_action.setChecked(False)
@@ -3901,13 +5913,25 @@ class ImageViewer(QObject):
         self._schedule_image_render()
 
     def eventFilter(self, watched, event) -> bool:
+        if watched is self.status_info_label:
+            if event.type() == QEvent.Type.Resize:
+                self._refresh_status_info_text()
+            return False
         if watched is self.file_name_label and event.type() == QEvent.Type.Resize:
             self._set_file_name_text(self._file_name_text)
+        if (
+            hasattr(self, "directory_path_label")
+            and watched is self.directory_path_label
+            and event.type() == QEvent.Type.Resize
+        ):
+            self._update_directory_heading()
         image_widgets = (self.image_label, self.image_scroll_area.viewport())
         if self._fullscreen_mode and watched in image_widgets:
             if event.type() == QEvent.Type.ToolTip:
                 return True
             if event.type() in (QEvent.Type.Enter, QEvent.Type.MouseMove):
+                if self._slideshow_running:
+                    self._restart_slideshow_cursor_timer()
                 global_position = (
                     event.globalPosition().toPoint()
                     if event.type() == QEvent.Type.MouseMove
@@ -3915,13 +5939,17 @@ class ImageViewer(QObject):
                 )
                 self._show_fullscreen_tooltip(global_position)
         if watched in image_widgets and event.type() == QEvent.Type.ContextMenu:
+            self._restore_slideshow_cursor()
             self._show_image_context_menu(event.globalPos())
+            self._restart_slideshow_cursor_timer()
             return True
         if (
             watched is self.image_scroll_area.viewport()
             and event.type() == QEvent.Type.Resize
         ):
             self._position_zoom_indicator()
+            self._position_slideshow_overlays()
+            self._update_slideshow_metadata_overlay()
             if self.original_image.isNull():
                 self.image_label.resize(event.size())
             else:
@@ -4021,6 +6049,7 @@ def show_startup_error(viewer: ImageViewer, message: str) -> None:
 
 def main() -> int:
     app = QApplication(sys.argv)
+    install_selection_accent_style(app)
     app.setWindowIcon(QIcon(str(resource_path("assets/bildblick.png"))))
     app.setOrganizationName(SETTINGS_ORGANIZATION)
     app.setApplicationName(SETTINGS_APPLICATION)

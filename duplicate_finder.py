@@ -1,6 +1,5 @@
 import hashlib
 import os
-import sys
 import threading
 from collections import defaultdict
 from datetime import datetime
@@ -41,28 +40,6 @@ MINIMUM_COLUMN_WIDTHS = (150, 180, 80, 120, 140, 170)
 def _trash_debug(message: str) -> None:
     if TRASH_DEBUG:
         print(f"[BildBlick Papierkorb] {message}", flush=True)
-
-
-def _selection_stylesheet() -> str:
-    bundle = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
-    assets = bundle / "assets"
-    radio_off = (assets / "duplicate-radio-off.svg").as_posix()
-    radio_on = (assets / "duplicate-radio-on.svg").as_posix()
-    checkbox_off = (assets / "duplicate-checkbox-off.svg").as_posix()
-    checkbox_on = (assets / "duplicate-checkbox-on.svg").as_posix()
-    checkbox_disabled = (assets / "duplicate-checkbox-disabled.svg").as_posix()
-    return f"""
-QRadioButton, QCheckBox {{ spacing: 8px; padding: 3px 4px; }}
-QRadioButton::indicator, QCheckBox::indicator {{ width: 20px; height: 20px; }}
-QRadioButton::indicator:unchecked {{ image: url(\"{radio_off}\"); }}
-QRadioButton::indicator:checked {{ image: url(\"{radio_on}\"); }}
-QRadioButton:checked {{ color: #168a3b; font-weight: 700; }}
-QCheckBox::indicator:unchecked {{ image: url(\"{checkbox_off}\"); }}
-QCheckBox::indicator:checked {{ image: url(\"{checkbox_on}\"); }}
-QCheckBox::indicator:disabled {{ image: url(\"{checkbox_disabled}\"); }}
-QCheckBox:checked {{ color: #d32f2f; font-weight: 700; }}
-QCheckBox:disabled {{ color: #8a929a; }}
-"""
 
 
 def _same_content(first: Path, second: Path, cancel_event: threading.Event) -> bool:
@@ -485,8 +462,6 @@ class DuplicateFinderDialog(QDialog):
                 parent.addChild(item)
                 keep = QRadioButton("Behalten")
                 trash = QCheckBox("In den Papierkorb")
-                keep.setStyleSheet(_selection_stylesheet())
-                trash.setStyleSheet(_selection_stylesheet())
                 controls["keep_group"].addButton(keep)
                 keep.setChecked(index == 0)
                 trash.setEnabled(index != 0)

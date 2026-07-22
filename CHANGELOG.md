@@ -2,6 +2,34 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## Version 1.5.0
+
+### Neu
+
+- Ausgewählte Bilder verkleinert als JPEG-Kopien exportieren
+- Frei wählbare maximale Breite und Höhe
+- Einstellbare JPEG-Qualität
+- Größenabschätzung vor dem Export
+- Exportfortschritt und Abbruchmöglichkeit
+- Wahlweise Übernahme der Aufnahmedaten
+- GPS-Daten beim Export entfernen
+- Einzelne Bilder mit F2, über das Menü oder per Rechtsklick umbenennen
+- Erweiterte Diashow mit Pause und Fortsetzen per Leertaste
+- Diashow nur mit markierten Bildern
+- Zufällige Diashow-Reihenfolge
+- Aufnahmeinformationen während der Diashow
+- Sanfte Bildübergänge
+- Automatisches Ausblenden des Mauszeigers im Vollbild
+
+### Verbessert
+
+- Erweiterte Statusleiste mit Aufnahmezeit, Kamera, Objektiv,
+  Belichtungszeit, Blende, Brennweite und GPS-Daten
+- Informativer Kopfbereich mit aktuellem Ordner und Bildanzahl
+- Deutlich sichtbare rote Auswahlhaken im gesamten Programm
+- Sichere Aktualisierung von Bildliste, Auswahl und Cache nach dem Umbenennen
+- Exportdialog merkt die zuletzt verwendeten Einstellungen
+
 ## Version 1.4.0
 
 ### Neu
