@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=BildBlick
+Comment=Ein schneller und komfortabler Bildbetrachter für Linux
+Exec=/home/horst/.local/bin/BildBlick %f
+Icon=bildblick
+Terminal=false
+Categories=Graphics;Viewer;
+MimeType=image/jpeg;image/png;image/webp;image/bmp;image/gif;image/tiff;
+StartupNotify=true

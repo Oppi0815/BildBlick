@@ -1,9 +1,13 @@
 import hashlib
 import os
+import re
 import shutil
+import subprocess
 import sys
+import tempfile
 import threading
 from datetime import datetime
+from functools import cmp_to_key
 from pathlib import Path
 
 from PIL import Image as PillowImage
@@ -20,6 +24,8 @@ from PySide6.QtCore import (
     QSettings,
     QSize,
     QStandardPaths,
+    QCommandLineParser,
+    QCollator,
     Qt,
     QThreadPool,
     QTimer,
@@ -38,6 +44,7 @@ from PySide6.QtGui import (
     QKeySequence,
     QPixmap,
     QShortcut,
+    QTransform,
 )
 from PySide6.QtUiTools import QUiLoader
 from PySide6.QtWidgets import (
@@ -45,6 +52,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QDialog,
+    QFileDialog,
     QFileSystemModel,
     QHBoxLayout,
     QLabel,
@@ -56,18 +64,21 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSlider,
     QSizePolicy,
     QSplitter,
+    QToolButton,
     QToolTip,
     QTreeView,
     QVBoxLayout,
+    QWidget,
 )
 
 from duplicate_finder import DuplicateFinderDialog
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.4.0"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter für Linux"
 
 ROOT_DIRECTORY = Path("/")
@@ -80,6 +91,11 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".
 THUMBNAIL_SIZE = QSize(160, 120)
 THUMBNAIL_GRID_SIZE = QSize(190, 175)
 THUMBNAIL_SPACING = 8
+THUMBNAIL_MINIMUM = 80
+THUMBNAIL_MAXIMUM = 256
+THUMBNAIL_STEP = 16
+THUMBNAIL_DEFAULT = 160
+FOLDER_HISTORY_LIMIT = 50
 TOOLTIP_METADATA_VERSION = 2
 DIRECTORY_ENTRIES_PER_BATCH = 100
 LIST_ITEMS_PER_BATCH = 100
@@ -96,11 +112,22 @@ SLIDESHOW_INTERVAL_KEY = "slideshowInterval"
 SLIDESHOW_REPEAT_KEY = "slideshowRepeat"
 SLIDESHOW_FULLSCREEN_KEY = "slideshowFullscreen"
 COLOR_SCHEME_KEY = "colorScheme"
+THUMBNAIL_SIZE_KEY = "thumbnailSize"
+SORT_CRITERION_KEY = "sortCriterion"
+SORT_ASCENDING_KEY = "sortAscending"
 SLIDESHOW_INTERVALS = (3, 5, 10, 15)
+SORT_CRITERIA = ("name", "recording_date", "modified", "size")
 ZOOM_STEP = 1.15
 MIN_ZOOM = 0.10
 MAX_ZOOM = 8.0
 FULLSCREEN_TOOLTIP_DURATION = 3000
+ZOOM_INDICATOR_DURATION = 1500
+ZOOM_INDICATOR_STYLESHEET = (
+    "QLabel { background-color: rgba(24, 24, 24, 210);"
+    " color: #f7f7f7; border: 1px solid rgba(255, 255, 255, 45);"
+    " border-radius: 7px; padding: 7px 11px; font-size: 14px;"
+    " font-weight: 600; }"
+)
 FULLSCREEN_TOOLTIP = """←  Vorheriges Bild
 →  Nächstes Bild
 Esc oder F11  Vollbild beenden
@@ -180,10 +207,24 @@ QPushButton {{
 QPushButton:hover {{ background-color: {colors['hover']}; }}
 QPushButton:pressed {{ background-color: {colors['selection']}; color: {colors['selection_text']}; }}
 QPushButton:disabled {{ color: {colors['muted']}; }}
+QToolButton {{
+    background-color: {colors['button']}; color: {colors['text']};
+    border: 1px solid {colors['border']}; border-radius: 4px; padding: 2px 6px;
+}}
+QToolButton:hover {{ background-color: {colors['hover']}; }}
+QToolButton:pressed {{
+    background-color: {colors['selection']}; color: {colors['selection_text']};
+}}
+QToolButton:disabled {{ color: {colors['muted']}; }}
 QSplitter::handle {{ background-color: {colors['border']}; }}
 QSplitter::handle:horizontal {{ width: 1px; }}
 QSplitter::handle:vertical {{ height: 1px; }}
 QScrollBar {{ background-color: {colors['panel']}; }}
+QStatusBar {{
+    background-color: {colors['panel']}; color: {colors['text']};
+    border-top: 1px solid {colors['border']};
+}}
+QStatusBar::item {{ border: none; }}
 QToolTip {{
     background-color: {colors['tooltip']}; color: {colors['tooltip_text']};
     border: 1px solid {colors['border']}; padding: 4px;
@@ -231,14 +272,52 @@ def fitted_size(source: QSize, target: QSize) -> QSize:
     return source.scaled(target, Qt.AspectRatioMode.KeepAspectRatio)
 
 
-def thumbnail_cache_name(path: Path) -> str:
+def image_fit_zoom_factor(image: QImage, viewport_size: QSize) -> float:
+    return min(
+        viewport_size.width() / image.width(),
+        viewport_size.height() / image.height(),
+    )
+
+
+def image_size_at_zoom(image: QImage, zoom_factor: float) -> QSize:
+    return QSize(
+        max(1, round(image.width() * zoom_factor)),
+        max(1, round(image.height() * zoom_factor)),
+    )
+
+
+def rotated_display_image(image: QImage, clockwise_degrees: int) -> QImage:
+    normalized_degrees = clockwise_degrees % 360
+    if normalized_degrees == 0:
+        return QImage(image)
+    return image.transformed(
+        QTransform().rotate(normalized_degrees),
+        Qt.TransformationMode.SmoothTransformation,
+    )
+
+
+def normalized_thumbnail_pixels(value: int) -> int:
+    bounded = min(THUMBNAIL_MAXIMUM, max(THUMBNAIL_MINIMUM, value))
+    steps = round((bounded - THUMBNAIL_MINIMUM) / THUMBNAIL_STEP)
+    return THUMBNAIL_MINIMUM + steps * THUMBNAIL_STEP
+
+
+def thumbnail_size_for_pixels(pixels: int) -> QSize:
+    return QSize(pixels, round(pixels * 0.75))
+
+
+def thumbnail_grid_size_for_pixels(pixels: int) -> QSize:
+    return QSize(pixels + 30, round(pixels * 0.75) + 55)
+
+
+def thumbnail_cache_name(path: Path, thumbnail_size: QSize = THUMBNAIL_SIZE) -> str:
     file_info = path.stat()
     key_data = "\0".join(
         (
             str(path.resolve(strict=False)),
             str(file_info.st_size),
             str(file_info.st_mtime_ns),
-            f"{THUMBNAIL_SIZE.width()}x{THUMBNAIL_SIZE.height()}",
+            f"{thumbnail_size.width()}x{thumbnail_size.height()}",
         )
     )
     return hashlib.sha256(key_data.encode("utf-8")).hexdigest() + ".png"
@@ -366,6 +445,7 @@ class ThumbnailTask(QRunnable):
         generation: int,
         metadata_key: tuple[str, int, int, int],
         cached_tooltip: str | None,
+        thumbnail_size: QSize = THUMBNAIL_SIZE,
     ) -> None:
         super().__init__()
         self.path = path
@@ -373,6 +453,7 @@ class ThumbnailTask(QRunnable):
         self.generation = generation
         self.metadata_key = metadata_key
         self.cached_tooltip = cached_tooltip
+        self.thumbnail_size = QSize(thumbnail_size)
         self.signals = ThumbnailSignals()
 
     def run(self) -> None:
@@ -398,7 +479,7 @@ class ThumbnailTask(QRunnable):
             pass
 
     def _load_or_create_thumbnail(self) -> QImage:
-        cache_name = thumbnail_cache_name(self.path)
+        cache_name = thumbnail_cache_name(self.path, self.thumbnail_size)
         cache_file = CACHE_DIRECTORY / cache_name
 
         cached_file = cache_file
@@ -413,12 +494,12 @@ class ThumbnailTask(QRunnable):
 
         reader = QImageReader(str(self.path))
         reader.setAutoTransform(True)
-        reader.setScaledSize(fitted_size(reader.size(), THUMBNAIL_SIZE))
+        reader.setScaledSize(fitted_size(reader.size(), self.thumbnail_size))
         image = reader.read()
         if image.isNull():
             return image
         image = image.scaled(
-            THUMBNAIL_SIZE,
+            self.thumbnail_size,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
@@ -442,12 +523,402 @@ class ThumbnailTask(QRunnable):
         return image
 
 
+class ComparisonImageView(QWidget):
+    zoom_changed = Signal(float, float, float)
+    pan_changed = Signal(float, float)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.path: Path | None = None
+        self.original_image = QImage()
+        self._zoom_mode = "fit"
+        self._zoom_factor = 1.0
+        self._mouse_press_position = None
+        self._pan_last_position = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setObjectName("comparisonScrollArea")
+        self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.scroll_area.setWidgetResizable(False)
+        self.image_label = QLabel()
+        self.image_label.setObjectName("comparisonImageLabel")
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
+        self.image_label.setMinimumSize(1, 1)
+        self.scroll_area.setWidget(self.image_label)
+        layout.addWidget(self.scroll_area, 1)
+
+        self.info_label = QLabel()
+        self.info_label.setObjectName("comparisonInfoLabel")
+        self.info_label.setWordWrap(True)
+        self.info_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        layout.addWidget(self.info_label)
+
+        self.zoom_indicator = QLabel(self.scroll_area.viewport())
+        self.zoom_indicator.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+        self.zoom_indicator.setStyleSheet(ZOOM_INDICATOR_STYLESHEET)
+        self.zoom_indicator.hide()
+        self.zoom_indicator_timer = QTimer(self)
+        self.zoom_indicator_timer.setSingleShot(True)
+        self.zoom_indicator_timer.timeout.connect(self.zoom_indicator.hide)
+
+        self.image_label.installEventFilter(self)
+        self.scroll_area.viewport().installEventFilter(self)
+
+    def set_image(self, path: Path) -> bool:
+        self.zoom_indicator_timer.stop()
+        self.zoom_indicator.hide()
+        reader = QImageReader(str(path))
+        reader.setAutoTransform(True)
+        image = reader.read()
+        if image.isNull():
+            return False
+        self.path = path
+        self.original_image = image
+        self._zoom_mode = "fit"
+        self.info_label.setText(self._image_information(path))
+        self.info_label.setToolTip(str(path))
+        self._render_image()
+        return True
+
+    def _image_information(self, path: Path) -> str:
+        lines = [path.name]
+        lines.append(
+            f"{self.original_image.width()} × {self.original_image.height()} Pixel"
+        )
+        try:
+            lines.append(format_file_size(path.stat().st_size))
+        except OSError:
+            pass
+        try:
+            with PillowImage.open(path) as image:
+                exif = image.getexif()
+                for tag in (36867, 36868, 306):
+                    recording_date = format_date(exif.get(tag))
+                    if recording_date is not None:
+                        lines.append(f"Aufgenommen: {recording_date}")
+                        break
+                iso_value = extract_iso_value(exif)
+                if iso_value is not None:
+                    lines.append(f"ISO: {iso_value}")
+        except Exception:
+            pass
+        return "\n".join(lines)
+
+    def _render_image(self) -> None:
+        if self.original_image.isNull():
+            return
+        viewport_size = self.scroll_area.viewport().size()
+        if viewport_size.width() <= 1 or viewport_size.height() <= 1:
+            return
+        if self._zoom_mode == "fit":
+            self._zoom_factor = image_fit_zoom_factor(
+                self.original_image, viewport_size
+            )
+        scaled_size = image_size_at_zoom(
+            self.original_image, self._zoom_factor
+        )
+        scaled_image = self.original_image.scaled(
+            scaled_size,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.image_label.resize(scaled_size)
+        self.image_label.setPixmap(QPixmap.fromImage(scaled_image))
+        if self._zoom_mode == "fit":
+            self.scroll_area.horizontalScrollBar().setValue(0)
+            self.scroll_area.verticalScrollBar().setValue(0)
+
+    def fit_image(self, show_overlay: bool = True) -> None:
+        self._zoom_mode = "fit"
+        self._render_image()
+        if show_overlay:
+            self._show_zoom_indicator()
+
+    def show_actual_size(self, show_overlay: bool = True) -> None:
+        self.set_zoom_factor(1.0, 0.5, 0.5, show_overlay)
+
+    def set_zoom_factor(
+        self,
+        factor: float,
+        relative_x: float = 0.5,
+        relative_y: float = 0.5,
+        show_overlay: bool = True,
+    ) -> None:
+        self._zoom_mode = "manual"
+        self._zoom_factor = min(MAX_ZOOM, max(MIN_ZOOM, factor))
+        self._render_image()
+        self.set_relative_scroll(relative_x, relative_y)
+        if show_overlay:
+            self._show_zoom_indicator()
+
+    def _zoom_at(self, viewport_position, factor: float) -> None:
+        old_size = self.image_label.size()
+        label_position = self.image_label.pos()
+        relative_x = min(
+            1.0,
+            max(0.0, (viewport_position.x() - label_position.x()) / old_size.width()),
+        )
+        relative_y = min(
+            1.0,
+            max(0.0, (viewport_position.y() - label_position.y()) / old_size.height()),
+        )
+        self._zoom_mode = "manual"
+        self._zoom_factor = min(
+            MAX_ZOOM, max(MIN_ZOOM, self._zoom_factor * factor)
+        )
+        self._render_image()
+        horizontal_bar = self.scroll_area.horizontalScrollBar()
+        vertical_bar = self.scroll_area.verticalScrollBar()
+        horizontal_bar.setValue(
+            round(relative_x * self.image_label.width() - viewport_position.x())
+        )
+        vertical_bar.setValue(
+            round(relative_y * self.image_label.height() - viewport_position.y())
+        )
+        self._show_zoom_indicator()
+        scroll_x, scroll_y = self.relative_scroll()
+        self.zoom_changed.emit(self._zoom_factor, scroll_x, scroll_y)
+
+    def relative_scroll(self) -> tuple[float, float]:
+        horizontal_bar = self.scroll_area.horizontalScrollBar()
+        vertical_bar = self.scroll_area.verticalScrollBar()
+        horizontal = (
+            horizontal_bar.value() / horizontal_bar.maximum()
+            if horizontal_bar.maximum()
+            else 0.5
+        )
+        vertical = (
+            vertical_bar.value() / vertical_bar.maximum()
+            if vertical_bar.maximum()
+            else 0.5
+        )
+        return horizontal, vertical
+
+    def set_relative_scroll(self, horizontal: float, vertical: float) -> None:
+        horizontal_bar = self.scroll_area.horizontalScrollBar()
+        vertical_bar = self.scroll_area.verticalScrollBar()
+        horizontal_bar.setValue(round(horizontal * horizontal_bar.maximum()))
+        vertical_bar.setValue(round(vertical * vertical_bar.maximum()))
+
+    def _show_zoom_indicator(self) -> None:
+        prefix = "Eingepasst · " if self._zoom_mode == "fit" else ""
+        self.zoom_indicator.setText(f"{prefix}{round(self._zoom_factor * 100)} %")
+        self.zoom_indicator.adjustSize()
+        self.zoom_indicator.show()
+        self.zoom_indicator.raise_()
+        self._position_zoom_indicator()
+        self.zoom_indicator_timer.start(ZOOM_INDICATOR_DURATION)
+
+    def _position_zoom_indicator(self) -> None:
+        if not self.zoom_indicator.isVisible():
+            return
+        viewport = self.scroll_area.viewport()
+        margin = 16
+        self.zoom_indicator.move(
+            max(margin, viewport.width() - self.zoom_indicator.width() - margin),
+            max(margin, viewport.height() - self.zoom_indicator.height() - margin),
+        )
+
+    def eventFilter(self, watched, event) -> bool:
+        image_widgets = (self.image_label, self.scroll_area.viewport())
+        if watched is self.scroll_area.viewport() and event.type() == QEvent.Type.Resize:
+            self._position_zoom_indicator()
+            if self._zoom_mode == "fit":
+                QTimer.singleShot(0, self._render_image)
+        elif watched in image_widgets and event.type() == QEvent.Type.Wheel:
+            wheel_steps = event.angleDelta().y() / 120
+            if wheel_steps and not self.original_image.isNull():
+                viewport_position = self.scroll_area.viewport().mapFromGlobal(
+                    event.globalPosition().toPoint()
+                )
+                self._zoom_at(viewport_position, ZOOM_STEP**wheel_steps)
+                return True
+        elif (
+            watched in image_widgets
+            and event.type() == QEvent.Type.MouseButtonPress
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            self._mouse_press_position = event.globalPosition().toPoint()
+            self._pan_last_position = self._mouse_press_position
+            return True
+        elif (
+            watched in image_widgets
+            and event.type() == QEvent.Type.MouseMove
+            and self._mouse_press_position is not None
+            and event.buttons() & Qt.MouseButton.LeftButton
+        ):
+            current_position = event.globalPosition().toPoint()
+            movement = current_position - self._pan_last_position
+            horizontal_bar = self.scroll_area.horizontalScrollBar()
+            vertical_bar = self.scroll_area.verticalScrollBar()
+            horizontal_bar.setValue(horizontal_bar.value() - movement.x())
+            vertical_bar.setValue(vertical_bar.value() - movement.y())
+            self._pan_last_position = current_position
+            self.pan_changed.emit(*self.relative_scroll())
+            return True
+        elif (
+            watched in image_widgets
+            and event.type() == QEvent.Type.MouseButtonRelease
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            self._mouse_press_position = None
+            self._pan_last_position = None
+            return True
+        return super().eventFilter(watched, event)
+
+
+class ImageComparisonDialog(QDialog):
+    def __init__(
+        self,
+        left_path: Path,
+        right_path: Path,
+        colors: dict[str, str] | None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Bilder vergleichen")
+        self.setModal(True)
+        self.resize(1200, 760)
+        self.setMinimumSize(800, 500)
+        self._paths = [left_path, right_path]
+
+        layout = QVBoxLayout(self)
+        self.coupling_checkbox = QCheckBox("Zoom und Verschieben koppeln")
+        self.coupling_checkbox.setChecked(True)
+        layout.addWidget(self.coupling_checkbox)
+
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.left_view = ComparisonImageView()
+        self.right_view = ComparisonImageView()
+        self.splitter.addWidget(self.left_view)
+        self.splitter.addWidget(self.right_view)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([600, 600])
+        self.splitter.setChildrenCollapsible(False)
+        layout.addWidget(self.splitter, 1)
+
+        button_row = QHBoxLayout()
+        self.fit_button = QPushButton("Einpassen")
+        self.actual_size_button = QPushButton("100 %")
+        self.swap_button = QPushButton("Bilder tauschen")
+        self.close_button = QPushButton("Schließen")
+        button_row.addWidget(self.fit_button)
+        button_row.addWidget(self.actual_size_button)
+        button_row.addWidget(self.swap_button)
+        button_row.addStretch(1)
+        button_row.addWidget(self.close_button)
+        layout.addLayout(button_row)
+
+        self.fit_button.clicked.connect(self.fit_both)
+        self.actual_size_button.clicked.connect(self.show_both_actual_size)
+        self.swap_button.clicked.connect(self.swap_images)
+        self.close_button.clicked.connect(self.accept)
+        self.left_view.zoom_changed.connect(
+            lambda factor, x, y: self._mirror_zoom(self.left_view, factor, x, y)
+        )
+        self.right_view.zoom_changed.connect(
+            lambda factor, x, y: self._mirror_zoom(self.right_view, factor, x, y)
+        )
+        self.left_view.pan_changed.connect(
+            lambda x, y: self._mirror_pan(self.left_view, x, y)
+        )
+        self.right_view.pan_changed.connect(
+            lambda x, y: self._mirror_pan(self.right_view, x, y)
+        )
+
+        self._add_shortcut("0", self.fit_both)
+        self._add_shortcut("1", self.show_both_actual_size)
+        self._add_shortcut("L", self.coupling_checkbox.toggle)
+        self._add_shortcut("Escape", self.reject)
+        self._apply_colors(colors)
+        self.left_view.set_image(left_path)
+        self.right_view.set_image(right_path)
+
+    def _add_shortcut(self, key: str, handler) -> None:
+        action = QAction(self)
+        action.setShortcut(QKeySequence(key))
+        action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        action.triggered.connect(handler)
+        self.addAction(action)
+
+    def _other_view(self, source: ComparisonImageView) -> ComparisonImageView:
+        return self.right_view if source is self.left_view else self.left_view
+
+    def _mirror_zoom(
+        self,
+        source: ComparisonImageView,
+        factor: float,
+        horizontal: float,
+        vertical: float,
+    ) -> None:
+        if self.coupling_checkbox.isChecked():
+            self._other_view(source).set_zoom_factor(
+                factor, horizontal, vertical
+            )
+
+    def _mirror_pan(
+        self,
+        source: ComparisonImageView,
+        horizontal: float,
+        vertical: float,
+    ) -> None:
+        if self.coupling_checkbox.isChecked():
+            self._other_view(source).set_relative_scroll(horizontal, vertical)
+
+    def fit_both(self) -> None:
+        self.left_view.fit_image()
+        self.right_view.fit_image()
+
+    def show_both_actual_size(self) -> None:
+        self.left_view.show_actual_size()
+        self.right_view.show_actual_size()
+
+    def swap_images(self) -> None:
+        self._paths.reverse()
+        self.left_view.set_image(self._paths[0])
+        self.right_view.set_image(self._paths[1])
+
+    def _apply_colors(self, colors: dict[str, str] | None) -> None:
+        if colors is None:
+            return
+        self.setStyleSheet(
+            message_box_stylesheet(colors)
+            + f"""
+QDialog {{ background-color: {colors['window']}; color: {colors['text']}; }}
+QScrollArea#comparisonScrollArea, QLabel#comparisonImageLabel {{
+    background-color: {colors['image']}; border: none;
+}}
+QLabel#comparisonInfoLabel {{
+    background-color: {colors['panel']}; color: {colors['text']};
+    border: 1px solid {colors['border']}; border-radius: 4px; padding: 6px;
+}}
+QSplitter::handle {{ background-color: {colors['border']}; width: 3px; }}
+"""
+        )
+
+
 class ImageViewer(QObject):
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        startup_directory: Path | None = None,
+        startup_image: Path | None = None,
+    ) -> None:
         super().__init__()
         self.settings = QSettings(SETTINGS_ORGANIZATION, SETTINGS_APPLICATION)
         self._migrate_legacy_settings()
-        self.start_directory = self._start_directory()
+        self.start_directory = startup_directory or self._start_directory()
+        self.startup_image = startup_image
         saved_interval = self.settings.value(SLIDESHOW_INTERVAL_KEY, 5, type=int)
         self._slideshow_interval = (
             saved_interval if saved_interval in SLIDESHOW_INTERVALS else 5
@@ -464,8 +935,36 @@ class ImageViewer(QObject):
         self._color_scheme = (
             saved_color_scheme if saved_color_scheme in COLOR_SCHEMES else "System"
         )
+        saved_thumbnail_size = self.settings.value(
+            THUMBNAIL_SIZE_KEY, THUMBNAIL_DEFAULT, type=int
+        )
+        self._thumbnail_pixels = normalized_thumbnail_pixels(saved_thumbnail_size)
+        self._thumbnail_size = thumbnail_size_for_pixels(self._thumbnail_pixels)
+        self._thumbnail_grid_size = thumbnail_grid_size_for_pixels(
+            self._thumbnail_pixels
+        )
+        saved_sort_criterion = self.settings.value(
+            SORT_CRITERION_KEY, "name", type=str
+        )
+        self._sort_criterion = (
+            saved_sort_criterion
+            if saved_sort_criterion in SORT_CRITERIA
+            else "name"
+        )
+        self._sort_ascending = self.settings.value(
+            SORT_ASCENDING_KEY, True, type=bool
+        )
+        self._name_collator = QCollator()
+        self._name_collator.setCaseSensitivity(
+            Qt.CaseSensitivity.CaseInsensitive
+        )
+        self._name_collator.setNumericMode(True)
         self.window = self._load_ui()
         self.window.setWindowTitle(APP_NAME)
+        self.status_bar = self.window.statusBar()
+        self.status_bar.setSizeGripEnabled(False)
+        self.status_bar.setContentsMargins(4, 0, 4, 0)
+        self.status_bar.showMessage("Kein Bild ausgewählt")
         self.directory_tree = self._widget(QTreeView, "directoryTreeView")
         self.thumbnail_list = self._widget(QListWidget, "thumbnailList")
         self.image_scroll_area = self._widget(QScrollArea, "imageScrollArea")
@@ -475,10 +974,15 @@ class ImageViewer(QObject):
         self.previous_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.next_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.file_name_label = self._widget(QLabel, "fileNameLabel")
-        navigation_button_width = max(
-            self.previous_button.sizeHint().width(),
-            self.next_button.sizeHint().width(),
+        navigation_button_text_width = max(
+            self.previous_button.fontMetrics().horizontalAdvance(
+                self.previous_button.text()
+            ),
+            self.next_button.fontMetrics().horizontalAdvance(
+                self.next_button.text()
+            ),
         )
+        navigation_button_width = max(180, navigation_button_text_width + 40)
         self.previous_button.setFixedWidth(navigation_button_width)
         self.next_button.setFixedWidth(navigation_button_width)
         self._file_name_text = ""
@@ -488,6 +992,9 @@ class ImageViewer(QObject):
         self.preview_panel = self.image_scroll_area.parentWidget()
         self.current_directory: Path | None = None
         self.current_image: Path | None = None
+        self._folder_history: list[Path] = []
+        self._folder_history_index = -1
+        self._current_file_size: int | None = None
         self._pending_selection_paths: set[Path] = set()
         self._pending_primary_path: Path | None = None
         self._clipboard_operation: str | None = None
@@ -495,6 +1002,10 @@ class ImageViewer(QObject):
         self._handling_clipboard_change = False
         self.clipboard = QApplication.clipboard()
         self.original_image = QImage()
+        self._exif_oriented_image = QImage()
+        self._display_rotation_by_path: dict[str, int] = {}
+        self._rotation_context_path: Path | None = None
+        self._file_manager_context_path: Path | None = None
         self._zoom_mode = "fit"
         self._zoom_factor = 1.0
         self._mouse_press_position = None
@@ -519,6 +1030,10 @@ class ImageViewer(QObject):
         self._active_jobs = 0
         self._directory_iterator = None
         self._metadata_cache: dict[tuple[str, int, int, int], str] = {}
+        self._file_sort_metadata: dict[str, tuple[int, int]] = {}
+        self._recording_date_cache: dict[str, datetime | None] = {}
+        self._resolved_sort_path_cache: dict[str, str] = {}
+        self._capture_sort_waiting = False
         self.thread_pool = QThreadPool(self)
         self.thread_pool.setMaxThreadCount(3)
         self.slideshow_timer = QTimer(self)
@@ -529,6 +1044,9 @@ class ImageViewer(QObject):
             self._hide_fullscreen_tooltip
         )
         self._fullscreen_tooltip_visible = False
+        self.zoom_indicator_timer = QTimer(self)
+        self.zoom_indicator_timer.setSingleShot(True)
+        self.zoom_indicator_timer.timeout.connect(self._hide_zoom_indicator)
 
         self.thumbnail_list.setViewMode(QListView.ViewMode.IconMode)
         self.thumbnail_list.setMovement(QListView.Movement.Static)
@@ -538,8 +1056,8 @@ class ImageViewer(QObject):
         self.thumbnail_list.setResizeMode(QListView.ResizeMode.Adjust)
         self.thumbnail_list.setWrapping(True)
         self.thumbnail_list.setWordWrap(True)
-        self.thumbnail_list.setIconSize(THUMBNAIL_SIZE)
-        self.thumbnail_list.setGridSize(THUMBNAIL_GRID_SIZE)
+        self.thumbnail_list.setIconSize(self._thumbnail_size)
+        self.thumbnail_list.setGridSize(self._thumbnail_grid_size)
         self.thumbnail_list.setSpacing(THUMBNAIL_SPACING)
         self.thumbnail_list.setTextElideMode(Qt.TextElideMode.ElideMiddle)
         self.thumbnail_list.setContextMenuPolicy(
@@ -566,6 +1084,12 @@ class ImageViewer(QObject):
 • F11: Vollbild"""
         self.image_label.setToolTip(image_tooltip)
         self.image_scroll_area.viewport().setToolTip(image_tooltip)
+        self.zoom_indicator = QLabel(self.image_scroll_area.viewport())
+        self.zoom_indicator.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+        self.zoom_indicator.setStyleSheet(ZOOM_INDICATOR_STYLESHEET)
+        self.zoom_indicator.hide()
 
         self.directory_model = QFileSystemModel(self.window)
         self.directory_model.setFilter(
@@ -597,13 +1121,17 @@ class ImageViewer(QObject):
         self.escape_shortcut = QShortcut(QKeySequence("Escape"), self.window)
         self.escape_shortcut.activated.connect(self._handle_escape)
         self._create_application_menus()
+        self._create_directory_navigation_buttons()
         self.clipboard.dataChanged.connect(self._clipboard_changed)
         self._clipboard_changed()
         self._update_navigation_buttons()
 
         self._expand_initial_path(self.start_directory)
         if self.start_directory.is_dir():
-            self._show_directory(self.start_directory)
+            self._show_directory(
+                self.start_directory,
+                [self.startup_image] if self.startup_image is not None else None,
+            )
 
     def _migrate_legacy_settings(self) -> None:
         legacy_settings = QSettings(
@@ -688,6 +1216,85 @@ class ImageViewer(QObject):
         self.window.addAction(self.trash_image_action)
         self.edit_menu.addSeparator()
         self.edit_menu.addAction(self.trash_image_action)
+
+        self.show_in_file_manager_action = QAction(
+            "Im Dateimanager anzeigen", self.window
+        )
+        self.show_in_file_manager_action.triggered.connect(
+            lambda: self.show_in_file_manager(
+                self._file_manager_context_path
+            )
+        )
+        self.image_menu.addSeparator()
+        self.image_menu.addAction(self.show_in_file_manager_action)
+
+        display_rotation_tooltip = (
+            "Dreht nur die Anzeige. Die Originaldatei bleibt unverändert."
+        )
+        self.rotate_left_action = QAction("Nach links drehen", self.window)
+        self.rotate_left_action.setShortcut(QKeySequence("Ctrl+Left"))
+        self.rotate_left_action.setShortcutContext(
+            Qt.ShortcutContext.WindowShortcut
+        )
+        self.rotate_left_action.setToolTip(display_rotation_tooltip)
+        self.rotate_left_action.triggered.connect(
+            lambda: self._rotate_current_image(
+                -90, self._rotation_context_path
+            )
+        )
+
+        self.rotate_right_action = QAction("Nach rechts drehen", self.window)
+        self.rotate_right_action.setShortcut(QKeySequence("Ctrl+Right"))
+        self.rotate_right_action.setShortcutContext(
+            Qt.ShortcutContext.WindowShortcut
+        )
+        self.rotate_right_action.setToolTip(display_rotation_tooltip)
+        self.rotate_right_action.triggered.connect(
+            lambda: self._rotate_current_image(
+                90, self._rotation_context_path
+            )
+        )
+
+        self.reset_rotation_action = QAction(
+            "Drehung zurücksetzen", self.window
+        )
+        self.reset_rotation_action.setToolTip(display_rotation_tooltip)
+        self.reset_rotation_action.triggered.connect(
+            lambda: self._reset_current_rotation(self._rotation_context_path)
+        )
+
+        self.image_menu.addSeparator()
+        for action in (
+            self.rotate_left_action,
+            self.rotate_right_action,
+            self.reset_rotation_action,
+        ):
+            self.image_menu.addAction(action)
+            self.window.addAction(action)
+
+        self.image_menu.addSeparator()
+        self.save_rotated_copy_action = QAction(
+            "Gedrehte Kopie speichern …", self.window
+        )
+        self.save_rotated_copy_action.triggered.connect(
+            lambda: self._save_rotated_copy(self._rotation_context_path)
+        )
+        self.image_menu.addAction(self.save_rotated_copy_action)
+
+        self.save_rotation_to_original_action = QAction(
+            "Drehung im Original speichern …", self.window
+        )
+        self.save_rotation_to_original_action.triggered.connect(
+            lambda: self._save_rotation_to_original(
+                self._rotation_context_path
+            )
+        )
+        self.image_menu.addAction(self.save_rotation_to_original_action)
+
+        self.compare_images_action = QAction(
+            "Bilder vergleichen …", self.window
+        )
+        self.compare_images_action.triggered.connect(self._compare_selected_images)
         self.image_menu.addSeparator()
         image_placeholder_action = QAction("Weitere Bildfunktionen folgen …", self.window)
         image_placeholder_action.setEnabled(False)
@@ -715,6 +1322,89 @@ class ImageViewer(QObject):
         self.view_menu.addAction(self.actual_size_action)
 
         self.view_menu.addSeparator()
+        self.thumbnail_size_action = QAction(
+            "Größe der Vorschaubilder …", self.window
+        )
+        self.thumbnail_size_action.triggered.connect(
+            self._show_thumbnail_size_dialog
+        )
+        self.view_menu.addAction(self.thumbnail_size_action)
+
+        self.increase_thumbnail_size_action = QAction(
+            "Vorschaubilder vergrößern", self.window
+        )
+        self.increase_thumbnail_size_action.setShortcut(QKeySequence("Ctrl++"))
+        self.increase_thumbnail_size_action.setShortcutContext(
+            Qt.ShortcutContext.WindowShortcut
+        )
+        self.increase_thumbnail_size_action.triggered.connect(
+            lambda: self._change_thumbnail_size(THUMBNAIL_STEP)
+        )
+        self.view_menu.addAction(self.increase_thumbnail_size_action)
+
+        self.decrease_thumbnail_size_action = QAction(
+            "Vorschaubilder verkleinern", self.window
+        )
+        self.decrease_thumbnail_size_action.setShortcut(QKeySequence("Ctrl+-"))
+        self.decrease_thumbnail_size_action.setShortcutContext(
+            Qt.ShortcutContext.WindowShortcut
+        )
+        self.decrease_thumbnail_size_action.triggered.connect(
+            lambda: self._change_thumbnail_size(-THUMBNAIL_STEP)
+        )
+        self.view_menu.addAction(self.decrease_thumbnail_size_action)
+
+        self.reset_thumbnail_size_action = QAction(
+            "Vorschaubildgröße zurücksetzen", self.window
+        )
+        self.reset_thumbnail_size_action.setShortcut(QKeySequence("Ctrl+0"))
+        self.reset_thumbnail_size_action.setShortcutContext(
+            Qt.ShortcutContext.WindowShortcut
+        )
+        self.reset_thumbnail_size_action.triggered.connect(
+            lambda: self._apply_thumbnail_size(THUMBNAIL_DEFAULT)
+        )
+        self.view_menu.addAction(self.reset_thumbnail_size_action)
+        self._set_thumbnail_size_actions_enabled(True)
+
+        self.view_menu.addSeparator()
+        self.sort_menu = self.view_menu.addMenu("Sortieren nach")
+        self.sort_criterion_action_group = QActionGroup(self.window)
+        self.sort_criterion_action_group.setExclusive(True)
+        for criterion, label in (
+            ("name", "Dateiname"),
+            ("recording_date", "Aufnahmedatum"),
+            ("modified", "Änderungsdatum"),
+            ("size", "Dateigröße"),
+        ):
+            action = QAction(label, self.window)
+            action.setCheckable(True)
+            action.setData(criterion)
+            action.setChecked(criterion == self._sort_criterion)
+            self.sort_criterion_action_group.addAction(action)
+            self.sort_menu.addAction(action)
+        self.sort_criterion_action_group.triggered.connect(
+            self._set_sort_criterion
+        )
+        self.sort_menu.addSeparator()
+        self.sort_direction_action_group = QActionGroup(self.window)
+        self.sort_direction_action_group.setExclusive(True)
+        for ascending, label in (
+            (True, "Aufsteigend"),
+            (False, "Absteigend"),
+        ):
+            action = QAction(label, self.window)
+            action.setCheckable(True)
+            action.setData(ascending)
+            action.setChecked(ascending == self._sort_ascending)
+            self.sort_direction_action_group.addAction(action)
+            self.sort_menu.addAction(action)
+
+        self.sort_direction_action_group.triggered.connect(
+            self._set_sort_direction
+        )
+
+        self.view_menu.addSeparator()
         self.color_scheme_menu = self.view_menu.addMenu("Farbschema")
         self.color_scheme_action_group = QActionGroup(self.window)
         self.color_scheme_action_group.setExclusive(True)
@@ -730,6 +1420,34 @@ class ImageViewer(QObject):
         self._update_view_actions()
 
         self.navigation_menu = self.window.menuBar().addMenu("Navigation")
+        self.previous_folder_action = QAction("Vorheriger Ordner", self.window)
+        self.previous_folder_action.setShortcut(QKeySequence("Alt+Left"))
+        self.previous_folder_action.setShortcutContext(
+            Qt.ShortcutContext.WindowShortcut
+        )
+        self.previous_folder_action.setToolTip("Vorheriger Ordner (Alt+Links)")
+        self.previous_folder_action.triggered.connect(self._go_to_previous_folder)
+        self.navigation_menu.addAction(self.previous_folder_action)
+
+        self.next_folder_action = QAction("Nächster Ordner", self.window)
+        self.next_folder_action.setShortcut(QKeySequence("Alt+Right"))
+        self.next_folder_action.setShortcutContext(
+            Qt.ShortcutContext.WindowShortcut
+        )
+        self.next_folder_action.setToolTip("Nächster Ordner (Alt+Rechts)")
+        self.next_folder_action.triggered.connect(self._go_to_next_folder)
+        self.navigation_menu.addAction(self.next_folder_action)
+
+        self.parent_folder_action = QAction("Übergeordneter Ordner", self.window)
+        self.parent_folder_action.setShortcut(QKeySequence("Alt+Up"))
+        self.parent_folder_action.setShortcutContext(
+            Qt.ShortcutContext.WindowShortcut
+        )
+        self.parent_folder_action.setToolTip("Übergeordneter Ordner (Alt+Oben)")
+        self.parent_folder_action.triggered.connect(self._go_to_parent_folder)
+        self.navigation_menu.addAction(self.parent_folder_action)
+        self.navigation_menu.addSeparator()
+
         self.first_image_action = QAction("Erstes Bild", self.window)
         self.first_image_action.setShortcut(QKeySequence("Home"))
         self.first_image_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
@@ -758,6 +1476,9 @@ class ImageViewer(QObject):
         )
         self.navigation_menu.addAction(self.last_image_action)
         for action in (
+            self.previous_folder_action,
+            self.next_folder_action,
+            self.parent_folder_action,
             self.first_image_action,
             self.previous_image_action,
             self.next_image_action,
@@ -768,6 +1489,8 @@ class ImageViewer(QObject):
         self._create_slideshow_menu()
 
         self.tools_menu = self.window.menuBar().addMenu("Werkzeuge")
+        self.tools_menu.addAction(self.compare_images_action)
+        self.tools_menu.addSeparator()
         self.find_duplicates_action = QAction(
             "Doppelte Bilder finden …", self.window
         )
@@ -795,11 +1518,213 @@ class ImageViewer(QObject):
         image_loaded = not self.original_image.isNull()
         self.fit_image_action.setEnabled(image_loaded)
         self.actual_size_action.setEnabled(image_loaded)
+        self._set_file_manager_action_state(
+            self.current_image if image_loaded else None
+        )
+        self._set_rotation_action_states(
+            self.current_image if image_loaded else None
+        )
         has_selection = bool(self.thumbnail_list.selectedItems())
         self.trash_image_action.setEnabled(has_selection)
         self.copy_image_action.setEnabled(has_selection)
         self.cut_image_action.setEnabled(has_selection)
+        self.compare_images_action.setEnabled(True)
         self.select_all_action.setEnabled(self.thumbnail_list.count() > 0)
+
+    def _set_file_manager_action_state(self, image_path: Path | None) -> None:
+        self.show_in_file_manager_action.setEnabled(
+            image_path is not None and image_path.is_file()
+        )
+
+    def _set_rotation_action_states(self, image_path: Path | None) -> None:
+        image_available = (
+            image_path is not None
+            and image_path.suffix.lower() in IMAGE_EXTENSIONS
+            and image_path.is_file()
+        )
+        rotation = self._current_display_rotation(image_path)
+        rotation_pending = image_available and rotation != 0
+        self.rotate_left_action.setEnabled(image_available)
+        self.rotate_right_action.setEnabled(image_available)
+        self.reset_rotation_action.setEnabled(rotation_pending)
+        self.save_rotated_copy_action.setEnabled(rotation_pending)
+        original_format_supported = (
+            image_path is not None
+            and self._save_format_for_path(image_path) is not None
+        )
+        self.save_rotation_to_original_action.setEnabled(
+            rotation_pending and original_format_supported
+        )
+
+    def _set_sort_criterion(self, action: QAction) -> None:
+        self._sort_criterion = str(action.data())
+        self.settings.setValue(SORT_CRITERION_KEY, self._sort_criterion)
+        self.settings.sync()
+        self._request_thumbnail_sort()
+
+    def _set_sort_direction(self, action: QAction) -> None:
+        self._sort_ascending = bool(action.data())
+        self.settings.setValue(SORT_ASCENDING_KEY, self._sort_ascending)
+        self.settings.sync()
+        self._request_thumbnail_sort()
+
+    def _resolved_sort_path(self, path: Path) -> str:
+        raw_path = str(path)
+        cached_path = self._resolved_sort_path_cache.get(raw_path)
+        if cached_path is not None:
+            return cached_path
+        try:
+            resolved_path = str(path.resolve(strict=False))
+        except (OSError, RuntimeError):
+            resolved_path = str(path.absolute())
+        self._resolved_sort_path_cache[raw_path] = resolved_path
+        return resolved_path
+
+    @staticmethod
+    def _recording_date_from_tooltip(tooltip: str) -> datetime | None:
+        prefix = "Aufgenommen: "
+        for line in tooltip.splitlines():
+            if not line.startswith(prefix):
+                continue
+            try:
+                return datetime.strptime(
+                    line.removeprefix(prefix), "%d.%m.%Y, %H:%M"
+                )
+            except ValueError:
+                return None
+        return None
+
+    def _compare_names(self, first: Path, second: Path) -> int:
+        first_parts = re.split(r"(\d+)", first.name.casefold())
+        second_parts = re.split(r"(\d+)", second.name.casefold())
+        result = 0
+        for first_part, second_part in zip(first_parts, second_parts):
+            if first_part.isdigit() and second_part.isdigit():
+                first_number = int(first_part)
+                second_number = int(second_part)
+                result = (first_number > second_number) - (
+                    first_number < second_number
+                )
+            else:
+                result = self._name_collator.compare(first_part, second_part)
+            if result != 0:
+                break
+        if result == 0:
+            result = (len(first_parts) > len(second_parts)) - (
+                len(first_parts) < len(second_parts)
+            )
+        if result == 0:
+            result = self._name_collator.compare(
+                self._resolved_sort_path(first),
+                self._resolved_sort_path(second),
+            )
+        return result
+
+    def _compare_sort_paths(self, first: Path, second: Path) -> int:
+        first_key = self._resolved_sort_path(first)
+        second_key = self._resolved_sort_path(second)
+
+        if self._sort_criterion == "name":
+            result = self._compare_names(first, second)
+        elif self._sort_criterion == "recording_date":
+            first_value = self._recording_date_cache.get(first_key)
+            second_value = self._recording_date_cache.get(second_key)
+            if first_value is None and second_value is not None:
+                return 1
+            if first_value is not None and second_value is None:
+                return -1
+            if first_value is None:
+                result = self._compare_names(first, second)
+            else:
+                result = (first_value > second_value) - (
+                    first_value < second_value
+                )
+                if result == 0:
+                    result = self._compare_names(first, second)
+        else:
+            metadata_index = 1 if self._sort_criterion == "modified" else 0
+            first_metadata = self._file_sort_metadata.get(first_key)
+            second_metadata = self._file_sort_metadata.get(second_key)
+            if first_metadata is None and second_metadata is not None:
+                return 1
+            if first_metadata is not None and second_metadata is None:
+                return -1
+            if first_metadata is None:
+                result = self._compare_names(first, second)
+            else:
+                first_value = first_metadata[metadata_index]
+                second_value = second_metadata[metadata_index]
+                result = (first_value > second_value) - (
+                    first_value < second_value
+                )
+                if result == 0:
+                    result = self._compare_names(first, second)
+
+        return result if self._sort_ascending else -result
+
+    def _sorted_paths(self, paths: list[Path]) -> list[Path]:
+        return sorted(paths, key=cmp_to_key(self._compare_sort_paths))
+
+    def _request_thumbnail_sort(self) -> None:
+        self._capture_sort_waiting = (
+            self._sort_criterion == "recording_date"
+            and self._completed_jobs < len(self._pending_images)
+        )
+        if self._capture_sort_waiting:
+            self._set_file_name_text("Aufnahmedaten werden gelesen …")
+        self._sort_thumbnail_items()
+
+    def _sort_thumbnail_items(self) -> None:
+        if self.thumbnail_list.count() < 2:
+            self._update_navigation_buttons()
+            return
+
+        selected_paths = {
+            self._resolved_sort_path(
+                Path(item.data(Qt.ItemDataRole.UserRole))
+            )
+            for item in self.thumbnail_list.selectedItems()
+        }
+        current_path = (
+            self._resolved_sort_path(self.current_image)
+            if self.current_image is not None
+            else None
+        )
+        signals_were_blocked = self.thumbnail_list.blockSignals(True)
+        current_item = None
+        try:
+            items = [
+                self.thumbnail_list.takeItem(0)
+                for _ in range(self.thumbnail_list.count())
+            ]
+            items.sort(
+                key=cmp_to_key(
+                    lambda first, second: self._compare_sort_paths(
+                        Path(first.data(Qt.ItemDataRole.UserRole)),
+                        Path(second.data(Qt.ItemDataRole.UserRole)),
+                    )
+                )
+            )
+            for index, item in enumerate(items):
+                self.thumbnail_list.insertItem(index, item)
+                item_path = self._resolved_sort_path(
+                    Path(item.data(Qt.ItemDataRole.UserRole))
+                )
+                item.setSelected(item_path in selected_paths)
+                if item_path == current_path:
+                    current_item = item
+            if current_item is not None:
+                self.thumbnail_list.setCurrentItem(
+                    current_item,
+                    QItemSelectionModel.SelectionFlag.NoUpdate,
+                )
+        finally:
+            self.thumbnail_list.blockSignals(signals_were_blocked)
+
+        if current_item is not None:
+            self.thumbnail_list.scrollToItem(current_item)
+        self._update_navigation_buttons()
+        self._update_view_actions()
 
     def _set_color_scheme(self, action: QAction) -> None:
         self._color_scheme = str(action.data())
@@ -818,6 +1743,102 @@ class ImageViewer(QObject):
         dialog.setStyleSheet(
             message_box_stylesheet(COLOR_SCHEMES[self._color_scheme])
         )
+
+    def _show_thumbnail_size_dialog(self) -> None:
+        dialog = QDialog(self.window)
+        dialog.setWindowTitle("Größe der Vorschaubilder")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(390)
+        layout = QVBoxLayout(dialog)
+        value_label = QLabel(f"{self._thumbnail_pixels} Pixel")
+        value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        value_label.setStyleSheet("font-weight: 600;")
+        layout.addWidget(value_label)
+
+        slider_row = QHBoxLayout()
+        slider_row.addWidget(QLabel("Klein"))
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(
+            0, (THUMBNAIL_MAXIMUM - THUMBNAIL_MINIMUM) // THUMBNAIL_STEP
+        )
+        slider.setSingleStep(1)
+        slider.setPageStep(1)
+        slider.setValue(
+            (self._thumbnail_pixels - THUMBNAIL_MINIMUM) // THUMBNAIL_STEP
+        )
+        slider.valueChanged.connect(
+            lambda step: value_label.setText(
+                f"{THUMBNAIL_MINIMUM + step * THUMBNAIL_STEP} Pixel"
+            )
+        )
+        slider_row.addWidget(slider, 1)
+        slider_row.addWidget(QLabel("Groß"))
+        layout.addLayout(slider_row)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        apply_button = QPushButton("Übernehmen")
+        cancel_button = QPushButton("Abbrechen")
+        cancel_button.setDefault(True)
+        apply_button.clicked.connect(dialog.accept)
+        cancel_button.clicked.connect(dialog.reject)
+        button_row.addWidget(apply_button)
+        button_row.addWidget(cancel_button)
+        layout.addLayout(button_row)
+        dialog.setStyleSheet(
+            message_box_stylesheet(COLOR_SCHEMES[self._color_scheme])
+        )
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        pixels = THUMBNAIL_MINIMUM + slider.value() * THUMBNAIL_STEP
+        self._apply_thumbnail_size(pixels)
+
+    def _change_thumbnail_size(self, difference: int) -> None:
+        self._apply_thumbnail_size(self._thumbnail_pixels + difference)
+
+    def _set_thumbnail_size_actions_enabled(self, enabled: bool) -> None:
+        self.thumbnail_size_action.setEnabled(enabled)
+        self.increase_thumbnail_size_action.setEnabled(
+            enabled and self._thumbnail_pixels < THUMBNAIL_MAXIMUM
+        )
+        self.decrease_thumbnail_size_action.setEnabled(
+            enabled and self._thumbnail_pixels > THUMBNAIL_MINIMUM
+        )
+        self.reset_thumbnail_size_action.setEnabled(
+            enabled and self._thumbnail_pixels != THUMBNAIL_DEFAULT
+        )
+
+    def _apply_thumbnail_size(self, pixels: int) -> None:
+        pixels = normalized_thumbnail_pixels(pixels)
+        if pixels == self._thumbnail_pixels:
+            self._set_thumbnail_size_actions_enabled(True)
+            return
+        self._thumbnail_pixels = pixels
+        self._thumbnail_size = thumbnail_size_for_pixels(pixels)
+        self._thumbnail_grid_size = thumbnail_grid_size_for_pixels(pixels)
+        self.settings.setValue(THUMBNAIL_SIZE_KEY, pixels)
+        self.settings.sync()
+
+        self._set_thumbnail_size_actions_enabled(False)
+        self.thread_pool.clear()
+        self._load_generation += 1
+        generation = self._load_generation
+        self._pending_images = [
+            Path(self.thumbnail_list.item(row).data(Qt.ItemDataRole.UserRole))
+            for row in range(self.thumbnail_list.count())
+        ]
+        self._next_job_index = 0
+        self._completed_jobs = 0
+        self._active_jobs = 0
+        self.thumbnail_list.setIconSize(self._thumbnail_size)
+        self.thumbnail_list.setGridSize(self._thumbnail_grid_size)
+        for row in range(self.thumbnail_list.count()):
+            item = self.thumbnail_list.item(row)
+            item.setIcon(QIcon())
+            item.setSizeHint(self._thumbnail_grid_size)
+        self._update_loading_text()
+        self._start_more_thumbnail_jobs(generation)
 
     def _show_duplicate_finder(self) -> None:
         initial_directory = self.current_directory or self.start_directory
@@ -936,6 +1957,171 @@ class ImageViewer(QObject):
             Path(item.data(Qt.ItemDataRole.UserRole))
             for item in self.thumbnail_list.selectedItems()
         ]
+
+    def show_in_file_manager(self, image_path: Path | None = None) -> None:
+        target_path = image_path or self.current_image
+        if target_path is None:
+            return
+        try:
+            target_path = target_path.resolve(strict=True)
+        except (OSError, RuntimeError):
+            self._show_file_manager_missing_error(target_path)
+            return
+        if not target_path.is_file():
+            self._show_file_manager_missing_error(target_path)
+            return
+
+        parent_directory = target_path.parent
+        if not (
+            parent_directory.is_dir()
+            and os.access(parent_directory, os.R_OK | os.X_OK)
+        ):
+            self._show_file_manager_error(
+                target_path,
+                "Der übergeordnete Ordner ist nicht erreichbar.",
+            )
+            return
+
+        file_uri = bytes(
+            QUrl.fromLocalFile(str(target_path)).toEncoded()
+        ).decode("ascii").replace("'", "%27")
+        errors: list[str] = []
+        if self._show_item_via_filemanager1(file_uri, errors):
+            return
+        if self._start_file_manager_fallback(parent_directory, errors):
+            return
+        self._show_file_manager_error(
+            target_path,
+            "Weder Nemo noch ein anderer Dateimanager konnte gestartet werden."
+            + (f"\n\n{'\n'.join(errors)}" if errors else ""),
+        )
+
+    @staticmethod
+    def _show_item_via_filemanager1(
+        file_uri: str, errors: list[str]
+    ) -> bool:
+        gdbus = shutil.which("gdbus")
+        if gdbus is None:
+            errors.append("FileManager1: gdbus wurde nicht gefunden.")
+            return False
+        escaped_uri = file_uri.replace("\\", "\\\\").replace("'", "\\'")
+        try:
+            result = subprocess.run(
+                [
+                    gdbus,
+                    "call",
+                    "--session",
+                    "--dest",
+                    "org.freedesktop.FileManager1",
+                    "--object-path",
+                    "/org/freedesktop/FileManager1",
+                    "--method",
+                    "org.freedesktop.FileManager1.ShowItems",
+                    f"['{escaped_uri}']",
+                    "",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            errors.append(f"FileManager1: {error}")
+            return False
+        if result.returncode == 0:
+            return True
+        detail = result.stderr.strip() if result.stderr else "Aufruf fehlgeschlagen"
+        errors.append(f"FileManager1: {detail}")
+        return False
+
+    @staticmethod
+    def _start_file_manager_fallback(
+        parent_directory: Path, errors: list[str]
+    ) -> bool:
+        candidates = (
+            ("nemo", [str(parent_directory)]),
+            ("xdg-open", [str(parent_directory)]),
+            ("gio", ["open", str(parent_directory)]),
+        )
+        for executable_name, arguments in candidates:
+            executable = shutil.which(executable_name)
+            if executable is None:
+                errors.append(f"{executable_name}: nicht gefunden.")
+                continue
+            try:
+                subprocess.Popen(
+                    [executable, *arguments],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                return True
+            except OSError as error:
+                errors.append(f"{executable_name}: {error}")
+        return False
+
+    def _show_file_manager_missing_error(self, image_path: Path) -> None:
+        dialog = QMessageBox(self.window)
+        dialog.setWindowTitle("Im Dateimanager anzeigen")
+        dialog.setIcon(QMessageBox.Icon.Warning)
+        dialog.setText("Die Datei wurde nicht gefunden.")
+        dialog.setInformativeText(str(image_path.absolute()))
+        dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+        dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+        self._style_message_box(dialog)
+        dialog.exec()
+
+    def _show_file_manager_error(
+        self, image_path: Path, detail: str
+    ) -> None:
+        dialog = QMessageBox(self.window)
+        dialog.setWindowTitle("Im Dateimanager anzeigen")
+        dialog.setIcon(QMessageBox.Icon.Critical)
+        dialog.setText("Der Speicherort konnte nicht geöffnet werden.")
+        dialog.setInformativeText(f"{image_path}\n\n{detail}")
+        dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+        dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+        self._style_message_box(dialog)
+        dialog.exec()
+
+    def _compare_selected_images(self) -> None:
+        selected_items = sorted(
+            self.thumbnail_list.selectedItems(),
+            key=self.thumbnail_list.row,
+        )
+        selected_count = len(selected_items)
+        if selected_count != 2:
+            if selected_count == 0:
+                message = "Bitte markieren Sie zuerst zwei Bilder."
+            elif selected_count == 1:
+                message = "Bitte markieren Sie noch ein zweites Bild."
+            else:
+                message = (
+                    "Bitte markieren Sie genau zwei Bilder.\n"
+                    f"Aktuell sind {selected_count} Bilder ausgewählt."
+                )
+            dialog = QMessageBox(self.window)
+            dialog.setWindowTitle("Bilder vergleichen")
+            dialog.setIcon(QMessageBox.Icon.Information)
+            dialog.setTextFormat(Qt.TextFormat.PlainText)
+            dialog.setText(message)
+            dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+            dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+            self._style_message_box(dialog)
+            dialog.exec()
+            return
+        selected_paths = [
+            Path(item.data(Qt.ItemDataRole.UserRole)) for item in selected_items
+        ]
+        dialog = ImageComparisonDialog(
+            selected_paths[0],
+            selected_paths[1],
+            COLOR_SCHEMES[self._color_scheme],
+            self.window,
+        )
+        dialog.exec()
 
     def _put_current_image_on_clipboard(self, operation: str) -> None:
         source_paths = [
@@ -1176,7 +2362,7 @@ class ImageViewer(QObject):
         failures = []
         for row, image_path in selected:
             try:
-                cache_name = thumbnail_cache_name(image_path)
+                cache_name = thumbnail_cache_name(image_path, self._thumbnail_size)
             except OSError:
                 cache_name = None
             try:
@@ -1228,6 +2414,7 @@ class ImageViewer(QObject):
                 self._stop_slideshow()
             self.current_image = None
             self.original_image = QImage()
+            self._exif_oriented_image = QImage()
             self._zoom_mode = "fit"
             self._zoom_factor = 1.0
             self.image_label.clear()
@@ -1257,6 +2444,18 @@ class ImageViewer(QObject):
             "• Linke Maustaste ziehen: Vergrößertes Bild verschieben<br>"
             "• Klick auf das große Bild: Vollbild ein oder aus<br><br>"
             "<b>Tastatur:</b><br>"
+            "• Alt+Links: Vorheriger Ordner<br>"
+            "• Alt+Rechts: Nächster Ordner<br>"
+            "• Alt+Oben: Übergeordneter Ordner<br>"
+            "• Strg+Links: Aktuelles Bild nach links drehen<br>"
+            "• Strg+Rechts: Aktuelles Bild nach rechts drehen<br>"
+            "• Die Drehung verändert die Originaldatei nicht<br>"
+            "• „Gedrehte Kopie speichern …“ speichert ein neues Bild.<br>"
+            "• „Drehung im Original speichern …“ überschreibt die Originaldatei "
+            "erst nach einer Sicherheitsabfrage.<br>"
+            "• JPEG-Dateien werden beim Speichern neu komprimiert.<br>"
+            "• Im Dateimanager anzeigen öffnet den Speicherort des aktuellen "
+            "oder rechtsgeklickten Bildes.<br>"
             "• Pfeiltasten: Durch die Vorschaubilder navigieren<br>"
             "• Pos1: Erstes Bild<br>"
             "• Ende: Letztes Bild<br>"
@@ -1267,11 +2466,18 @@ class ImageViewer(QObject):
             "• Escape: Diashow beziehungsweise Vollbild beenden<br>"
             "• Strg + Klick: Mehrere einzelne Bilder auswählen<br>"
             "• Umschalt + Klick: Bildbereich auswählen<br>"
+            "• Zwei Bilder markieren und unter Werkzeuge → Bilder vergleichen öffnen.<br>"
             "• Strg + A: Alle Bilder auswählen<br>"
             "• Strg + C: Ausgewählte Bilder kopieren<br>"
             "• Strg + X: Ausgewählte Bilder ausschneiden<br>"
             "• Strg + V: Bilder in den aktuellen Ordner einfügen<br>"
             "• Entf: Ausgewählte Bilder in den Papierkorb verschieben<br>"
+            "• Die Größe der Vorschaubilder kann unter Ansicht geändert werden.<br>"
+            "• Die Reihenfolge der Vorschaubilder kann unter Ansicht → Sortieren "
+            "nach geändert werden.<br>"
+            "• Strg + Plus: Vorschaubilder vergrößern<br>"
+            "• Strg + Minus: Vorschaubilder verkleinern<br>"
+            "• Strg + 0: Vorschaubildgröße auf 160 Pixel zurücksetzen<br>"
             "• Alt+F4: Programm beenden"
         )
         help_dialog.setStandardButtons(QMessageBox.StandardButton.Close)
@@ -1493,16 +2699,82 @@ class ImageViewer(QObject):
         if directory.is_dir():
             self._show_directory(directory)
 
+    def _record_folder_history(self, directory: Path) -> None:
+        if (
+            0 <= self._folder_history_index < len(self._folder_history)
+            and self._folder_history[self._folder_history_index] == directory
+        ):
+            self._update_folder_navigation_actions()
+            return
+        if self._folder_history_index < len(self._folder_history) - 1:
+            self._folder_history = self._folder_history[
+                : self._folder_history_index + 1
+            ]
+        self._folder_history.append(directory)
+        if len(self._folder_history) > FOLDER_HISTORY_LIMIT:
+            self._folder_history = self._folder_history[-FOLDER_HISTORY_LIMIT:]
+        self._folder_history_index = len(self._folder_history) - 1
+        self._update_folder_navigation_actions()
+
+    def _go_to_folder_history_index(self, index: int) -> None:
+        if not 0 <= index < len(self._folder_history):
+            return
+        if self._show_directory(
+            self._folder_history[index],
+            add_to_history=False,
+            show_open_error=True,
+        ):
+            self._folder_history_index = index
+            self._update_folder_navigation_actions()
+
+    def _go_to_previous_folder(self) -> None:
+        self._go_to_folder_history_index(self._folder_history_index - 1)
+
+    def _go_to_next_folder(self) -> None:
+        self._go_to_folder_history_index(self._folder_history_index + 1)
+
+    def _go_to_parent_folder(self) -> None:
+        if self.current_directory is None:
+            return
+        parent = self.current_directory.parent
+        if parent == self.current_directory:
+            self._update_folder_navigation_actions()
+            return
+        self._show_directory(parent, show_open_error=True)
+
+    def _show_folder_open_error(self, directory: Path, error: OSError) -> None:
+        dialog = QMessageBox(self.window)
+        dialog.setWindowTitle("Ordner konnte nicht geöffnet werden")
+        dialog.setIcon(QMessageBox.Icon.Warning)
+        dialog.setText("Der Ordner kann nicht geöffnet werden.")
+        dialog.setInformativeText(f"{directory}\n\n{error}")
+        dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+        dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+        self._style_message_box(dialog)
+        dialog.exec()
+
     def _show_directory(
         self,
         directory: Path,
         select_paths: list[Path] | None = None,
-    ) -> None:
+        add_to_history: bool = True,
+        show_open_error: bool = False,
+    ) -> bool:
+        try:
+            directory = directory.resolve(strict=True)
+            new_directory_iterator = os.scandir(directory)
+        except OSError as error:
+            if show_open_error:
+                self._show_folder_open_error(directory, error)
+            else:
+                self._set_file_name_text("Ordner konnte nicht gelesen werden")
+            return False
         if self._slideshow_running:
             self._stop_slideshow()
+        self._set_thumbnail_size_actions_enabled(False)
         if self._directory_iterator is not None:
             self._directory_iterator.close()
-            self._directory_iterator = None
+        self._directory_iterator = None
         self.thread_pool.clear()
         self._load_generation += 1
         generation = self._load_generation
@@ -1511,7 +2783,16 @@ class ImageViewer(QObject):
         self._prepare_index = 0
         self._completed_jobs = 0
         self._active_jobs = 0
+        self._file_sort_metadata = {}
+        self._resolved_sort_path_cache = {}
+        self._capture_sort_waiting = False
         self.current_directory = directory
+        self._directory_iterator = new_directory_iterator
+        if add_to_history:
+            self._record_folder_history(directory)
+        else:
+            self._update_folder_navigation_actions()
+        self._expand_initial_path(directory)
         self._pending_selection_paths = {
             path.resolve(strict=False) for path in (select_paths or [])
         }
@@ -1522,6 +2803,7 @@ class ImageViewer(QObject):
         self._update_navigation_buttons()
         self.current_image = None
         self.original_image = QImage()
+        self._exif_oriented_image = QImage()
         self._update_view_actions()
         self._zoom_mode = "fit"
         self._zoom_factor = 1.0
@@ -1531,15 +2813,10 @@ class ImageViewer(QObject):
         self._set_file_name_text("Suche nach Bildern …")
         self._clipboard_changed()
 
-        try:
-            self._directory_iterator = os.scandir(directory)
-        except OSError:
-            self._set_file_name_text("Ordner konnte nicht gelesen werden")
-            return
-
         self.settings.setValue(LAST_DIRECTORY_KEY, str(directory.resolve(strict=False)))
         self.settings.sync()
         QTimer.singleShot(0, lambda: self._scan_directory_batch(generation))
+        return True
 
     def _scan_directory_batch(self, generation: int) -> None:
         if generation != self._load_generation or self._directory_iterator is None:
@@ -1556,12 +2833,23 @@ class ImageViewer(QObject):
                         and path.suffix.lower() in IMAGE_EXTENSIONS
                     ):
                         self._pending_images.append(path)
+                        try:
+                            file_info = entry.stat()
+                            self._file_sort_metadata[
+                                self._resolved_sort_path(path)
+                            ] = (file_info.st_size, file_info.st_mtime_ns)
+                        except OSError:
+                            pass
                 except OSError:
                     continue
         except StopIteration:
             self._directory_iterator.close()
             self._directory_iterator = None
-            self._pending_images.sort(key=lambda path: path.name.casefold())
+            self._pending_images = self._sorted_paths(self._pending_images)
+            self._capture_sort_waiting = (
+                self._sort_criterion == "recording_date"
+                and bool(self._pending_images)
+            )
             self._update_loading_text()
             QTimer.singleShot(0, lambda: self._prepare_thumbnail_items(generation))
             return
@@ -1569,6 +2857,7 @@ class ImageViewer(QObject):
             self._directory_iterator.close()
             self._directory_iterator = None
             self._set_file_name_text("Ordner konnte nicht vollständig gelesen werden")
+            self._set_thumbnail_size_actions_enabled(True)
             return
 
         self._set_file_name_text(
@@ -1587,7 +2876,7 @@ class ImageViewer(QObject):
             image_path = self._pending_images[self._prepare_index]
             try:
                 item = QListWidgetItem(image_path.name)
-                item.setSizeHint(THUMBNAIL_GRID_SIZE)
+                item.setSizeHint(self._thumbnail_grid_size)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter)
                 item.setData(Qt.ItemDataRole.UserRole, str(image_path))
                 item.setToolTip(image_path.name)
@@ -1633,6 +2922,9 @@ class ImageViewer(QObject):
             image_path = self._pending_images[index]
             try:
                 file_info = image_path.stat()
+                self._file_sort_metadata[
+                    self._resolved_sort_path(image_path)
+                ] = (file_info.st_size, file_info.st_mtime_ns)
                 metadata_key = (
                     str(image_path.resolve(strict=False)),
                     file_info.st_size,
@@ -1652,6 +2944,7 @@ class ImageViewer(QObject):
                 generation,
                 metadata_key,
                 self._metadata_cache.get(metadata_key),
+                self._thumbnail_size,
             )
             try:
                 task.signals.ready.connect(self._thumbnail_ready)
@@ -1676,6 +2969,9 @@ class ImageViewer(QObject):
         self._completed_jobs += 1
         try:
             self._metadata_cache[metadata_key] = tooltip
+            self._recording_date_cache[metadata_key[0]] = (
+                self._recording_date_from_tooltip(tooltip)
+            )
             item = self.thumbnail_list.item(index)
             expected_path = metadata_key[0]
             if (
@@ -1689,7 +2985,9 @@ class ImageViewer(QObject):
                 item.setToolTip(tooltip)
                 if not image.isNull():
                     item.setIcon(QIcon(QPixmap.fromImage(image)))
-                    item.setSizeHint(THUMBNAIL_GRID_SIZE)
+                    item.setSizeHint(self._thumbnail_grid_size)
+                if item is self.thumbnail_list.currentItem():
+                    self._update_status_bar()
         except (OSError, RuntimeError, TypeError, ValueError):
             pass
         self._update_loading_text()
@@ -1699,6 +2997,9 @@ class ImageViewer(QObject):
             self._start_more_thumbnail_jobs(generation)
 
     def _update_loading_text(self) -> None:
+        if self._capture_sort_waiting:
+            self._set_file_name_text("Aufnahmedaten werden gelesen …")
+            return
         self._set_file_name_text(
             f"Lade Vorschaubilder: {self._completed_jobs} von {len(self._pending_images)}"
         )
@@ -1706,6 +3007,16 @@ class ImageViewer(QObject):
     def _finish_thumbnail_loading(self, generation: int) -> None:
         if generation != self._load_generation:
             return
+        self._capture_sort_waiting = False
+        self._sort_thumbnail_items()
+        self._pending_images = [
+            Path(self.thumbnail_list.item(row).data(Qt.ItemDataRole.UserRole))
+            for row in range(self.thumbnail_list.count())
+        ]
+        self._set_thumbnail_size_actions_enabled(True)
+        current_item = self.thumbnail_list.currentItem()
+        if current_item is not None:
+            self.thumbnail_list.scrollToItem(current_item)
         if self.current_image is not None:
             self._set_file_name_text(self.current_image.name)
             return
@@ -1732,9 +3043,51 @@ class ImageViewer(QObject):
     def _selection_changed(self) -> None:
         self._update_view_actions()
 
+    def _add_rotation_context_submenu(
+        self, context_menu: QMenu, image_path: Path | None
+    ) -> QMenu:
+        rotation_menu = context_menu.addMenu("Drehen")
+        rotation_menu.addAction(self.rotate_left_action)
+        rotation_menu.addAction(self.rotate_right_action)
+        rotation_menu.addAction(self.reset_rotation_action)
+        rotation_menu.addSeparator()
+        rotation_menu.addAction(self.save_rotated_copy_action)
+        rotation_menu.addAction(self.save_rotation_to_original_action)
+        self._set_rotation_action_states(image_path)
+        return rotation_menu
+
+    def _exec_rotation_context_menu(
+        self,
+        context_menu: QMenu,
+        global_position,
+        image_path: Path | None,
+    ) -> None:
+        self._rotation_context_path = image_path
+        self._file_manager_context_path = image_path
+        self._set_file_manager_action_state(image_path)
+        self._add_rotation_context_submenu(context_menu, image_path)
+        try:
+            context_menu.exec(global_position)
+        finally:
+            self._rotation_context_path = None
+            self._file_manager_context_path = None
+            self._update_view_actions()
+
+    def _show_image_context_menu(self, global_position) -> None:
+        context_menu = QMenu(self.image_scroll_area.viewport())
+        image_path = (
+            self.current_image if not self.original_image.isNull() else None
+        )
+        context_menu.addAction(self.show_in_file_manager_action)
+        context_menu.addSeparator()
+        self._exec_rotation_context_menu(
+            context_menu, global_position, image_path
+        )
+
     def _show_thumbnail_context_menu(self, position) -> None:
         clicked_item = self.thumbnail_list.itemAt(position)
         context_menu = QMenu(self.thumbnail_list)
+        context_image_path = None
 
         if clicked_item is not None:
             if clicked_item.isSelected():
@@ -1747,20 +3100,47 @@ class ImageViewer(QObject):
                     clicked_item,
                     QItemSelectionModel.SelectionFlag.ClearAndSelect,
                 )
+            context_image_path = Path(
+                clicked_item.data(Qt.ItemDataRole.UserRole)
+            )
             context_menu.addAction(self.copy_image_action)
             context_menu.addAction(self.cut_image_action)
             context_menu.addAction(self.paste_image_action)
             context_menu.addSeparator()
             context_menu.addAction(self.select_all_action)
             context_menu.addSeparator()
+            self._file_manager_context_path = context_image_path
+            self._set_file_manager_action_state(context_image_path)
+            context_menu.addAction(self.show_in_file_manager_action)
+            context_menu.addSeparator()
+            self._rotation_context_path = context_image_path
+            self._add_rotation_context_submenu(
+                context_menu, context_image_path
+            )
+            context_menu.addSeparator()
+            context_menu.addAction(self.compare_images_action)
             context_menu.addAction(self.trash_image_action)
         else:
             context_menu.addAction(self.paste_image_action)
             context_menu.addAction(self.select_all_action)
+            context_menu.addSeparator()
+            self._file_manager_context_path = None
+            self._set_file_manager_action_state(None)
+            context_menu.addAction(self.show_in_file_manager_action)
+            context_menu.addSeparator()
+            self._rotation_context_path = None
+            self._add_rotation_context_submenu(context_menu, None)
+            context_menu.addSeparator()
+            context_menu.addAction(self.compare_images_action)
 
-        context_menu.exec(
-            self.thumbnail_list.viewport().mapToGlobal(position)
-        )
+        try:
+            context_menu.exec(
+                self.thumbnail_list.viewport().mapToGlobal(position)
+            )
+        finally:
+            self._rotation_context_path = None
+            self._file_manager_context_path = None
+            self._update_view_actions()
 
     def _select_all_images(self) -> None:
         self.thumbnail_list.selectAll()
@@ -1801,26 +3181,545 @@ class ImageViewer(QObject):
         self.next_image_action.setEnabled(last_row >= 0 and current_row < last_row)
         self.last_image_action.setEnabled(last_row >= 0 and current_row != last_row)
         self.select_all_action.setEnabled(last_row >= 0)
+        self._update_status_bar()
+
+    def _create_directory_navigation_buttons(self) -> None:
+        navigation_row = QHBoxLayout()
+        navigation_row.setContentsMargins(0, 0, 0, 0)
+        navigation_row.setSpacing(4)
+        button_specs = (
+            ("previous_folder_button", "←", self.previous_folder_action),
+            ("next_folder_button", "→", self.next_folder_action),
+            ("parent_folder_button", "↑", self.parent_folder_action),
+        )
+        for attribute_name, text, action in button_specs:
+            button = QToolButton(self.directory_panel)
+            button.setDefaultAction(action)
+            button.setText(text)
+            button.setToolTip(action.toolTip())
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setFixedSize(30, 26)
+            navigation_row.addWidget(button)
+            setattr(self, attribute_name, button)
+        navigation_row.addStretch(1)
+        directory_layout = self.directory_panel.layout()
+        if isinstance(directory_layout, QVBoxLayout):
+            directory_layout.insertLayout(1, navigation_row)
+        self._update_folder_navigation_actions()
+
+    def _update_folder_navigation_actions(self) -> None:
+        self.previous_folder_action.setEnabled(self._folder_history_index > 0)
+        self.next_folder_action.setEnabled(
+            0 <= self._folder_history_index < len(self._folder_history) - 1
+        )
+        has_parent = (
+            self.current_directory is not None
+            and self.current_directory.parent != self.current_directory
+        )
+        self.parent_folder_action.setEnabled(has_parent)
+        for attribute_name, text in (
+            ("previous_folder_button", "←"),
+            ("next_folder_button", "→"),
+            ("parent_folder_button", "↑"),
+        ):
+            button = getattr(self, attribute_name, None)
+            if button is not None:
+                button.setText(text)
+
+    def _update_status_bar(self) -> None:
+        current_row = self.thumbnail_list.currentRow()
+        if (
+            self.current_image is None
+            or self.original_image.isNull()
+            or current_row < 0
+        ):
+            self.status_bar.showMessage("Kein Bild ausgewählt")
+            return
+
+        parts = [
+            f"Bild {current_row + 1} von {self.thumbnail_list.count()}",
+            f"{self.original_image.width()} × {self.original_image.height()} Pixel",
+        ]
+        if self._current_file_size is not None:
+            parts.append(format_file_size(self._current_file_size))
+        current_item = self.thumbnail_list.currentItem()
+        if current_item is not None:
+            iso_value = next(
+                (
+                    line.removeprefix("ISO: ")
+                    for line in current_item.toolTip().splitlines()
+                    if line.startswith("ISO: ")
+                ),
+                None,
+            )
+            if iso_value is not None:
+                parts.append(f"ISO {iso_value}")
+        parts.append(f"Zoom {round(self._zoom_factor * 100)} %")
+        self.status_bar.showMessage(" | ".join(parts))
 
     def _load_current_image(self) -> None:
+        self._hide_zoom_indicator()
         if self.current_image is None:
+            self._exif_oriented_image = QImage()
+            self._current_file_size = None
+            self._update_status_bar()
             return
+        try:
+            self._current_file_size = self.current_image.stat().st_size
+        except OSError:
+            self._current_file_size = None
         reader = QImageReader(str(self.current_image))
         reader.setAutoTransform(True)
         image = reader.read()
         if image.isNull():
             self.original_image = QImage()
+            self._exif_oriented_image = QImage()
             self._zoom_mode = "fit"
             self._zoom_factor = 1.0
             self.image_label.clear()
             self.image_label.resize(self.image_scroll_area.viewport().size())
             self.image_label.setText("Bild konnte nicht geladen werden")
             self._update_view_actions()
+            self._update_status_bar()
             return
-        self.original_image = image
+        self._exif_oriented_image = image
+        rotation = self._display_rotation_by_path.get(
+            self._resolved_sort_path(self.current_image), 0
+        )
+        self.original_image = rotated_display_image(
+            self._exif_oriented_image, rotation
+        )
         self._update_view_actions()
         self._zoom_mode = "fit"
         self._render_current_image()
+
+    def _activate_rotation_target(self, image_path: Path | None = None) -> bool:
+        target_path = image_path or self.current_image
+        if target_path is None:
+            return False
+        target_key = self._resolved_sort_path(target_path)
+        current_key = (
+            self._resolved_sort_path(self.current_image)
+            if self.current_image is not None
+            else None
+        )
+        if target_key != current_key or self._exif_oriented_image.isNull():
+            item = self._thumbnail_item_for_path(target_path)
+            if item is not None:
+                self.thumbnail_list.setCurrentItem(
+                    item, QItemSelectionModel.SelectionFlag.NoUpdate
+                )
+                self.thumbnail_list.scrollToItem(item)
+            if (
+                self.current_image is None
+                or self._resolved_sort_path(self.current_image) != target_key
+                or self._exif_oriented_image.isNull()
+            ):
+                self.current_image = target_path
+                self._set_file_name_text(target_path.name)
+                self._load_current_image()
+        return (
+            self.current_image is not None
+            and self._resolved_sort_path(self.current_image) == target_key
+            and not self._exif_oriented_image.isNull()
+        )
+
+    def _rotate_current_image(
+        self, degrees: int, image_path: Path | None = None
+    ) -> None:
+        if not self._activate_rotation_target(image_path):
+            return
+        path_key = self._resolved_sort_path(self.current_image)
+        rotation = (
+            self._display_rotation_by_path.get(path_key, 0) + degrees
+        ) % 360
+        if rotation == 0:
+            self._display_rotation_by_path.pop(path_key, None)
+        else:
+            self._display_rotation_by_path[path_key] = rotation
+        self._apply_current_display_rotation(rotation)
+
+    def _current_display_rotation(self, image_path: Path | None = None) -> int:
+        target_path = image_path or self.current_image
+        if target_path is None:
+            return 0
+        return self._display_rotation_by_path.get(
+            self._resolved_sort_path(target_path), 0
+        )
+
+    def _reset_current_rotation(self, image_path: Path | None = None) -> None:
+        if not self._activate_rotation_target(image_path):
+            return
+        self._display_rotation_by_path.pop(
+            self._resolved_sort_path(self.current_image), None
+        )
+        self._apply_current_display_rotation(0)
+
+    def _apply_current_display_rotation(self, rotation: int) -> None:
+        self.original_image = rotated_display_image(
+            self._exif_oriented_image, rotation
+        )
+        self._zoom_mode = "fit"
+        self._render_current_image()
+        self.image_scroll_area.horizontalScrollBar().setValue(0)
+        self.image_scroll_area.verticalScrollBar().setValue(0)
+        self._show_zoom_indicator()
+        self._update_view_actions()
+
+    def _suggested_rotated_copy_path(self) -> Path | None:
+        if self.current_image is None:
+            return None
+        base_path = self.current_image.with_name(
+            f"{self.current_image.stem}-gedreht{self.current_image.suffix}"
+        )
+        if not base_path.exists():
+            return base_path
+        counter = 1
+        while True:
+            candidate = self.current_image.with_name(
+                f"{self.current_image.stem}-gedreht-{counter}"
+                f"{self.current_image.suffix}"
+            )
+            if not candidate.exists():
+                return candidate
+            counter += 1
+
+    def _animated_gif_save_unsupported(self) -> bool:
+        if self.current_image is None or self.current_image.suffix.lower() != ".gif":
+            return False
+        try:
+            with PillowImage.open(self.current_image) as image:
+                is_animated = bool(getattr(image, "is_animated", False))
+        except Exception:
+            return False
+        if not is_animated:
+            return False
+        dialog = QMessageBox(self.window)
+        dialog.setWindowTitle("Drehung speichern")
+        dialog.setIcon(QMessageBox.Icon.Information)
+        dialog.setText(
+            "Das dauerhafte Drehen animierter GIF-Dateien wird derzeit nicht "
+            "unterstützt."
+        )
+        dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+        dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+        self._style_message_box(dialog)
+        dialog.exec()
+        return True
+
+    def _save_rotated_copy(self, image_path: Path | None = None) -> None:
+        if not self._activate_rotation_target(image_path):
+            return
+        if self._current_display_rotation() == 0:
+            return
+        if self._animated_gif_save_unsupported():
+            return
+        suggested_path = self._suggested_rotated_copy_path()
+        if suggested_path is None:
+            return
+        destination_name, _selected_filter = QFileDialog.getSaveFileName(
+            self.window,
+            "Gedrehte Kopie speichern",
+            str(suggested_path),
+            "Bilder (*.jpg *.jpeg *.png *.webp *.tif *.tiff *.bmp)",
+        )
+        if not destination_name:
+            return
+        destination = Path(destination_name)
+        if (
+            self.current_image is not None
+            and self._resolved_sort_path(destination)
+            == self._resolved_sort_path(self.current_image)
+        ):
+            self._show_rotation_save_error(
+                "Für das Überschreiben der Originaldatei verwenden Sie bitte "
+                "„Drehung im Original speichern …“."
+            )
+            return
+        if destination.exists() and not self._confirm_rotated_copy_overwrite(
+            destination
+        ):
+            return
+        if self._write_rotated_image(destination, replace_original=False):
+            self._show_directory(destination.parent, [destination])
+
+    def _confirm_rotated_copy_overwrite(self, destination: Path) -> bool:
+        dialog = QMessageBox(self.window)
+        dialog.setWindowTitle("Datei überschreiben")
+        dialog.setIcon(QMessageBox.Icon.Warning)
+        dialog.setText("Die gewählte Datei ist bereits vorhanden.")
+        dialog.setInformativeText(str(destination))
+        overwrite_button = dialog.addButton(
+            "Überschreiben", QMessageBox.ButtonRole.AcceptRole
+        )
+        cancel_button = dialog.addButton(
+            "Abbrechen", QMessageBox.ButtonRole.RejectRole
+        )
+        dialog.setDefaultButton(cancel_button)
+        dialog.setEscapeButton(cancel_button)
+        self._style_message_box(dialog)
+        dialog.exec()
+        return dialog.clickedButton() is overwrite_button
+
+    def _save_rotation_to_original(
+        self, image_path: Path | None = None
+    ) -> None:
+        if not self._activate_rotation_target(image_path):
+            return
+        if self.current_image is None or self._current_display_rotation() == 0:
+            return
+        if self._animated_gif_save_unsupported():
+            return
+        image_path = self.current_image
+        if not os.access(image_path, os.W_OK):
+            self._show_rotation_save_error(
+                "Die Originaldatei ist schreibgeschützt oder es fehlen "
+                "Schreibrechte."
+            )
+            return
+        dialog = QMessageBox(self.window)
+        dialog.setWindowTitle("Drehung im Original speichern")
+        dialog.setIcon(QMessageBox.Icon.Warning)
+        dialog.setText(
+            "Möchtest du die Drehung dauerhaft in der Originaldatei speichern?\n\n"
+            "Die Bilddaten werden neu gespeichert. Dieser Vorgang kann in "
+            "BildBlick nicht direkt rückgängig gemacht werden."
+        )
+        dialog.setInformativeText(
+            f"Dateiname: {image_path.name}\n"
+            f"Dateipfad: {image_path}\n"
+            f"Aktuelle Drehung: {self._display_rotation_description()}"
+        )
+        overwrite_button = dialog.addButton(
+            "Original überschreiben", QMessageBox.ButtonRole.DestructiveRole
+        )
+        cancel_button = dialog.addButton(
+            "Abbrechen", QMessageBox.ButtonRole.RejectRole
+        )
+        dialog.setDefaultButton(cancel_button)
+        dialog.setEscapeButton(cancel_button)
+        self._style_message_box(dialog)
+        dialog.exec()
+        if dialog.clickedButton() is not overwrite_button:
+            return
+
+        try:
+            old_cache_name = thumbnail_cache_name(
+                image_path, self._thumbnail_size
+            )
+        except OSError:
+            old_cache_name = None
+        selected_paths = self._selected_image_paths()
+        if image_path not in selected_paths:
+            selected_paths.insert(0, image_path)
+        else:
+            selected_paths.remove(image_path)
+            selected_paths.insert(0, image_path)
+        if not self._write_rotated_image(image_path, replace_original=True):
+            return
+
+        resolved_path = self._resolved_sort_path(image_path)
+        self._display_rotation_by_path.pop(resolved_path, None)
+        self._invalidate_saved_image_caches(image_path, old_cache_name)
+        self._show_directory(image_path.parent, selected_paths)
+        self._show_rotation_saved_confirmation()
+
+    def _display_rotation_description(self) -> str:
+        rotation = self._current_display_rotation()
+        if rotation == 90:
+            return "90° nach rechts"
+        if rotation == 180:
+            return "180°"
+        if rotation == 270:
+            return "90° nach links"
+        return "0°"
+
+    @staticmethod
+    def _pillow_image_from_qimage(image: QImage):
+        rgba_image = image.convertToFormat(QImage.Format.Format_RGBA8888)
+        pixel_data = bytes(rgba_image.constBits())
+        return PillowImage.frombuffer(
+            "RGBA",
+            (rgba_image.width(), rgba_image.height()),
+            pixel_data,
+            "raw",
+            "RGBA",
+            rgba_image.bytesPerLine(),
+            1,
+        ).copy()
+
+    @staticmethod
+    def _save_format_for_path(path: Path) -> str | None:
+        return {
+            ".jpg": "JPEG",
+            ".jpeg": "JPEG",
+            ".png": "PNG",
+            ".webp": "WEBP",
+            ".tif": "TIFF",
+            ".tiff": "TIFF",
+            ".bmp": "BMP",
+        }.get(path.suffix.lower())
+
+    def _source_metadata_for_save(
+        self, save_format: str
+    ) -> tuple[dict[str, object], list[str]]:
+        metadata: dict[str, object] = {}
+        warnings: list[str] = []
+        if self.current_image is None:
+            return metadata, warnings
+        try:
+            with PillowImage.open(self.current_image) as source_image:
+                if save_format in {"JPEG", "PNG", "WEBP", "TIFF"}:
+                    try:
+                        exif = source_image.getexif()
+                        exif[274] = 1
+                        metadata["exif"] = exif.tobytes()
+                    except Exception as error:
+                        warnings.append(f"EXIF-Daten: {error}")
+                icc_profile = source_image.info.get("icc_profile")
+                if icc_profile and save_format != "BMP":
+                    metadata["icc_profile"] = icc_profile
+                dpi = source_image.info.get("dpi")
+                if dpi:
+                    metadata["dpi"] = dpi
+        except Exception as error:
+            warnings.append(f"Metadaten konnten nicht vollständig gelesen werden: {error}")
+        return metadata, warnings
+
+    def _write_rotated_image(
+        self, destination: Path, replace_original: bool
+    ) -> bool:
+        save_format = self._save_format_for_path(destination)
+        if save_format is None:
+            self._show_rotation_save_error(
+                "Das gewählte Bildformat wird nicht unterstützt."
+            )
+            return False
+        if self.current_image is None or self.original_image.isNull():
+            return False
+        if not destination.parent.is_dir():
+            self._show_rotation_save_error("Der Zielordner existiert nicht.")
+            return False
+
+        metadata, metadata_warnings = self._source_metadata_for_save(save_format)
+        image = self._pillow_image_from_qimage(self.original_image)
+        save_options: dict[str, object] = dict(metadata)
+        if save_format == "JPEG":
+            image = image.convert("RGB")
+            save_options.update(quality=95, optimize=True)
+        elif save_format == "WEBP":
+            save_options.update(quality=95, method=6)
+        elif save_format == "BMP":
+            image = image.convert("RGB")
+        elif save_format == "TIFF":
+            save_options["compression"] = "tiff_deflate"
+
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                prefix=f".{destination.stem}-",
+                suffix=destination.suffix,
+                dir=destination.parent,
+                delete=False,
+            ) as temporary_file:
+                temporary_path = Path(temporary_file.name)
+            try:
+                image.save(temporary_path, format=save_format, **save_options)
+            except (TypeError, ValueError) as metadata_error:
+                metadata_warnings.append(
+                    f"Einige Metadaten konnten nicht geschrieben werden: {metadata_error}"
+                )
+                fallback_options = {
+                    key: value
+                    for key, value in save_options.items()
+                    if key in {"quality", "optimize", "method", "compression"}
+                }
+                image.save(
+                    temporary_path, format=save_format, **fallback_options
+                )
+            if not temporary_path.is_file() or temporary_path.stat().st_size <= 0:
+                raise OSError(
+                    "Die temporäre Bilddatei wurde nicht vollständig gespeichert."
+                )
+            with PillowImage.open(temporary_path) as verification_image:
+                verification_image.verify()
+            if replace_original:
+                original_mode = destination.stat().st_mode
+                os.chmod(temporary_path, original_mode)
+            os.replace(temporary_path, destination)
+            temporary_path = None
+        except Exception as error:
+            self._show_rotation_save_error(str(error))
+            return False
+        finally:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+        if metadata_warnings:
+            self._show_metadata_save_warning(metadata_warnings)
+        return True
+
+    def _invalidate_saved_image_caches(
+        self, image_path: Path, old_cache_name: str | None
+    ) -> None:
+        cache_names = {old_cache_name} if old_cache_name is not None else set()
+        try:
+            cache_names.add(thumbnail_cache_name(image_path, self._thumbnail_size))
+        except OSError:
+            pass
+        for cache_directory in (CACHE_DIRECTORY, LEGACY_CACHE_DIRECTORY):
+            for cache_name in cache_names:
+                try:
+                    (cache_directory / cache_name).unlink(missing_ok=True)
+                except OSError:
+                    pass
+        resolved_path = self._resolved_sort_path(image_path)
+        self._metadata_cache = {
+            key: value
+            for key, value in self._metadata_cache.items()
+            if key[0] != resolved_path
+        }
+        self._recording_date_cache.pop(resolved_path, None)
+        self._file_sort_metadata.pop(resolved_path, None)
+
+    def _show_rotation_save_error(self, detail: str) -> None:
+        dialog = QMessageBox(self.window)
+        dialog.setWindowTitle("Drehung konnte nicht gespeichert werden")
+        dialog.setIcon(QMessageBox.Icon.Critical)
+        dialog.setText("Das gedrehte Bild konnte nicht gespeichert werden.")
+        dialog.setInformativeText(detail)
+        dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+        dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+        self._style_message_box(dialog)
+        dialog.exec()
+
+    def _show_metadata_save_warning(self, warnings: list[str]) -> None:
+        dialog = QMessageBox(self.window)
+        dialog.setWindowTitle("Bild mit eingeschränkten Metadaten gespeichert")
+        dialog.setIcon(QMessageBox.Icon.Warning)
+        dialog.setText(
+            "Das Bild wurde gespeichert, einige Metadaten konnten jedoch nicht "
+            "vollständig erhalten werden."
+        )
+        dialog.setDetailedText("\n".join(warnings))
+        dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+        dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+        self._style_message_box(dialog)
+        dialog.exec()
+
+    def _show_rotation_saved_confirmation(self) -> None:
+        dialog = QMessageBox(self.window)
+        dialog.setWindowTitle("Drehung gespeichert")
+        dialog.setIcon(QMessageBox.Icon.Information)
+        dialog.setText("Die Drehung wurde im Original gespeichert.")
+        dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+        dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+        self._style_message_box(dialog)
+        dialog.exec()
 
     def _render_current_image(self) -> None:
         self._image_render_pending = False
@@ -1830,13 +3729,11 @@ class ImageViewer(QObject):
         if viewport_size.width() <= 1 or viewport_size.height() <= 1:
             return
         if self._zoom_mode == "fit":
-            self._zoom_factor = min(
-                viewport_size.width() / self.original_image.width(),
-                viewport_size.height() / self.original_image.height(),
+            self._zoom_factor = image_fit_zoom_factor(
+                self.original_image, viewport_size
             )
-        scaled_size = QSize(
-            max(1, round(self.original_image.width() * self._zoom_factor)),
-            max(1, round(self.original_image.height() * self._zoom_factor)),
+        scaled_size = image_size_at_zoom(
+            self.original_image, self._zoom_factor
         )
         scaled_image = self.original_image.scaled(
             scaled_size,
@@ -1848,12 +3745,14 @@ class ImageViewer(QObject):
         if self._zoom_mode == "fit":
             self.image_scroll_area.horizontalScrollBar().setValue(0)
             self.image_scroll_area.verticalScrollBar().setValue(0)
+        self._update_status_bar()
 
     def _fit_image_to_window(self) -> None:
         if self.original_image.isNull():
             return
         self._zoom_mode = "fit"
         self._render_current_image()
+        self._show_zoom_indicator()
 
     def _show_image_at_actual_size(self) -> None:
         if self.original_image.isNull():
@@ -1861,6 +3760,7 @@ class ImageViewer(QObject):
         self._zoom_mode = "manual"
         self._zoom_factor = 1.0
         self._render_current_image()
+        self._show_zoom_indicator()
         horizontal_bar = self.image_scroll_area.horizontalScrollBar()
         vertical_bar = self.image_scroll_area.verticalScrollBar()
         horizontal_bar.setValue(horizontal_bar.maximum() // 2)
@@ -1882,6 +3782,7 @@ class ImageViewer(QObject):
         self._zoom_mode = "manual"
         self._zoom_factor = min(MAX_ZOOM, max(MIN_ZOOM, self._zoom_factor * factor))
         self._render_current_image()
+        self._show_zoom_indicator()
         horizontal_bar = self.image_scroll_area.horizontalScrollBar()
         vertical_bar = self.image_scroll_area.verticalScrollBar()
         horizontal_bar.setValue(
@@ -1896,6 +3797,33 @@ class ImageViewer(QObject):
             return
         self._image_render_pending = True
         QTimer.singleShot(0, self._render_current_image)
+
+    def _position_zoom_indicator(self) -> None:
+        if not self.zoom_indicator.isVisible():
+            return
+        viewport = self.image_scroll_area.viewport()
+        margin = 16
+        self.zoom_indicator.move(
+            max(margin, viewport.width() - self.zoom_indicator.width() - margin),
+            max(margin, viewport.height() - self.zoom_indicator.height() - margin),
+        )
+
+    def _show_zoom_indicator(self) -> None:
+        if self.original_image.isNull():
+            return
+        prefix = "Eingepasst · " if self._zoom_mode == "fit" else ""
+        self.zoom_indicator.setText(
+            f"{prefix}{round(self._zoom_factor * 100)} %"
+        )
+        self.zoom_indicator.adjustSize()
+        self.zoom_indicator.show()
+        self.zoom_indicator.raise_()
+        self._position_zoom_indicator()
+        self.zoom_indicator_timer.start(ZOOM_INDICATOR_DURATION)
+
+    def _hide_zoom_indicator(self) -> None:
+        self.zoom_indicator_timer.stop()
+        self.zoom_indicator.hide()
 
     def _show_fullscreen_tooltip(self, global_position) -> None:
         if not self._fullscreen_mode or self._fullscreen_tooltip_visible:
@@ -1986,10 +3914,14 @@ class ImageViewer(QObject):
                     else QCursor.pos()
                 )
                 self._show_fullscreen_tooltip(global_position)
+        if watched in image_widgets and event.type() == QEvent.Type.ContextMenu:
+            self._show_image_context_menu(event.globalPos())
+            return True
         if (
             watched is self.image_scroll_area.viewport()
             and event.type() == QEvent.Type.Resize
         ):
+            self._position_zoom_indicator()
             if self.original_image.isNull():
                 self.image_label.resize(event.size())
             else:
@@ -2051,14 +3983,77 @@ class ImageViewer(QObject):
         self.window.show()
 
 
+def resolve_startup_path(
+    argument: str | None,
+) -> tuple[Path | None, Path | None, str | None]:
+    if argument is None:
+        return None, None, None
+    candidate = Path(argument).expanduser()
+    try:
+        candidate = candidate.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None, None, f"Der angegebene Pfad existiert nicht:\n{candidate}"
+    if candidate.is_dir():
+        return candidate, None, None
+    if not candidate.is_file():
+        return None, None, f"Der angegebene Pfad ist keine normale Datei:\n{candidate}"
+    if candidate.suffix.lower() not in IMAGE_EXTENSIONS:
+        return (
+            None,
+            None,
+            "Die angegebene Datei hat kein unterstütztes Bildformat:\n"
+            f"{candidate}",
+        )
+    return candidate.parent, candidate, None
+
+
+def show_startup_error(viewer: ImageViewer, message: str) -> None:
+    dialog = QMessageBox(viewer.window)
+    dialog.setWindowTitle(f"{APP_NAME} – Startpfad")
+    dialog.setIcon(QMessageBox.Icon.Warning)
+    dialog.setText("Der übergebene Pfad konnte nicht geöffnet werden.")
+    dialog.setInformativeText(message)
+    dialog.setStandardButtons(QMessageBox.StandardButton.Close)
+    dialog.button(QMessageBox.StandardButton.Close).setText("Schließen")
+    viewer._style_message_box(dialog)
+    dialog.exec()
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(str(resource_path("assets/bildblick.png"))))
     app.setOrganizationName(SETTINGS_ORGANIZATION)
     app.setApplicationName(SETTINGS_APPLICATION)
     app.setApplicationDisplayName(APP_NAME)
-    viewer = ImageViewer()
+    app.setApplicationVersion(APP_VERSION)
+
+    parser = QCommandLineParser()
+    parser.setApplicationDescription(APP_DESCRIPTION)
+    parser.addHelpOption()
+    parser.addVersionOption()
+    parser.addPositionalArgument(
+        "pfad",
+        "Optionaler Ordner oder eine zu öffnende Bilddatei.",
+        "[pfad]",
+    )
+    parser.process(app)
+    arguments = parser.positionalArguments()
+    startup_error = None
+    startup_directory = None
+    startup_image = None
+    if len(arguments) > 1:
+        startup_error = "Bitte nur eine Bilddatei oder einen Ordner angeben."
+    else:
+        startup_directory, startup_image, startup_error = resolve_startup_path(
+            arguments[0] if arguments else None
+        )
+
+    viewer = ImageViewer(startup_directory, startup_image)
     viewer.show()
+    if startup_error is not None:
+        QTimer.singleShot(
+            0, lambda message=startup_error: show_startup_error(viewer, message)
+        )
     return app.exec()
 
 
