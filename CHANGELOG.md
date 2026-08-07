@@ -2,6 +2,48 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.8.0 – Mehrbilddruck und Kontaktabzug
+
+*Veröffentlicht am 07.08.2026*
+
+### Neu
+
+- Drucken des aktuell angezeigten Bildes über den nativen Qt-Druckdialog
+- Hoch- und Querformat, Druckertreiber-Papierformate einschließlich A4 und A6,
+  automatische und manuelle Bilddrehung sowie PDF-Ausgabe
+- Mehrbilddruck und Kontaktabzug mit 1, 2, 4, 6, 9, 16 oder 32 Bildern pro
+  Seite sowie frei wählbaren Zeilen und Spalten
+- Frei einstellbare Seitenränder und Bildabstände
+- Kontaktabzug-Beschriftungen mit Dateiname und Aufnahmedatum aus EXIF- oder
+  Dateidaten
+- Mehrseitige Druckvorschau mit Seitennavigation und Seitenzahlen
+- Druckprofile, einschließlich eigener Profile zum Speichern, Laden,
+  Überschreiben und Löschen, sowie automatischer Anzeige
+  „Benutzerdefiniert“
+- Kopfzeilen mit freiem Text oder aktuellem Ordnernamen
+- Fußzeilen mit Ordnername, Seitenzahl und Druckdatum
+
+### Verbessert
+
+- Deutlich kleinere PDF-Dateien durch bedarfsgerechte Verkleinerung der
+  Druckbilder
+- Vorschau lädt nur die für die aktuelle Seite benötigten Bilder
+- Reale Layoutvalidierung anhand der tatsächlichen Druckfläche
+- Bessere Behandlung kleiner Kontaktabzugzellen sowie langer Datei- und
+  Ordnernamen
+- Vollständige Vorschauseite wird in das Vorschaufenster eingepasst
+- Mehrbilddruckdialog öffnet standardmäßig ohne unnötige Scrollbalken
+- Profil- und Druckdialoge sind im hellen Systemdesign wieder gut lesbar
+- Gemeinsame Layoutberechnung für Vorschau und Ausdruck
+
+### Technisch
+
+- Zentrale `MultiImagePrintSettings`-Konfiguration
+- Eigene Profilpersistenz mit UUID und QSettings
+- Gemeinsame Zeichenlogik für Kopf- und Fußzeilen
+- Automatisierte Layout- und Profiltests
+- Keine neuen externen Laufzeitabhängigkeiten
+
 ## Version 1.5.0
 
 ### Neu

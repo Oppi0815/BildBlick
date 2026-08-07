@@ -7,11 +7,14 @@ analysis = Analysis(
     binaries=[],
     datas=[
         ("bildbetrachter.ui", "."),
-        ("assets/bildblick.png", "assets"),
-        ("assets/duplicate-*.svg", "assets"),
-        ("assets/selection-*.svg", "assets"),
+        ("assets", "assets"),
     ],
-    hiddenimports=[],
+    hiddenimports=[
+        "PySide6.QtPrintSupport",
+        "printing",
+        "printing.multi_image_print",
+        "printing.print_profiles",
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

@@ -4,6 +4,7 @@
 *.pyc
 build/
 dist/
+release/
 .idea/
 .agents/
 .codex/
@@ -11,4 +12,6 @@ dist/
 *.spec.bak
 *.log
 .DS_Store
+._.DS_Store
+print.pdf
 Thumbs.db

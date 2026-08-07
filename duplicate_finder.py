@@ -553,7 +553,6 @@ class DuplicateFinderDialog(QDialog):
         )
 
     def _move_selected_duplicates_to_trash(self) -> None:
-        print("Papierkorbfunktion wurde aufgerufen", flush=True)
         _trash_debug("Papierkorbfunktion aufgerufen")
         if self._searching or self._trash_in_progress or self._confirming_trash:
             return

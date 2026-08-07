@@ -6,9 +6,9 @@
 
 ![BildBlick Screenshot](docs/bildblick-screenshot.png)
 
-*BildBlick 1.1.1 unter Linux Mint*
+*BildBlick 1.8.0 unter Linux Mint*
 
-**Version 1.2.1**
+**Version 1.8.0**
 
 BildBlick ist ein schneller und komfortabler Bildbetrachter für Linux. Die Anwendung wurde unter Linux Mint entwickelt und getestet und verbindet eine übersichtliche Verzeichnisnavigation mit schnellen Vorschaubildern und praktischen Werkzeugen für die Bildverwaltung.
 
@@ -24,6 +24,25 @@ BildBlick ist ein schneller und komfortabler Bildbetrachter für Linux. Die Anwe
 - EXIF-Tooltips mit Abmessungen, Aufnahmedatum und ISO-Empfindlichkeit
 - Farbschemata: System, Hell, Dunkel, Anthrazit und Warm
 - Suche nach identischen Bildern mit sicherer Papierkorbauswahl
+
+## Drucken
+
+- Einzelbilddruck über den nativen Qt-Druckdialog
+- Mehrbilddruck und Kontaktabzug mit festen oder benutzerdefinierten Rastern
+- Mehrseitige Druckvorschau mit Seitennavigation
+- Druckprofile einschließlich eigener Benutzerprofile
+- Kopf- und Fußzeilen mit freiem Text, Ordnername, Seitenzahl und Druckdatum
+- PDF-Ausgabe über „In Datei drucken“
+- Dateiname und Aufnahmedatum als Kontaktabzug-Beschriftung
+
+### Mehrere Bilder drucken
+
+1. Bilder markieren.
+2. **Datei → Mehrere Bilder drucken …** oder **Kontaktabzug …** wählen.
+3. Raster und Beschriftung wählen.
+4. Vorschau prüfen.
+5. **Weiter zum Druckdialog …** wählen.
+6. Drucker oder **In Datei drucken** wählen.
 
 ## Unterstützte Bildformate
 

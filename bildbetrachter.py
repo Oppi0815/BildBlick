@@ -9,8 +9,10 @@ import tempfile
 import threading
 from io import BytesIO
 from datetime import datetime
+from dataclasses import dataclass
 from functools import cmp_to_key
 from pathlib import Path
+from typing import Callable, TypeVar
 
 from PIL import Image as PillowImage, ImageOps
 from send2trash import send2trash
@@ -35,6 +37,7 @@ from PySide6.QtCore import (
     Qt,
     QThreadPool,
     QTimer,
+    QSignalBlocker,
     QUrl,
     Signal,
 )
@@ -44,10 +47,13 @@ from PySide6.QtGui import (
     QBrush,
     QColor,
     QCursor,
+    QFont,
     QIcon,
     QImage,
     QImageReader,
     QKeySequence,
+    QPageLayout,
+    QPageSize,
     QPainter,
     QPainterPath,
     QPalette,
@@ -57,6 +63,7 @@ from PySide6.QtGui import (
     QTransform,
 )
 from PySide6.QtUiTools import QUiLoader
+from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -64,12 +71,14 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFileSystemModel,
     QFormLayout,
     QGroupBox,
     QGraphicsOpacityEffect,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListView,
@@ -88,6 +97,8 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStyle,
     QStyleOptionMenuItem,
+    QStyleOptionViewItem,
+    QStyledItemDelegate,
     QToolButton,
     QToolTip,
     QTreeView,
@@ -96,11 +107,49 @@ from PySide6.QtWidgets import (
 )
 
 from duplicate_finder import DuplicateFinderDialog
+from printing.multi_image_print import (
+    MultiImagePrintSettings,
+    calculate_multi_image_page,
+    draw_multi_print_header,
+    draw_multi_print_footer,
+    folder_title_from_path,
+    grid_for,
+    current_print_date_text,
+)
+from printing.print_profiles import (
+    MultiImagePrintProfile,
+    create_user_profile,
+    delete_user_profile,
+    find_matching_profile,
+    is_reserved_profile_name,
+    load_user_profiles,
+    normalize_profile_name,
+    overwrite_user_profile,
+    save_user_profile,
+)
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.8.0"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter für Linux"
+
+_DialogResult = TypeVar("_DialogResult")
+
+
+def run_without_application_stylesheet(
+    callback: Callable[[], _DialogResult],
+) -> _DialogResult:
+    application = QApplication.instance()
+    original_stylesheet = (
+        application.styleSheet() if application is not None else ""
+    )
+    try:
+        if application is not None:
+            application.setStyleSheet("")
+        return callback()
+    finally:
+        if application is not None:
+            application.setStyleSheet(original_stylesheet)
 
 ROOT_DIRECTORY = Path("/")
 HOME_DIRECTORY = Path.home()
@@ -148,6 +197,29 @@ EXPORT_SUFFIX_KEY = "export/nameSuffix"
 EXPORT_DIRECTORY_KEY = "export/lastDirectory"
 EXPORT_METADATA_KEY = "export/keepMetadata"
 EXPORT_REMOVE_GPS_KEY = "export/removeGps"
+PRINT_ORIENTATION_KEY = "print/orientation"
+PRINT_ROTATION_KEY = "print/additionalRotation"
+PRINT_SIZE_MODE_KEY = "print/sizeMode"
+PRINT_CENTERED_KEY = "print/centered"
+MULTI_PRINT_SOURCE_KEY = "printing/multi/source"
+MULTI_PRINT_ORIENTATION_KEY = "printing/multi/orientation"
+MULTI_PRINT_IMAGES_PER_PAGE_KEY = "printing/multi/imagesPerPage"
+MULTI_IMAGE_PRINT_TARGET_DPI = 300
+MULTI_PRINT_CONTACT_SHEET_KEY = "printing/multi/contactSheet"
+MULTI_PRINT_SHOW_FILENAME_KEY = "printing/multi/showFilename"
+MULTI_PRINT_SHOW_CAPTURE_DATE_KEY = "printing/multi/showCaptureDate"
+MULTI_PRINT_SHOW_PAGE_NUMBER_KEY = "printing/multi/showPageNumber"
+MULTI_PRINT_SHOW_HEADER_KEY = "printing/multi/showHeader"
+MULTI_PRINT_HEADER_TEXT_KEY = "printing/multi/headerText"
+MULTI_PRINT_USE_FOLDER_NAME_AS_TITLE_KEY = "printing/multi/useFolderNameAsTitle"
+MULTI_PRINT_SHOW_PRINT_DATE_KEY = "printing/multi/showPrintDate"
+MULTI_PRINT_SHOW_FOLDER_IN_FOOTER_KEY = "printing/multi/showFolderInFooter"
+MULTI_PRINT_CUSTOM_ROWS_KEY = "printing/multi/customRows"
+MULTI_PRINT_CUSTOM_COLUMNS_KEY = "printing/multi/customColumns"
+MULTI_PRINT_PAGE_MARGIN_KEY = "printing/multi/pageMarginMm"
+MULTI_PRINT_CELL_SPACING_KEY = "printing/multi/cellSpacingMm"
+MULTI_PRINT_SPLITTER_SIZES_KEY = "printing/multi/splitterSizes"
+MULTI_PRINT_DIALOG_SIZE_KEY = "printing/multi/dialogSize"
 SLIDESHOW_INTERVALS = (3, 5, 10, 15)
 SORT_CRITERIA = ("name", "recording_date", "modified", "size")
 ZOOM_STEP = 1.15
@@ -313,6 +385,7 @@ class SelectionAccentStyle(QProxyStyle):
                 painter.drawRoundedRect(focus_rect, 4, 4)
         painter.restore()
 
+
     def drawControl(self, element, option, painter, widget=None) -> None:
         super().drawControl(element, option, painter, widget)
         if element != QStyle.ControlElement.CE_MenuItem:
@@ -345,6 +418,23 @@ class SelectionAccentStyle(QProxyStyle):
         painter.drawRoundedRect(indicator_rect, 3, 3)
         self._draw_checkmark(painter, indicator_rect, QColor("#FFFFFF"))
         painter.restore()
+
+
+class ComboPopupItemDelegate(QStyledItemDelegate):
+    """Prevents menu check indicators from leaking into combobox popups."""
+
+    def paint(self, painter, option, index) -> None:
+        view_option = QStyleOptionViewItem(option)
+        view_option.features &= ~QStyleOptionViewItem.ViewItemFeature.HasCheckIndicator
+        super().paint(painter, view_option, index)
+
+
+def configure_plain_combo_popup(combo: QComboBox, object_name: str) -> None:
+    combo.setObjectName(object_name)
+    combo.view().setItemDelegate(ComboPopupItemDelegate(combo.view()))
+    model = combo.model()
+    for row in range(combo.count()):
+        model.setData(model.index(row, 0), None, Qt.ItemDataRole.CheckStateRole)
 
 
 def install_selection_accent_style(application: QApplication) -> None:
@@ -495,6 +585,137 @@ def rotated_display_image(image: QImage, clockwise_degrees: int) -> QImage:
         QTransform().rotate(normalized_degrees),
         Qt.TransformationMode.SmoothTransformation,
     )
+
+
+@dataclass
+class PrintLayout:
+    target_rect: QRectF
+    source_rect: QRectF
+    scaled_down: bool
+    outside_page: bool
+    fills_page: bool
+
+
+def calculate_print_layout(
+    image_size: QSize,
+    drawable_rect: QRectF,
+    mode: str,
+    printer_resolution: int,
+    image_dpi: float,
+    centered: bool,
+) -> PrintLayout:
+    width, height = image_size.width(), image_size.height()
+    fills_page = mode == "fill"
+    if mode == "fill":
+        scale = max(drawable_rect.width() / width, drawable_rect.height() / height)
+    elif mode == "original":
+        scale = printer_resolution / image_dpi
+    elif mode in {"10x15", "13x18"}:
+        short_side, long_side = (10.0, 15.0) if mode == "10x15" else (13.0, 18.0)
+        format_width, format_height = (
+            (long_side, short_side)
+            if drawable_rect.width() > drawable_rect.height()
+            else (short_side, long_side)
+        )
+        max_width = format_width / 2.54 * printer_resolution
+        max_height = format_height / 2.54 * printer_resolution
+        scale = min(max_width / width, max_height / height)
+    else:
+        scale = min(drawable_rect.width() / width, drawable_rect.height() / height)
+    target_width, target_height = width * scale, height * scale
+    outside_page = target_width > drawable_rect.width() or target_height > drawable_rect.height()
+    if mode in {"10x15", "13x18"} and outside_page:
+        scale *= min(drawable_rect.width() / target_width, drawable_rect.height() / target_height)
+        target_width, target_height = width * scale, height * scale
+    x = drawable_rect.x() + (drawable_rect.width() - target_width) / 2.0 if centered else drawable_rect.x()
+    y = drawable_rect.y() + (drawable_rect.height() - target_height) / 2.0 if centered else drawable_rect.y()
+    target_width = image_size.width() * scale
+    target_height = image_size.height() * scale
+    return PrintLayout(
+        QRectF(x, y, target_width, target_height),
+        QRectF(0.0, 0.0, width, height),
+        mode in {"10x15", "13x18"} and outside_page,
+        outside_page,
+        fills_page,
+    )
+
+
+def draw_print_layout(
+    painter: QPainter, image: QImage, drawable_rect: QRectF, layout: PrintLayout
+) -> None:
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    if layout.fills_page:
+        painter.save()
+        painter.setClipRect(drawable_rect)
+        painter.drawImage(layout.target_rect, image)
+        painter.restore()
+    else:
+        painter.drawImage(layout.target_rect, image)
+
+
+def image_print_dpi(image_path: Path) -> float:
+    try:
+        with PillowImage.open(image_path) as image:
+            dpi = image.info.get("dpi")
+        if dpi and len(dpi) >= 2:
+            value = (float(dpi[0]) + float(dpi[1])) / 2
+            if 30 <= value <= 1200:
+                return value
+    except (OSError, ValueError, TypeError):
+        pass
+    return 300.0
+
+
+def pathlib_name(path: Path) -> str:
+    return path.name
+
+
+def capture_date_text(path: Path) -> str:
+    try:
+        with PillowImage.open(path) as image:
+            exif = image.getexif()
+            value = next((exif.get(tag) for tag in (36867, 36868, 306) if exif.get(tag)), None)
+        if value:
+            for pattern in ("%Y:%m:%d %H:%M:%S", "%Y:%m:%d"):
+                try:
+                    return datetime.strptime(str(value), pattern).strftime("%d.%m.%Y %H:%M")
+                except ValueError:
+                    pass
+        return datetime.fromtimestamp(path.stat().st_mtime).strftime("%d.%m.%Y %H:%M")
+    except (OSError, ValueError):
+        return ""
+
+
+def load_multi_print_image(
+    path: Path, target_rect: QRectF, printer_resolution: int
+) -> QImage:
+    """Loads an image no larger than needed for its printed cell."""
+    reader = QImageReader(str(path))
+    reader.setAutoTransform(True)
+    original_size = reader.size()
+    required_size = QSize(
+        max(1, round(target_rect.width() / printer_resolution * MULTI_IMAGE_PRINT_TARGET_DPI)),
+        max(1, round(target_rect.height() / printer_resolution * MULTI_IMAGE_PRINT_TARGET_DPI)),
+    )
+    if original_size.isValid():
+        scaled_size = original_size.scaled(
+            required_size, Qt.AspectRatioMode.KeepAspectRatio
+        )
+        if scaled_size.width() < original_size.width() or scaled_size.height() < original_size.height():
+            reader.setScaledSize(scaled_size)
+    image = reader.read()
+    if image.isNull() or not required_size.isValid():
+        return image
+    if image.width() > required_size.width() or image.height() > required_size.height():
+        image = image.scaled(
+            required_size, Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+    return image
+
+
+class MultiImagePrintLayoutError(RuntimeError):
+    pass
 
 
 def normalized_thumbnail_pixels(value: int) -> int:
@@ -1954,7 +2175,343 @@ QSplitter::handle {{ background-color: {colors['border']}; width: 3px; }}
         )
 
 
+class PrintPreviewWidget(QWidget):
+    def __init__(self, image: QImage, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.image = image
+        self.orientation = QPageLayout.Orientation.Portrait
+        self.additional_rotation = 0
+        self.size_mode = "fit"
+        self.centered = True
+        self.image_dpi = 300.0
+        self.setMinimumSize(360, 360)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+
+    def set_print_options(
+        self,
+        orientation: QPageLayout.Orientation,
+        additional_rotation: int,
+        size_mode: str,
+        centered: bool,
+        image_dpi: float,
+    ) -> None:
+        self.orientation = orientation
+        self.additional_rotation = additional_rotation
+        self.size_mode = size_mode
+        self.centered = centered
+        self.image_dpi = image_dpi
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), self.palette().window())
+        available = QRectF(self.rect()).adjusted(18, 18, -18, -18)
+        paper_width, paper_height = (210.0, 297.0)
+        if self.orientation == QPageLayout.Orientation.Landscape:
+            paper_width, paper_height = paper_height, paper_width
+        paper_scale = min(
+            available.width() / paper_width,
+            available.height() / paper_height,
+        )
+        paper_rect = QRectF(
+            available.center().x() - paper_width * paper_scale / 2,
+            available.center().y() - paper_height * paper_scale / 2,
+            paper_width * paper_scale,
+            paper_height * paper_scale,
+        )
+        painter.fillRect(paper_rect.translated(4, 4), QColor(0, 0, 0, 45))
+        painter.fillRect(paper_rect, Qt.GlobalColor.white)
+        painter.setPen(QPen(QColor("#b8b8b8"), 1))
+        painter.drawRect(paper_rect)
+        printable_rect = paper_rect.adjusted(
+            paper_rect.width() * 0.06,
+            paper_rect.height() * 0.06,
+            -paper_rect.width() * 0.06,
+            -paper_rect.height() * 0.06,
+        )
+        preview_image = rotated_display_image(
+            self.image, self.additional_rotation
+        )
+        layout = calculate_print_layout(
+            preview_image.size(), printable_rect, self.size_mode, 100,
+            self.image_dpi, self.centered,
+        )
+        painter.setPen(QPen(QColor("#999999"), 1, Qt.PenStyle.DashLine))
+        painter.drawRect(printable_rect)
+        draw_print_layout(painter, preview_image, printable_rect, layout)
+
+
+class PrintSettingsDialog(QDialog):
+    ORIENTATIONS = (
+        ("Automatisch", "automatic"),
+        ("Hochformat", "portrait"),
+        ("Querformat", "landscape"),
+    )
+    ROTATIONS = (
+        ("Keine zusätzliche Drehung", 0),
+        ("90° nach links", -90),
+        ("90° nach rechts", 90),
+        ("180°", 180),
+    )
+    SIZE_MODES = (
+        ("Einpassen", "fit"), ("Seite füllen", "fill"),
+        ("Originalgröße (100 %)", "original"), ("10 × 15 cm", "10x15"),
+        ("13 × 18 cm", "13x18"), ("A4", "a4"),
+    )
+
+    def __init__(
+        self,
+        image: QImage,
+        image_dpi: float,
+        settings: QSettings,
+        colors: dict[str, str] | None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.image = image
+        self.image_dpi = image_dpi
+        self.settings = settings
+        self.setWindowTitle("Druckeinstellungen")
+        self.setMinimumSize(520, 600)
+        self.resize(600, 700)
+        self.setStyleSheet(message_box_stylesheet(colors))
+
+        main_layout = QVBoxLayout(self)
+        self.preview = PrintPreviewWidget(image, self)
+        main_layout.addWidget(self.preview, 1)
+
+        options_group = QGroupBox("Druckeinstellungen", self)
+        options_form = QFormLayout(options_group)
+        self.orientation_combo = QComboBox(options_group)
+        for label, value in self.ORIENTATIONS:
+            self.orientation_combo.addItem(label, value)
+        self.rotation_combo = QComboBox(options_group)
+        for label, value in self.ROTATIONS:
+            self.rotation_combo.addItem(label, value)
+        options_form.addRow("Papierausrichtung:", self.orientation_combo)
+        options_form.addRow("Bilddrehung:", self.rotation_combo)
+        self.size_combo = QComboBox(options_group)
+        for label, value in self.SIZE_MODES:
+            self.size_combo.addItem(label, value)
+        self.centered_check = QCheckBox("Bild zentrieren", options_group)
+        options_form.addRow("Bildgröße:", self.size_combo)
+        options_form.addRow("", self.centered_check)
+        main_layout.addWidget(options_group)
+        self.hint_label = QLabel(self)
+        self.hint_label.setWordWrap(True)
+        main_layout.addWidget(self.hint_label)
+
+        saved_orientation = settings.value(
+            PRINT_ORIENTATION_KEY, "automatic", type=str
+        )
+        orientation_index = self.orientation_combo.findData(saved_orientation)
+        self.orientation_combo.setCurrentIndex(max(0, orientation_index))
+        saved_rotation = settings.value(PRINT_ROTATION_KEY, 0, type=int)
+        rotation_index = self.rotation_combo.findData(saved_rotation)
+        self.rotation_combo.setCurrentIndex(max(0, rotation_index))
+        size_index = self.size_combo.findData(
+            settings.value(PRINT_SIZE_MODE_KEY, "fit", type=str)
+        )
+        self.size_combo.setCurrentIndex(max(0, size_index))
+        self.centered_check.setChecked(
+            settings.value(PRINT_CENTERED_KEY, True, type=bool)
+        )
+
+        buttons = QDialogButtonBox(self)
+        continue_button = buttons.addButton(
+            "Weiter zum Druckdialog …",
+            QDialogButtonBox.ButtonRole.AcceptRole,
+        )
+        cancel_button = buttons.addButton(
+            "Abbrechen", QDialogButtonBox.ButtonRole.RejectRole
+        )
+        continue_button.setDefault(True)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        main_layout.addWidget(buttons)
+
+        self.orientation_combo.currentIndexChanged.connect(
+            self._update_preview
+        )
+        self.rotation_combo.currentIndexChanged.connect(self._update_preview)
+        self.size_combo.currentIndexChanged.connect(self._update_preview)
+        self.centered_check.toggled.connect(self._update_preview)
+        self._update_preview()
+
+    def selected_orientation(self) -> QPageLayout.Orientation:
+        selection = self.orientation_combo.currentData()
+        if selection == "portrait":
+            return QPageLayout.Orientation.Portrait
+        if selection == "landscape":
+            return QPageLayout.Orientation.Landscape
+        rotated_image = rotated_display_image(
+            self.image, self.additional_rotation()
+        )
+        if rotated_image.width() > rotated_image.height():
+            return QPageLayout.Orientation.Landscape
+        return QPageLayout.Orientation.Portrait
+
+    def additional_rotation(self) -> int:
+        return int(self.rotation_combo.currentData())
+
+    def size_mode(self) -> str:
+        return str(self.size_combo.currentData())
+
+    def centered(self) -> bool:
+        return self.centered_check.isChecked()
+
+    def _update_preview(self) -> None:
+        self.preview.set_print_options(
+            self.selected_orientation(), self.additional_rotation(),
+            self.size_mode(), self.centered(), self.image_dpi,
+        )
+        hints = {
+            "fit": "Das gesamte Bild wird proportional auf die Seite eingepasst.",
+            "fill": "Die Seite wird vollständig gefüllt. Bildbereiche können abgeschnitten werden.",
+            "original": "Das Bild wird entsprechend seiner DPI-Angabe in Originalgröße gedruckt.",
+            "10x15": "Das Bild wird in einer maximalen Größe von 10 × 15 cm gedruckt.",
+            "13x18": "Das Bild wird in einer maximalen Größe von 13 × 18 cm gedruckt.",
+            "a4": "Das Papierformat wird auf A4 gesetzt und das Bild passend eingepasst.",
+        }
+        hint = hints[self.size_mode()]
+        if self.size_mode() in {"10x15", "13x18"}:
+            paper_width, paper_height = (210.0, 297.0)
+            if self.selected_orientation() == QPageLayout.Orientation.Landscape:
+                paper_width, paper_height = paper_height, paper_width
+            preview_rect = QRectF(
+                0.0, 0.0,
+                paper_width / 2.54 * 100 * 0.88,
+                paper_height / 2.54 * 100 * 0.88,
+            )
+            preview_image = rotated_display_image(
+                self.image, self.additional_rotation()
+            )
+            layout = calculate_print_layout(
+                preview_image.size(), preview_rect, self.size_mode(), 100,
+                self.image_dpi, self.centered(),
+            )
+            if layout.scaled_down:
+                hint += " Das gewählte Fotoformat ist für die bedruckbare Fläche zu groß und wird verkleinert."
+        self.hint_label.setText(hint)
+
+    def accept(self) -> None:
+        self.settings.setValue(
+            PRINT_ORIENTATION_KEY, self.orientation_combo.currentData()
+        )
+        self.settings.setValue(PRINT_ROTATION_KEY, self.additional_rotation())
+        self.settings.setValue(PRINT_SIZE_MODE_KEY, self.size_mode())
+        self.settings.setValue(PRINT_CENTERED_KEY, self.centered())
+        super().accept()
+
+
+class MultiImagePrintPreview(QWidget):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.paths: list[Path] = []
+        self.images_per_page = 4
+        self.print_settings = MultiImagePrintSettings()
+        self.landscape = False
+        self.page_index = 0
+        self.contact_sheet = False
+        self.show_filename = False
+        self.show_capture_date = False
+        self.show_page_number = False
+        self.print_date_text = ""
+        self.capture_dates: dict[Path, str] = {}
+        self.setMinimumSize(420, 420)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+
+    def set_options(
+        self, paths: list[Path], print_settings: MultiImagePrintSettings, landscape: bool,
+        page_index: int, print_date_text: str,
+    ) -> None:
+        self.paths = paths
+        self.print_settings = print_settings
+        self.images_per_page = print_settings.effective_images_per_page
+        self.landscape = landscape
+        self.page_index = page_index
+        self.contact_sheet = print_settings.contact_sheet
+        self.show_filename = print_settings.show_filename
+        self.show_capture_date = print_settings.show_capture_date
+        self.show_page_number = print_settings.show_page_number
+        self.print_date_text = print_date_text
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor("#d7d7d7"))
+        available = QRectF(self.rect()).adjusted(16, 16, -16, -16)
+        page_size = QSize(297, 210) if self.landscape else QSize(210, 297)
+        paper_size = page_size.scaled(
+            available.size().toSize(), Qt.AspectRatioMode.KeepAspectRatio
+        )
+        paper_width = paper_size.width()
+        paper_height = paper_size.height()
+        paper_rect = QRectF(
+            available.center().x() - paper_width / 2,
+            available.center().y() - paper_height / 2,
+            paper_width, paper_height,
+        )
+        painter.fillRect(paper_rect.translated(3, 3), QColor(0, 0, 0, 45))
+        painter.fillRect(paper_rect, Qt.GlobalColor.white)
+        printable_rect = paper_rect.adjusted(
+            paper_rect.width() * 0.04, paper_rect.height() * 0.04,
+            -paper_rect.width() * 0.04, -paper_rect.height() * 0.04,
+        )
+        painter.setPen(QPen(QColor("#999999"), 1, Qt.PenStyle.DashLine))
+        painter.drawRect(printable_rect)
+        if not self.paths:
+            return
+        sizes: list[QSize] = []
+        for path in self.paths:
+            reader = QImageReader(str(path))
+            reader.setAutoTransform(True)
+            image_size = reader.size()
+            sizes.append(image_size if image_size.isValid() else QSize(1, 1))
+        resolution = max(1, round(paper_rect.width() / ((297 if self.landscape else 210) / 25.4)))
+        page = calculate_multi_image_page(
+            sizes, printable_rect, self.images_per_page, resolution,
+            self.landscape, self.page_index, self.contact_sheet,
+            self.show_filename, self.show_capture_date, self.show_page_number,
+            settings=self.print_settings,
+        )
+        draw_multi_print_header(painter, page, self.print_settings)
+        for cell in page.cells:
+            painter.fillRect(cell.rect, Qt.GlobalColor.white)
+            image = load_multi_print_image(
+                self.paths[cell.image_index], cell.image_rect, resolution
+            )
+            if image.isNull():
+                painter.setPen(QColor("#777777"))
+                painter.drawText(cell.rect, Qt.AlignmentFlag.AlignCenter, "Bild konnte nicht geladen werden")
+            else:
+                painter.drawImage(cell.image_rect, image)
+            painter.setPen(Qt.GlobalColor.black)
+            font = painter.font(); font.setPointSizeF(max(5, 10 - self.images_per_page / 4)); painter.setFont(font)
+            if self.show_filename and not cell.filename_rect.isEmpty():
+                text = painter.fontMetrics().elidedText(pathlib_name(self.paths[cell.image_index]), Qt.TextElideMode.ElideMiddle, int(cell.filename_rect.width()))
+                painter.drawText(cell.filename_rect, Qt.AlignmentFlag.AlignCenter, text)
+            if self.show_capture_date and not cell.date_rect.isEmpty():
+                path = self.paths[cell.image_index]
+                date = self.capture_dates.setdefault(path, capture_date_text(path))
+                painter.drawText(cell.date_rect, Qt.AlignmentFlag.AlignCenter, date)
+        draw_multi_print_footer(
+            painter,
+            page,
+            self.print_settings,
+            page.page_index + 1,
+            page.page_count,
+            self.print_date_text,
+        )
+
+
 class ImageViewer(QObject):
+    folder_changed = Signal(object)
+
     def __init__(
         self,
         startup_directory: Path | None = None,
@@ -2294,6 +2851,19 @@ class ImageViewer(QObject):
             lambda: self._show_resized_export_dialog(self._export_context_path)
         )
         self.file_menu.addAction(self.export_resized_action)
+        self.print_action = QAction("Drucken …", self.window)
+        self.print_action.setShortcut(QKeySequence("Ctrl+P"))
+        self.print_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        self.print_action.triggered.connect(self._print_current_image)
+        self.file_menu.addAction(self.print_action)
+        self.multi_print_action = QAction("Mehrere Bilder drucken …", self.window)
+        self.multi_print_action.triggered.connect(self._show_multi_print_dialog)
+        self.file_menu.addAction(self.multi_print_action)
+        self.contact_sheet_action = QAction("Kontaktabzug …", self.window)
+        self.contact_sheet_action.triggered.connect(
+            lambda: self._show_multi_print_dialog(True)
+        )
+        self.file_menu.addAction(self.contact_sheet_action)
         self.file_menu.addSeparator()
         self.window.addAction(self.rename_image_action)
 
@@ -2674,8 +3244,1110 @@ class ImageViewer(QObject):
         self.copy_image_action.setEnabled(has_selection)
         self.cut_image_action.setEnabled(has_selection)
         self.export_resized_action.setEnabled(has_selection or image_loaded)
+        self._update_print_action_state()
+        self.multi_print_action.setEnabled(bool(self._all_thumbnail_image_paths()))
+        self.contact_sheet_action.setEnabled(bool(self._all_thumbnail_image_paths()))
         self.compare_images_action.setEnabled(True)
         self.select_all_action.setEnabled(self.thumbnail_list.count() > 0)
+
+    def _update_print_action_state(self) -> None:
+        self.print_action.setEnabled(
+            self.current_image is not None
+            and self.current_image.is_file()
+            and not self.original_image.isNull()
+        )
+
+    def _all_thumbnail_image_paths(self) -> list[Path]:
+        return [
+            Path(self.thumbnail_list.item(row).data(Qt.ItemDataRole.UserRole))
+            for row in range(self.thumbnail_list.count())
+            if Path(self.thumbnail_list.item(row).data(Qt.ItemDataRole.UserRole)).is_file()
+        ]
+
+    def _show_multi_print_dialog(self, contact_sheet_default: bool = False) -> None:
+        selected = [path for path in self._selected_image_paths() if path.is_file()]
+        all_paths = self._all_thumbnail_image_paths()
+        current = self.current_image if self.current_image and self.current_image.is_file() else None
+        dialog = QDialog(self.window)
+        dialog.setWindowTitle("Mehrere Bilder drucken — BildBlick")
+        dialog.setMinimumSize(700, 560)
+        main_layout = QVBoxLayout(dialog)
+        dialog.setStyleSheet(dialog.styleSheet() + """
+QLabel#multiPrintSourceLabel, QLabel#multiPrintOrientationLabel,
+QLabel#multiPrintImagesPerPageLabel, QLabel#multiPrintRowsLabel,
+QLabel#multiPrintColumnsLabel, QLabel#multiPrintPageMarginLabel,
+QLabel#multiPrintImageSpacingLabel, QLabel#multiPrintHeaderTextLabel {
+    color: #202020;
+}
+QLabel#multiPrintHeaderTextLabel:disabled { color: #777777; }
+QLineEdit#multiPrintHeaderTextEdit { color: #202020; background: white; }
+QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
+""")
+        splitter = QSplitter(Qt.Orientation.Horizontal, dialog)
+        settings_scroll = QScrollArea(splitter)
+        settings_scroll.setWidgetResizable(True)
+        settings_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        settings_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        settings_scroll.setMinimumWidth(400)
+        settings_widget = QWidget(settings_scroll)
+        layout = QVBoxLayout(settings_widget)
+        settings_scroll.setWidget(settings_widget)
+        preview_panel = QWidget(splitter)
+        preview_panel.setMinimumWidth(520)
+        preview_layout = QVBoxLayout(preview_panel)
+        main_layout.addWidget(splitter, 1)
+        profile_group = QGroupBox("Profil", settings_widget)
+        profile_form = QFormLayout(profile_group)
+        profile_combo = QComboBox(profile_group)
+        profile_definitions = (
+            ("Standard", "standard", 4, False),
+            ("4 Bilder", "4", 4, False),
+            ("9 Bilder", "9", 9, False),
+            ("16 Bilder", "16", 16, False),
+            ("32 Bilder", "32", 32, False),
+            ("Kontaktabzug 9", "contact-9", 9, True),
+            ("Kontaktabzug 16", "contact-16", 16, True),
+            ("Kontaktabzug 32", "contact-32", 32, True),
+            ("Benutzerdefiniert", "custom", 0, False),
+        )
+        built_in_profiles = [
+            MultiImagePrintProfile(
+                profile_id,
+                label,
+                MultiImagePrintSettings(
+                    orientation="automatic",
+                    images_per_page=images_per_page,
+                    custom_rows=4,
+                    custom_columns=3,
+                    page_margin_mm=5.0,
+                    cell_spacing_mm=4.0,
+                    contact_sheet=contact_sheet,
+                    show_filename=True,
+                    show_capture_date=False,
+                    show_page_number=True,
+                    show_header=False,
+                    header_text="",
+                    use_folder_name_as_title=False,
+                    show_print_date=False,
+                    show_folder_in_footer=False,
+                ),
+                built_in=True,
+            )
+            for label, profile_id, images_per_page, contact_sheet
+            in profile_definitions[:-1]
+        ]
+        user_profiles_by_id = {}
+
+        def rebuild_profile_combo(
+            selected_profile_id: str | None = None,
+        ) -> None:
+            previous_data = profile_combo.currentData()
+            blocker = QSignalBlocker(profile_combo)
+            profile_combo.clear()
+            for label, profile_id, images_per_page, contact_sheet in profile_definitions[:-1]:
+                profile_combo.addItem(
+                    label, (profile_id, images_per_page, contact_sheet)
+                )
+            user_profiles = load_user_profiles(self.settings)
+            user_profiles_by_id.clear()
+            user_profiles_by_id.update(
+                {profile.profile_id: profile for profile in user_profiles}
+            )
+            selected_index = -1
+            for profile in user_profiles:
+                profile_combo.addItem(
+                    profile.display_name, ("user", profile.profile_id)
+                )
+                if profile.profile_id == selected_profile_id:
+                    selected_index = profile_combo.count() - 1
+            profile_combo.addItem(
+                profile_definitions[-1][0], profile_definitions[-1][1:]
+            )
+            if selected_index < 0 and previous_data is not None:
+                selected_index = profile_combo.findData(previous_data)
+            profile_combo.setCurrentIndex(max(0, selected_index))
+            del blocker
+
+        rebuild_profile_combo()
+        profile_form.addRow("Profil:", profile_combo)
+        save_profile_button = QPushButton("Speichern …", profile_group)
+        delete_profile_button = QPushButton("Löschen", profile_group)
+        delete_profile_button.setEnabled(False)
+        profile_buttons = QHBoxLayout()
+        profile_buttons.addWidget(save_profile_button)
+        profile_buttons.addWidget(delete_profile_button)
+        profile_form.addRow("", profile_buttons)
+        layout.addWidget(profile_group)
+        source_group = QGroupBox("Zu druckende Bilder", dialog)
+        source_form = QFormLayout(source_group)
+        source_combo = QComboBox(source_group)
+        source_combo.addItem("Aktuelles Bild", "current")
+        source_combo.addItem(f"Markierte Bilder ({len(selected)})", "selected")
+        source_combo.addItem(f"Alle Bilder im Ordner ({len(all_paths)})", "all")
+        configure_plain_combo_popup(source_combo, "multiPrintSourceCombo")
+        source_label = QLabel("Quelle:", source_group); source_label.setObjectName("multiPrintSourceLabel")
+        source_form.addRow(source_label, source_combo)
+        layout.addWidget(source_group)
+        options = QGroupBox("Layout", dialog)
+        form = QFormLayout(options)
+        orientation_combo = QComboBox(options)
+        for label, value in (("Automatisch", "automatic"), ("Hochformat", "portrait"), ("Querformat", "landscape")):
+            orientation_combo.addItem(label, value)
+        configure_plain_combo_popup(orientation_combo, "multiPrintOrientationCombo")
+        count_combo = QComboBox(options)
+        for value in (1, 2, 4, 6, 9, 16, 32):
+            count_combo.addItem(f"{value} Bild" if value == 1 else f"{value} Bilder", value)
+        count_combo.addItem("Benutzerdefiniert …", 0)
+        configure_plain_combo_popup(count_combo, "imagesPerPageCombo")
+        orientation_label = QLabel("Papierausrichtung:", options); orientation_label.setObjectName("multiPrintOrientationLabel")
+        count_label = QLabel("Bilder pro Seite:", options); count_label.setObjectName("multiPrintImagesPerPageLabel")
+        form.addRow(orientation_label, orientation_combo)
+        form.addRow(count_label, count_combo)
+        custom_rows = QSpinBox(options); custom_rows.setRange(1, 12)
+        custom_columns = QSpinBox(options); custom_columns.setRange(1, 12)
+        page_margin = QDoubleSpinBox(options); page_margin.setRange(0, 30); page_margin.setSingleStep(0.5); page_margin.setDecimals(1); page_margin.setSuffix(" mm")
+        cell_spacing = QDoubleSpinBox(options); cell_spacing.setRange(0, 20); cell_spacing.setSingleStep(0.5); cell_spacing.setDecimals(1); cell_spacing.setSuffix(" mm")
+        rows_label = QLabel("Zeilen (vertikal):", options); rows_label.setObjectName("multiPrintRowsLabel")
+        columns_label = QLabel("Spalten (horizontal):", options); columns_label.setObjectName("multiPrintColumnsLabel")
+        form.addRow(rows_label, custom_rows); form.addRow(columns_label, custom_columns)
+        page_margin_label = QLabel("Seitenrand:", dialog); page_margin_label.setObjectName("multiPrintPageMarginLabel")
+        cell_spacing_label = QLabel("Bildabstand:", dialog); cell_spacing_label.setObjectName("multiPrintImageSpacingLabel")
+        custom_hint = QLabel(options)
+        margin_hint = QLabel("Abstand zwischen Druckbereich und äußerem Bild.", options)
+        spacing_hint = QLabel("Abstand zwischen den einzelnen Bildern.", options)
+        for hint in (custom_hint, margin_hint, spacing_hint):
+            hint.setWordWrap(True)
+            hint.setObjectName("multiPrintHelpLabel")
+        form.addRow("", custom_hint)
+        spacing_group = QGroupBox("Abstände", settings_widget)
+        spacing_form = QFormLayout(spacing_group)
+        spacing_form.addRow(page_margin_label, page_margin)
+        spacing_form.addRow("", margin_hint)
+        spacing_form.addRow(cell_spacing_label, cell_spacing)
+        spacing_form.addRow("", spacing_hint)
+        layout.addWidget(options)
+        layout.addWidget(spacing_group)
+        warning_group = QGroupBox("Hinweise", settings_widget)
+        warning_layout = QVBoxLayout(warning_group)
+        layout_warning = QLabel(warning_group); layout_warning.setWordWrap(True); layout_warning.hide()
+        warning_layout.addWidget(layout_warning)
+        warning_group.hide()
+        caption_group = QGroupBox("Beschriftung (nur im Kontaktabzug)", dialog)
+        caption_layout = QVBoxLayout(caption_group)
+        contact_check = QCheckBox("Kontaktabzug", caption_group)
+        filename_check = QCheckBox("Dateiname", caption_group)
+        date_check = QCheckBox("Aufnahmedatum", caption_group)
+        for check in (contact_check, filename_check, date_check):
+            caption_layout.addWidget(check)
+        layout.addWidget(caption_group)
+        header_group = QGroupBox("Kopfzeile", settings_widget)
+        header_form = QFormLayout(header_group)
+        show_header_check = QCheckBox("Kopfzeile anzeigen", header_group)
+        show_header_check.setObjectName("multiPrintShowHeaderCheckBox")
+        header_text_label = QLabel("Überschrift:", header_group)
+        header_text_label.setObjectName("multiPrintHeaderTextLabel")
+        header_text_edit = QLineEdit(header_group)
+        header_text_edit.setObjectName("multiPrintHeaderTextEdit")
+        header_text_edit.setMaxLength(200)
+        header_text_edit.setToolTip(
+            "Diese Überschrift wird oben auf jeder gedruckten Seite angezeigt."
+        )
+        header_form.addRow(show_header_check)
+        header_form.addRow(header_text_label, header_text_edit)
+        use_folder_name_button = QPushButton(
+            "Ordnername übernehmen", header_group
+        )
+        use_folder_name_button.setObjectName("multiPrintUseFolderNameButton")
+        auto_folder_title_check = QCheckBox(
+            "Ordnername automatisch verwenden", header_group
+        )
+        auto_folder_title_check.setObjectName(
+            "multiPrintAutoFolderTitleCheckBox"
+        )
+        header_form.addRow("", use_folder_name_button)
+        header_form.addRow("", auto_folder_title_check)
+        layout.addWidget(header_group)
+        footer_group = QGroupBox("Fußzeile", settings_widget)
+        footer_layout = QVBoxLayout(footer_group)
+        footer_folder_check = QCheckBox("Ordnername", footer_group)
+        footer_folder_check.setObjectName("multiPrintFooterFolderCheckBox")
+        footer_folder_check.setToolTip(
+            "Zeigt den aktuellen Bildordner links in der Fußzeile."
+        )
+        page_number_check = QCheckBox("Seitenzahl", footer_group)
+        page_number_check.setObjectName("multiPrintFooterPageNumberCheckBox")
+        page_number_check.setToolTip("Zeigt die Seitenzahl in der Mitte.")
+        print_date_check = QCheckBox("Druckdatum", footer_group)
+        print_date_check.setObjectName("multiPrintFooterPrintDateCheckBox")
+        print_date_check.setToolTip("Zeigt das Druckdatum rechts.")
+        for check in (footer_folder_check, page_number_check, print_date_check):
+            footer_layout.addWidget(check)
+        layout.addWidget(footer_group)
+        layout.addWidget(warning_group)
+        preview = MultiImagePrintPreview(preview_panel)
+        preview_layout.addWidget(preview, 1)
+        navigation = QHBoxLayout()
+        previous_button = QPushButton("◀", dialog)
+        next_button = QPushButton("▶", dialog)
+        page_label = QLabel(dialog)
+        navigation.addStretch(1)
+        navigation.addWidget(previous_button)
+        navigation.addWidget(page_label)
+        navigation.addWidget(next_button)
+        navigation.addStretch(1)
+        preview_layout.addLayout(navigation)
+        buttons = QDialogButtonBox(dialog)
+        buttons.addButton("Abbrechen", QDialogButtonBox.ButtonRole.RejectRole)
+        continue_button = buttons.addButton("Weiter zum Druckdialog …", QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        reset_button = QPushButton("Zurücksetzen", dialog)
+        button_row = QHBoxLayout()
+        button_row.addWidget(reset_button)
+        button_row.addStretch(1)
+        button_row.addWidget(buttons)
+        main_layout.addLayout(button_row)
+
+        def apply_initial_dialog_size() -> None:
+            screen = dialog.screen() or QApplication.primaryScreen()
+            available = screen.availableGeometry() if screen is not None else QRectF(
+                0, 0, 1600, 1000
+            ).toRect()
+            maximum_width = max(640, int(available.width() * 0.94))
+            maximum_height = max(480, int(available.height() * 0.94))
+            margins = main_layout.contentsMargins()
+            horizontal_extra = (
+                margins.left() + margins.right() + splitter.handleWidth() + 24
+            )
+            vertical_extra = (
+                margins.top() + margins.bottom() + main_layout.spacing() * 2 + 24
+            )
+            left_hint = settings_widget.sizeHint()
+            left_width = max(400, left_hint.width() + 16)
+            preview_width = max(520, preview.minimumWidth())
+            available_content_width = max(1, maximum_width - horizontal_extra)
+            if left_width + preview_width > available_content_width:
+                left_width = min(
+                    left_width, max(300, int(available_content_width * 0.45))
+                )
+                preview_width = max(280, available_content_width - left_width)
+            settings_scroll.setMinimumWidth(left_width)
+            preview_panel.setMinimumWidth(preview_width)
+            navigation_height = navigation.sizeHint().height()
+            button_height = button_row.sizeHint().height()
+            desired_width = left_width + preview_width + horizontal_extra
+            desired_height = max(
+                left_hint.height(), preview.minimumHeight() + navigation_height
+            ) + button_height + vertical_extra
+            minimum_size = QSize(
+                min(700, maximum_width), min(560, maximum_height)
+            )
+            dialog.setMinimumSize(minimum_size)
+            saved_size = self.settings.value(MULTI_PRINT_DIALOG_SIZE_KEY, QSize())
+            if (
+                isinstance(saved_size, QSize)
+                and saved_size.isValid()
+                and saved_size.width() >= minimum_size.width()
+                and saved_size.height() >= minimum_size.height()
+            ):
+                desired_size = saved_size.expandedTo(minimum_size)
+            else:
+                desired_size = QSize(desired_width, desired_height).expandedTo(
+                    minimum_size
+                )
+            dialog.resize(
+                min(desired_size.width(), maximum_width),
+                min(desired_size.height(), maximum_height),
+            )
+            main_layout.activate()
+            splitter_width = max(1, splitter.width() - splitter.handleWidth())
+            saved_sizes = self.settings.value(MULTI_PRINT_SPLITTER_SIZES_KEY, [])
+            if (
+                isinstance(saved_sizes, list)
+                and len(saved_sizes) == 2
+                and all(isinstance(size, int) and size >= 200 for size in saved_sizes)
+                and sum(saved_sizes) > 0
+            ):
+                left_ratio = saved_sizes[0] / sum(saved_sizes)
+                if not 0.25 <= left_ratio <= 0.70:
+                    left_ratio = left_width / max(1, left_width + preview_width)
+            else:
+                left_ratio = left_width / max(1, left_width + preview_width)
+            splitter.setSizes([
+                int(splitter_width * left_ratio),
+                int(splitter_width * (1.0 - left_ratio)),
+            ])
+
+        apply_initial_dialog_size()
+        default_source = "selected" if len(selected) > 1 else "current" if current else "all"
+        source_combo.setCurrentIndex(max(0, source_combo.findData(self.settings.value(MULTI_PRINT_SOURCE_KEY, default_source, type=str))))
+        orientation_combo.setCurrentIndex(max(0, orientation_combo.findData(self.settings.value(MULTI_PRINT_ORIENTATION_KEY, "automatic", type=str))))
+        count_combo.setCurrentIndex(max(0, count_combo.findData(self.settings.value(MULTI_PRINT_IMAGES_PER_PAGE_KEY, 4, type=int))))
+        custom_rows.setValue(min(12, max(1, self.settings.value(MULTI_PRINT_CUSTOM_ROWS_KEY, 4, type=int))))
+        custom_columns.setValue(min(12, max(1, self.settings.value(MULTI_PRINT_CUSTOM_COLUMNS_KEY, 3, type=int))))
+        page_margin.setValue(min(30, max(0, self.settings.value(MULTI_PRINT_PAGE_MARGIN_KEY, 5.0, type=float))))
+        cell_spacing.setValue(min(20, max(0, self.settings.value(MULTI_PRINT_CELL_SPACING_KEY, 4.0, type=float))))
+        contact_check.setChecked(contact_sheet_default or self.settings.value(MULTI_PRINT_CONTACT_SHEET_KEY, False, type=bool))
+        filename_check.setChecked(self.settings.value(MULTI_PRINT_SHOW_FILENAME_KEY, True, type=bool))
+        date_check.setChecked(self.settings.value(MULTI_PRINT_SHOW_CAPTURE_DATE_KEY, False, type=bool))
+        page_number_check.setChecked(self.settings.value(MULTI_PRINT_SHOW_PAGE_NUMBER_KEY, True, type=bool))
+        footer_folder_check.setChecked(
+            self.settings.value(
+                MULTI_PRINT_SHOW_FOLDER_IN_FOOTER_KEY, False, type=bool
+            )
+        )
+        print_date_check.setChecked(
+            self.settings.value(MULTI_PRINT_SHOW_PRINT_DATE_KEY, False, type=bool)
+        )
+        show_header_check.setChecked(
+            self.settings.value(MULTI_PRINT_SHOW_HEADER_KEY, False, type=bool)
+        )
+        header_text_edit.setText(
+            self.settings.value(MULTI_PRINT_HEADER_TEXT_KEY, "", type=str)
+        )
+        auto_folder_title_check.setChecked(
+            self.settings.value(
+                MULTI_PRINT_USE_FOLDER_NAME_AS_TITLE_KEY, False, type=bool
+            )
+        )
+        filename_check.setEnabled(contact_check.isChecked())
+        date_check.setEnabled(contact_check.isChecked())
+        preview_page = [0]
+        print_settings = MultiImagePrintSettings(
+            show_header=self.settings.value(
+                MULTI_PRINT_SHOW_HEADER_KEY, False, type=bool
+            ),
+            header_text=self.settings.value(
+                MULTI_PRINT_HEADER_TEXT_KEY, "", type=str
+            ),
+            use_folder_name_as_title=self.settings.value(
+                MULTI_PRINT_USE_FOLDER_NAME_AS_TITLE_KEY, False, type=bool
+            ),
+            show_print_date=self.settings.value(
+                MULTI_PRINT_SHOW_PRINT_DATE_KEY, False, type=bool
+            ),
+            show_folder_in_footer=self.settings.value(
+                MULTI_PRINT_SHOW_FOLDER_IN_FOOTER_KEY, False, type=bool
+            ),
+        )
+        applying_profile = [False]
+        profile_state_initialized = [False]
+
+        def update_header_controls() -> None:
+            enabled = show_header_check.isChecked()
+            header_text_label.setEnabled(enabled)
+            header_text_edit.setEnabled(enabled)
+            use_folder_name_button.setEnabled(enabled)
+            auto_folder_title_check.setEnabled(enabled)
+
+        def current_folder_title() -> str:
+            directory = self.current_directory
+            if directory is None and self.current_image is not None:
+                directory = self.current_image.parent
+            return folder_title_from_path(directory)
+
+        def set_folder_title(show_error: bool = False) -> bool:
+            folder_title = current_folder_title()
+            if not folder_title:
+                if show_error:
+                    run_without_application_stylesheet(
+                        lambda: QMessageBox.information(
+                            dialog,
+                            "Kein Bildordner",
+                            "Es ist derzeit kein Bildordner geöffnet.",
+                        )
+                    )
+                return False
+            blocker = QSignalBlocker(header_text_edit)
+            header_text_edit.setText(folder_title)
+            del blocker
+            print_settings.header_text = folder_title
+            return True
+
+        update_header_controls()
+        print_date_text = current_print_date_text()
+        if print_settings.show_folder_in_footer:
+            print_settings.footer_folder_name = current_folder_title()
+        if auto_folder_title_check.isChecked():
+            show_header_check.setChecked(True)
+            set_folder_title()
+            update_header_controls()
+
+        def current_profile_id() -> str | None:
+            profile_data = profile_combo.currentData()
+            if not profile_data or profile_data[0] == "custom":
+                return None
+            return profile_data[1] if profile_data[0] == "user" else profile_data[0]
+
+        def update_profile_state() -> None:
+            if applying_profile[0]:
+                return
+            matching_profile = find_matching_profile(
+                print_settings,
+                built_in_profiles,
+                list(user_profiles_by_id.values()),
+                current_profile_id() if profile_state_initialized[0] else None,
+            )
+            if matching_profile is None:
+                target_data = profile_definitions[-1][1:]
+            elif matching_profile.built_in:
+                definition = next(
+                    item for item in profile_definitions
+                    if item[1] == matching_profile.profile_id
+                )
+                target_data = definition[1:]
+            else:
+                target_data = ("user", matching_profile.profile_id)
+            target_index = profile_combo.findData(target_data)
+            if target_index >= 0 and target_index != profile_combo.currentIndex():
+                blocker = QSignalBlocker(profile_combo)
+                profile_combo.setCurrentIndex(target_index)
+                del blocker
+            delete_profile_button.setEnabled(
+                matching_profile is not None and not matching_profile.built_in
+            )
+            profile_state_initialized[0] = True
+
+        def preview_paths() -> list[Path]:
+            source = source_combo.currentData()
+            if source == "current":
+                return [current] if current else []
+            return selected if source == "selected" else all_paths
+
+        def refresh_preview(reset_page: bool = True) -> None:
+            if reset_page:
+                preview_page[0] = 0
+            paths = [path for path in preview_paths() if path.is_file()]
+            print_settings.images_per_page = int(count_combo.currentData())
+            print_settings.source = str(source_combo.currentData())
+            print_settings.orientation = str(orientation_combo.currentData())
+            print_settings.custom_rows = custom_rows.value()
+            print_settings.custom_columns = custom_columns.value()
+            print_settings.page_margin_mm = page_margin.value()
+            print_settings.cell_spacing_mm = cell_spacing.value()
+            print_settings.contact_sheet = contact_check.isChecked()
+            print_settings.show_filename = filename_check.isChecked()
+            print_settings.show_capture_date = date_check.isChecked()
+            print_settings.show_page_number = page_number_check.isChecked()
+            print_settings.show_print_date = print_date_check.isChecked()
+            print_settings.show_folder_in_footer = footer_folder_check.isChecked()
+            if not print_settings.show_folder_in_footer:
+                print_settings.footer_folder_name = ""
+            elif not print_settings.footer_folder_name:
+                print_settings.footer_folder_name = current_folder_title()
+            print_settings.show_header = show_header_check.isChecked()
+            print_settings.header_text = header_text_edit.text()
+            print_settings.use_folder_name_as_title = (
+                auto_folder_title_check.isChecked()
+            )
+            images_per_page = print_settings.effective_images_per_page
+            is_custom = print_settings.is_custom
+            custom_rows.setVisible(is_custom); custom_columns.setVisible(is_custom)
+            rows_label.setVisible(is_custom); columns_label.setVisible(is_custom)
+            custom_hint.setVisible(is_custom)
+            custom_hint.setText(f"{custom_rows.value()} × {custom_columns.value()} ergibt {images_per_page} Bilder pro Seite.")
+            page_margin_label.setEnabled(True); cell_spacing_label.setEnabled(True)
+            page_count = (len(paths) + images_per_page - 1) // images_per_page
+            if page_count:
+                preview_page[0] = min(preview_page[0], page_count - 1)
+                page_label.setText(f"Seite {preview_page[0] + 1} von {page_count}")
+            else:
+                preview_page[0] = 0
+                page_label.setText("Seite 0 von 0")
+            orientation_value = orientation_combo.currentData()
+            landscape = orientation_value == "landscape" or (
+                orientation_value == "automatic" and images_per_page == 1
+                and bool(paths) and QImageReader(str(paths[0])).size().width()
+                > QImageReader(str(paths[0])).size().height()
+            )
+            preview.set_options(
+                paths, print_settings, landscape, preview_page[0], print_date_text
+            )
+            sample = calculate_multi_image_page([QSize(1, 1)], QRectF(0, 0, 600, 800), images_per_page, 100, landscape, 0, settings=print_settings)
+            messages = []
+            if not sample.valid: messages.append("Mit diesen Einstellungen steht nicht genügend Platz für die Bilder zur Verfügung.")
+            elif images_per_page > 32: messages.append("Bei diesem Raster können Bilder und Beschriftungen sehr klein werden.")
+            if images_per_page > 64 and contact_check.isChecked(): messages.append("Für dieses Raster empfehlen wir nur den Dateinamen.")
+            layout_warning.setText("\n".join(messages)); layout_warning.setVisible(bool(messages)); warning_group.setVisible(bool(messages))
+            continue_button.setEnabled(sample.valid)
+            previous_button.setEnabled(preview_page[0] > 0)
+            next_button.setEnabled(preview_page[0] + 1 < page_count)
+            update_profile_state()
+
+        def apply_profile(index: int) -> None:
+            profile_data = profile_combo.itemData(index)
+            delete_profile_button.setEnabled(
+                bool(profile_data) and profile_data[0] == "user"
+            )
+            if profile_data[0] == "user":
+                profile = user_profiles_by_id[profile_data[1]]
+                profile_values = profile.settings
+                applying_profile[0] = True
+                try:
+                    blockers = [
+                        QSignalBlocker(widget) for widget in (
+                            orientation_combo, count_combo, custom_rows,
+                            custom_columns, page_margin, cell_spacing,
+                            contact_check, filename_check, date_check,
+                            page_number_check, show_header_check,
+                            header_text_edit, auto_folder_title_check,
+                            footer_folder_check, print_date_check,
+                        )
+                    ]
+                    orientation_combo.setCurrentIndex(max(0, orientation_combo.findData(profile_values.orientation)))
+                    count_combo.setCurrentIndex(max(0, count_combo.findData(profile_values.images_per_page)))
+                    custom_rows.setValue(profile_values.custom_rows); custom_columns.setValue(profile_values.custom_columns)
+                    page_margin.setValue(profile_values.page_margin_mm); cell_spacing.setValue(profile_values.cell_spacing_mm)
+                    contact_check.setChecked(profile_values.contact_sheet); filename_check.setChecked(profile_values.show_filename)
+                    date_check.setChecked(profile_values.show_capture_date); page_number_check.setChecked(profile_values.show_page_number)
+                    footer_folder_check.setChecked(
+                        profile_values.show_folder_in_footer
+                    )
+                    print_date_check.setChecked(profile_values.show_print_date)
+                    show_header_check.setChecked(
+                        profile_values.show_header
+                        or profile_values.use_folder_name_as_title
+                    )
+                    header_text_edit.setText(profile_values.header_text)
+                    auto_folder_title_check.setChecked(
+                        profile_values.use_folder_name_as_title
+                    )
+                    if profile_values.use_folder_name_as_title:
+                        set_folder_title()
+                    print_settings.show_print_date = profile_values.show_print_date
+                    print_settings.show_folder_in_footer = (
+                        profile_values.show_folder_in_footer
+                    )
+                    print_settings.footer_folder_name = (
+                        current_folder_title()
+                        if profile_values.show_folder_in_footer else ""
+                    )
+                    update_header_controls()
+                    del blockers
+                    refresh_preview()
+                finally:
+                    applying_profile[0] = False
+                update_profile_state()
+                return
+            profile_id, images_per_page, contact_sheet = profile_data
+            if profile_id == "custom":
+                return
+            applying_profile[0] = True
+            try:
+                blockers = [
+                    QSignalBlocker(widget) for widget in (
+                        orientation_combo, count_combo, custom_rows,
+                        custom_columns, page_margin, cell_spacing,
+                        contact_check, filename_check, date_check,
+                        page_number_check, show_header_check,
+                        header_text_edit, auto_folder_title_check,
+                        footer_folder_check, print_date_check,
+                    )
+                ]
+                orientation_combo.setCurrentIndex(0)
+                count_combo.setCurrentIndex(
+                    max(0, count_combo.findData(images_per_page))
+                )
+                custom_rows.setValue(4)
+                custom_columns.setValue(3)
+                page_margin.setValue(5.0)
+                cell_spacing.setValue(4.0)
+                contact_check.setChecked(contact_sheet)
+                filename_check.setChecked(True)
+                date_check.setChecked(False)
+                page_number_check.setChecked(True)
+                show_header_check.setChecked(False)
+                header_text_edit.clear()
+                auto_folder_title_check.setChecked(False)
+                footer_folder_check.setChecked(False)
+                print_date_check.setChecked(False)
+                print_settings.show_print_date = False
+                print_settings.show_folder_in_footer = False
+                print_settings.footer_folder_name = ""
+                update_header_controls()
+                del blockers
+                refresh_preview()
+            finally:
+                applying_profile[0] = False
+            update_profile_state()
+
+        source_combo.currentIndexChanged.connect(
+            lambda _index: refresh_preview()
+        )
+        orientation_combo.currentIndexChanged.connect(
+            lambda _index: refresh_preview()
+        )
+        count_combo.currentIndexChanged.connect(
+            lambda _index: refresh_preview()
+        )
+        profile_combo.currentIndexChanged.connect(apply_profile)
+        custom_rows.valueChanged.connect(lambda _value: refresh_preview())
+        custom_columns.valueChanged.connect(lambda _value: refresh_preview())
+        page_margin.valueChanged.connect(lambda _value: refresh_preview())
+        cell_spacing.valueChanged.connect(lambda _value: refresh_preview())
+        contact_check.toggled.connect(lambda checked: (filename_check.setEnabled(checked), date_check.setEnabled(checked), refresh_preview()))
+        filename_check.toggled.connect(lambda _checked: refresh_preview())
+        date_check.toggled.connect(lambda _checked: refresh_preview())
+        page_number_check.toggled.connect(lambda _checked: refresh_preview())
+        footer_folder_check.toggled.connect(lambda _checked: refresh_preview())
+        print_date_check.toggled.connect(lambda _checked: refresh_preview())
+        show_header_check.toggled.connect(
+            lambda _checked: (update_header_controls(), refresh_preview())
+        )
+        def header_text_changed(_text: str) -> None:
+            if auto_folder_title_check.isChecked():
+                blocker = QSignalBlocker(auto_folder_title_check)
+                auto_folder_title_check.setChecked(False)
+                del blocker
+            refresh_preview()
+
+        def auto_folder_title_toggled(enabled: bool) -> None:
+            if enabled:
+                blockers = [
+                    QSignalBlocker(widget) for widget in (
+                        show_header_check, header_text_edit,
+                    )
+                ]
+                show_header_check.setChecked(True)
+                set_folder_title()
+                del blockers
+            update_header_controls()
+            refresh_preview()
+
+        def use_folder_name() -> None:
+            if set_folder_title(show_error=True):
+                refresh_preview()
+
+        header_text_edit.textChanged.connect(header_text_changed)
+        auto_folder_title_check.toggled.connect(auto_folder_title_toggled)
+        use_folder_name_button.clicked.connect(use_folder_name)
+        def reset_options() -> None:
+            applying_profile[0] = True
+            try:
+                blockers = [
+                    QSignalBlocker(widget) for widget in (
+                        profile_combo, source_combo, orientation_combo,
+                        count_combo, custom_rows, custom_columns, page_margin,
+                        cell_spacing, contact_check, filename_check, date_check,
+                        page_number_check, show_header_check,
+                        header_text_edit, auto_folder_title_check,
+                        footer_folder_check, print_date_check,
+                    )
+                ]
+                profile_combo.setCurrentIndex(0)
+                source_combo.setCurrentIndex(max(0, source_combo.findData(default_source)))
+                orientation_combo.setCurrentIndex(0)
+                count_combo.setCurrentIndex(max(0, count_combo.findData(4)))
+                custom_rows.setValue(4); custom_columns.setValue(3)
+                page_margin.setValue(5.0); cell_spacing.setValue(4.0)
+                contact_check.setChecked(False); filename_check.setChecked(True)
+                date_check.setChecked(False); page_number_check.setChecked(True)
+                show_header_check.setChecked(False)
+                header_text_edit.clear()
+                auto_folder_title_check.setChecked(False)
+                footer_folder_check.setChecked(False)
+                print_date_check.setChecked(False)
+                update_header_controls()
+                del blockers
+            finally:
+                applying_profile[0] = False
+            refresh_preview()
+        reset_button.clicked.connect(reset_options)
+
+        def save_current_profile() -> None:
+            entered_name, accepted = run_without_application_stylesheet(
+                lambda: QInputDialog.getText(
+                    dialog,
+                    "Druckprofil speichern",
+                    "Name des Profils:",
+                )
+            )
+            if not accepted:
+                return
+            profile_name = normalize_profile_name(entered_name)
+            if not profile_name:
+                run_without_application_stylesheet(
+                    lambda: QMessageBox.warning(
+                        dialog,
+                        "Ungültiger Profilname",
+                        "Bitte geben Sie einen Namen für das Druckprofil ein.",
+                    )
+                )
+                return
+            if is_reserved_profile_name(profile_name):
+                run_without_application_stylesheet(
+                    lambda: QMessageBox.warning(
+                        dialog,
+                        "Ungültiger Profilname",
+                        "Dieser Name ist für ein eingebautes Druckprofil reserviert.\n"
+                        "Bitte wählen Sie einen anderen Namen.",
+                    )
+                )
+                return
+            existing_profiles = load_user_profiles(self.settings)
+            existing_profile = next(
+                (
+                    item for item in existing_profiles
+                    if normalize_profile_name(item.display_name).casefold()
+                    == profile_name.casefold()
+                ),
+                None,
+            )
+            updated = existing_profile is not None
+            if existing_profile is not None:
+                confirmation = QMessageBox(dialog)
+                confirmation.setWindowTitle("Profil überschreiben")
+                confirmation.setText(
+                    "Ein Benutzerprofil mit diesem Namen existiert bereits.\n"
+                    "Möchten Sie es überschreiben?"
+                )
+                confirmation.setStandardButtons(
+                    QMessageBox.StandardButton.Yes
+                    | QMessageBox.StandardButton.Cancel
+                )
+                confirmation.button(QMessageBox.StandardButton.Yes).setText(
+                    "Überschreiben"
+                )
+                confirmation.button(QMessageBox.StandardButton.Cancel).setText(
+                    "Abbrechen"
+                )
+                if run_without_application_stylesheet(
+                    confirmation.exec
+                ) != QMessageBox.StandardButton.Yes:
+                    return
+            try:
+                profile = (
+                    overwrite_user_profile(
+                        existing_profile, profile_name, print_settings
+                    )
+                    if existing_profile is not None
+                    else create_user_profile(profile_name, print_settings)
+                )
+                save_user_profile(self.settings, profile)
+                self.settings.sync()
+                if self.settings.status() != QSettings.Status.NoError:
+                    raise RuntimeError("QSettings konnte nicht geschrieben werden.")
+                rebuild_profile_combo(profile.profile_id)
+                delete_profile_button.setEnabled(True)
+            except Exception:
+                run_without_application_stylesheet(
+                    lambda: QMessageBox.critical(
+                        dialog,
+                        "Druckprofil konnte nicht gespeichert werden",
+                        "Das Druckprofil konnte nicht dauerhaft gespeichert werden.",
+                    )
+                )
+                return
+            run_without_application_stylesheet(
+                lambda: QMessageBox.information(
+                    dialog,
+                    "Druckprofil gespeichert",
+                    f"Das Druckprofil ‚{profile_name}‘ wurde "
+                    f"{'aktualisiert' if updated else 'gespeichert'}.",
+                )
+            )
+
+        save_profile_button.clicked.connect(save_current_profile)
+
+        def delete_selected_profile() -> None:
+            profile_data = profile_combo.currentData()
+            if not profile_data or profile_data[0] != "user":
+                return
+            profile = user_profiles_by_id.get(profile_data[1])
+            if profile is None:
+                return
+            confirmation = QMessageBox(dialog)
+            confirmation.setWindowTitle("Druckprofil löschen")
+            confirmation.setText(
+                f"Möchten Sie das Profil ‚{profile.display_name}‘ wirklich löschen?"
+            )
+            confirmation.setStandardButtons(
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.Cancel
+            )
+            confirmation.button(QMessageBox.StandardButton.Yes).setText("Löschen")
+            confirmation.button(QMessageBox.StandardButton.Cancel).setText(
+                "Abbrechen"
+            )
+            if run_without_application_stylesheet(
+                confirmation.exec
+            ) != QMessageBox.StandardButton.Yes:
+                return
+            if not delete_user_profile(self.settings, profile.profile_id):
+                run_without_application_stylesheet(
+                    lambda: QMessageBox.critical(
+                        dialog,
+                        "Druckprofil konnte nicht gelöscht werden",
+                        "Das Druckprofil konnte nicht dauerhaft gelöscht werden.",
+                    )
+                )
+                return
+            rebuild_profile_combo()
+            profile_combo.setCurrentIndex(0)
+            apply_profile(0)
+
+        delete_profile_button.clicked.connect(delete_selected_profile)
+        previous_button.clicked.connect(
+            lambda: (preview_page.__setitem__(0, preview_page[0] - 1), refresh_preview(False))
+        )
+        next_button.clicked.connect(
+            lambda: (preview_page.__setitem__(0, preview_page[0] + 1), refresh_preview(False))
+        )
+        QTimer.singleShot(0, refresh_preview)
+        def update_automatic_folder_titles(_directory: Path) -> None:
+            update_required = False
+            if auto_folder_title_check.isChecked() and set_folder_title():
+                update_required = True
+            if footer_folder_check.isChecked():
+                print_settings.footer_folder_name = current_folder_title()
+                update_required = True
+            if update_required:
+                refresh_preview()
+
+        self.folder_changed.connect(update_automatic_folder_titles)
+        dialog_result = dialog.exec()
+        self.folder_changed.disconnect(update_automatic_folder_titles)
+        self.settings.setValue(MULTI_PRINT_SPLITTER_SIZES_KEY, splitter.sizes())
+        self.settings.setValue(MULTI_PRINT_DIALOG_SIZE_KEY, dialog.size())
+        if dialog_result != QDialog.DialogCode.Accepted:
+            return
+        source = source_combo.currentData()
+        paths = [current] if source == "current" and current else selected if source == "selected" else all_paths
+        paths = [path for path in paths if path is not None and path.is_file()]
+        if not paths:
+            QMessageBox.information(self.window, "Keine Bilder zum Drucken", "Es wurden keine gültigen Bilder zum Drucken gefunden.")
+            return
+        self.settings.setValue(MULTI_PRINT_SOURCE_KEY, source)
+        self.settings.setValue(MULTI_PRINT_ORIENTATION_KEY, orientation_combo.currentData())
+        self.settings.setValue(MULTI_PRINT_IMAGES_PER_PAGE_KEY, count_combo.currentData())
+        self.settings.setValue(MULTI_PRINT_CUSTOM_ROWS_KEY, custom_rows.value())
+        self.settings.setValue(MULTI_PRINT_CUSTOM_COLUMNS_KEY, custom_columns.value())
+        self.settings.setValue(MULTI_PRINT_PAGE_MARGIN_KEY, page_margin.value())
+        self.settings.setValue(MULTI_PRINT_CELL_SPACING_KEY, cell_spacing.value())
+        self.settings.setValue(MULTI_PRINT_CONTACT_SHEET_KEY, contact_check.isChecked())
+        self.settings.setValue(MULTI_PRINT_SHOW_FILENAME_KEY, filename_check.isChecked())
+        self.settings.setValue(MULTI_PRINT_SHOW_CAPTURE_DATE_KEY, date_check.isChecked())
+        self.settings.setValue(MULTI_PRINT_SHOW_PAGE_NUMBER_KEY, page_number_check.isChecked())
+        self.settings.setValue(MULTI_PRINT_SHOW_HEADER_KEY, print_settings.show_header)
+        self.settings.setValue(MULTI_PRINT_HEADER_TEXT_KEY, print_settings.header_text)
+        self.settings.setValue(
+            MULTI_PRINT_USE_FOLDER_NAME_AS_TITLE_KEY,
+            print_settings.use_folder_name_as_title,
+        )
+        self.settings.setValue(
+            MULTI_PRINT_SHOW_PRINT_DATE_KEY, print_settings.show_print_date
+        )
+        self.settings.setValue(
+            MULTI_PRINT_SHOW_FOLDER_IN_FOOTER_KEY,
+            print_settings.show_folder_in_footer,
+        )
+        self._print_multiple_images(paths, print_settings)
+
+    def _print_multiple_images(self, paths: list[Path], print_settings: MultiImagePrintSettings) -> None:
+        images_per_page = print_settings.effective_images_per_page
+        first = QImageReader(str(paths[0])); first.setAutoTransform(True); first_image = first.read()
+        orientation = QPageLayout.Orientation.Landscape if print_settings.orientation == "landscape" or (print_settings.orientation == "automatic" and images_per_page == 1 and first_image.width() > first_image.height()) else QPageLayout.Orientation.Portrait
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        page_layout = printer.pageLayout(); page_layout.setOrientation(orientation); printer.setPageLayout(page_layout)
+        print_dialog = QPrintDialog(printer, self.window)
+        accepted = run_without_application_stylesheet(
+            print_dialog.exec
+        ) == QDialog.DialogCode.Accepted
+        if not accepted: return
+        painter = QPainter()
+        if not painter.begin(printer):
+            QMessageBox.critical(self.window, "Drucken fehlgeschlagen", "Der Druckauftrag konnte nicht gestartet werden."); return
+        failures = []
+        capture_dates: dict[Path, str] = {}
+        print_date_text = current_print_date_text()
+        try:
+            sizes = []
+            for path in paths:
+                reader = QImageReader(str(path))
+                reader.setAutoTransform(True)
+                image_size = reader.size()
+                sizes.append(image_size if image_size.isValid() else QSize(1, 1))
+            viewport = painter.viewport(); drawable = QRectF(0, 0, viewport.width(), viewport.height())
+            landscape = orientation == QPageLayout.Orientation.Landscape
+            validation_layout = calculate_multi_image_page(
+                sizes, drawable, images_per_page, printer.resolution(),
+                landscape, 0, settings=print_settings,
+            )
+            if not validation_layout.valid:
+                raise MultiImagePrintLayoutError()
+            page_count = (len(paths) + images_per_page - 1) // images_per_page
+            for page in range(page_count):
+                page_layout_data = calculate_multi_image_page(sizes, drawable, images_per_page, printer.resolution(), landscape, page, settings=print_settings)
+                draw_multi_print_header(painter, page_layout_data, print_settings)
+                for cell in page_layout_data.cells:
+                    image = load_multi_print_image(
+                        paths[cell.image_index], cell.image_rect,
+                        printer.resolution(),
+                    )
+                    if image.isNull(): failures.append(paths[cell.image_index].name); continue
+                    painter.fillRect(cell.rect, Qt.GlobalColor.white); painter.drawImage(cell.image_rect, image)
+                    font = QFont(painter.font()); font.setPointSizeF(max(5, 12 - images_per_page / 2)); painter.setFont(font); painter.setPen(Qt.GlobalColor.black)
+                    if print_settings.show_filename and not cell.filename_rect.isEmpty():
+                        text = painter.fontMetrics().elidedText(paths[cell.image_index].name, Qt.TextElideMode.ElideMiddle, int(cell.filename_rect.width()))
+                        painter.drawText(cell.filename_rect, Qt.AlignmentFlag.AlignCenter, text)
+                    if print_settings.show_capture_date and not cell.date_rect.isEmpty():
+                        path = paths[cell.image_index]
+                        date = capture_dates.setdefault(path, capture_date_text(path))
+                        painter.drawText(cell.date_rect, Qt.AlignmentFlag.AlignCenter, date)
+                draw_multi_print_footer(
+                    painter,
+                    page_layout_data,
+                    print_settings,
+                    page + 1,
+                    page_count,
+                    print_date_text,
+                )
+                if page < page_count - 1 and not printer.newPage(): raise RuntimeError("Eine neue Druckseite konnte nicht erzeugt werden.")
+        except MultiImagePrintLayoutError:
+            if painter.isActive():
+                painter.end()
+            printer.abort()
+            QMessageBox.warning(
+                self.window,
+                "Drucklayout nicht möglich",
+                "Mit den gewählten Seitenrändern, Bildabständen und dem aktuellen "
+                "Papierformat steht nicht genügend Platz für die Bilder zur Verfügung.\n\n"
+                "Bitte verringern Sie Seitenrand oder Bildabstand oder wählen Sie ein "
+                "größeres Papierformat.",
+            )
+            return
+        except Exception as error:
+            QMessageBox.critical(self.window, "Drucken fehlgeschlagen", str(error))
+        finally:
+            if painter.isActive():
+                painter.end()
+        if failures:
+            QMessageBox.warning(self.window, "Einige Bilder konnten nicht geladen werden", "\n".join(failures))
+
+    def _print_current_image(self) -> None:
+        if (
+            self.current_image is None
+            or not self.current_image.is_file()
+            or self.original_image.isNull()
+        ):
+            self._update_print_action_state()
+            QMessageBox.information(
+                self.window, "Kein Bild geöffnet",
+                "Bitte öffnen oder markieren Sie zuerst ein Bild.",
+            )
+            return
+
+        try:
+            reader = QImageReader(str(self.current_image))
+            reader.setAutoTransform(True)
+            image = reader.read()
+            if image.isNull():
+                detail = reader.errorString() or "Unbekannter Ladefehler"
+                raise RuntimeError(detail)
+            image = rotated_display_image(
+                image, self._current_display_rotation()
+            )
+            if image.isNull():
+                raise RuntimeError(
+                    "Das gedrehte Druckbild konnte nicht erzeugt werden."
+                )
+
+            settings_dialog = PrintSettingsDialog(
+                image,
+                image_print_dpi(self.current_image),
+                self.settings,
+                COLOR_SCHEMES[self._color_scheme],
+                self.window,
+            )
+            if settings_dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            orientation = settings_dialog.selected_orientation()
+            size_mode = settings_dialog.size_mode()
+            centered = settings_dialog.centered()
+            image_dpi = settings_dialog.image_dpi
+            image = rotated_display_image(
+                image, settings_dialog.additional_rotation()
+            )
+            if image.isNull():
+                raise RuntimeError(
+                    "Das Druckbild konnte nicht erzeugt werden."
+                )
+
+            printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+            page_layout = printer.pageLayout()
+            page_layout.setOrientation(orientation)
+            if size_mode == "a4":
+                page_layout.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+            printer.setPageLayout(page_layout)
+
+            layout_mode = "fit" if size_mode == "a4" else size_mode
+            printable_size = printer.pageRect(QPrinter.Unit.DevicePixel).size()
+            preflight_layout = calculate_print_layout(
+                image.size(), QRectF(0.0, 0.0, printable_size.width(), printable_size.height()),
+                layout_mode, printer.resolution(), image_dpi, centered,
+            )
+            if layout_mode == "original" and preflight_layout.outside_page:
+                choice = QMessageBox.question(
+                    self.window, "Originalgröße zu groß",
+                    "Das Bild ist in Originalgröße größer als die bedruckbare Seite.\n"
+                    "Soll es stattdessen passend verkleinert werden?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                    | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Yes,
+                )
+                if choice == QMessageBox.StandardButton.Cancel:
+                    return
+                if choice == QMessageBox.StandardButton.Yes:
+                    layout_mode = "fit"
+            print_dialog = QPrintDialog(printer, self.window)
+            print_dialog.setWindowTitle("Bild drucken")
+            print_result = run_without_application_stylesheet(
+                print_dialog.exec
+            )
+            if print_result != QDialog.DialogCode.Accepted:
+                return
+
+            page_layout = printer.pageLayout()
+            page_layout.setOrientation(orientation)
+            if size_mode == "a4":
+                page_layout.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+            printer.setPageLayout(page_layout)
+
+            painter = QPainter()
+            if not painter.begin(printer):
+                raise RuntimeError("Der Druckauftrag konnte nicht gestartet werden.")
+            try:
+                viewport = painter.viewport()
+                drawable_rect = QRectF(
+                    0.0,
+                    0.0,
+                    float(viewport.width()),
+                    float(viewport.height()),
+                )
+                layout = calculate_print_layout(
+                    image.size(), drawable_rect, layout_mode,
+                    printer.resolution(), image_dpi, centered,
+                )
+                draw_print_layout(painter, image, drawable_rect, layout)
+            finally:
+                if painter.isActive() and not painter.end():
+                    raise RuntimeError(
+                        "Der Druckauftrag konnte nicht abgeschlossen werden."
+                    )
+        except Exception as error:
+            dialog = QMessageBox(self.window)
+            dialog.setWindowTitle("Drucken fehlgeschlagen")
+            dialog.setIcon(QMessageBox.Icon.Critical)
+            dialog.setText("Das aktuelle Bild konnte nicht gedruckt werden.")
+            dialog.setInformativeText(str(error))
+            dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+            dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+            self._style_message_box(dialog)
+            dialog.exec()
 
     def _set_file_manager_action_state(self, image_path: Path | None) -> None:
         self.show_in_file_manager_action.setEnabled(
@@ -4641,6 +6313,7 @@ class ImageViewer(QObject):
         self._resolved_sort_path_cache = {}
         self._capture_sort_waiting = False
         self.current_directory = directory
+        self.folder_changed.emit(directory)
         self._directory_iterator = new_directory_iterator
         if add_to_history:
             self._record_folder_history(directory)
