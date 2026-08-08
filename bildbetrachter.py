@@ -132,7 +132,7 @@ from printing.print_profiles import (
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.10.0"
+APP_VERSION = "1.11.0"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 
 _DialogResult = TypeVar("_DialogResult")
@@ -189,6 +189,7 @@ SLIDESHOW_METADATA_KEY = "slideshow/showMetadata"
 SLIDESHOW_FADE_KEY = "slideshow/softFade"
 COLOR_SCHEME_KEY = "colorScheme"
 THUMBNAIL_SIZE_KEY = "thumbnailSize"
+SHOW_HIDDEN_FILES_KEY = "view/showHiddenFiles"
 SORT_CRITERION_KEY = "sortCriterion"
 SORT_ASCENDING_KEY = "sortAscending"
 EXPORT_WIDTH_KEY = "export/maxWidth"
@@ -724,6 +725,23 @@ def normalized_thumbnail_pixels(value: int) -> int:
     bounded = min(THUMBNAIL_MAXIMUM, max(THUMBNAIL_MINIMUM, value))
     steps = round((bounded - THUMBNAIL_MINIMUM) / THUMBNAIL_STEP)
     return THUMBNAIL_MINIMUM + steps * THUMBNAIL_STEP
+
+
+def is_hidden_path(path: Path) -> bool:
+    """Return whether a directory entry is hidden by its own name."""
+    return str(path) in (".", "..") or path.name.startswith(".")
+
+
+def should_show_path(path: Path, show_hidden: bool) -> bool:
+    return str(path) not in (".", "..") and (
+        show_hidden or not is_hidden_path(path)
+    )
+
+
+def show_hidden_files_value(value: object) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
 
 
 def thumbnail_size_slider_maximum() -> int:
@@ -2576,6 +2594,9 @@ class ImageViewer(QObject):
         self._thumbnail_grid_size = thumbnail_grid_size_for_pixels(
             self._thumbnail_pixels
         )
+        self._show_hidden_files = show_hidden_files_value(
+            self.settings.value(SHOW_HIDDEN_FILES_KEY, False)
+        )
         saved_sort_criterion = self.settings.value(
             SORT_CRITERION_KEY, "name", type=str
         )
@@ -2805,12 +2826,7 @@ class ImageViewer(QObject):
         self.slideshow_metadata_label.hide()
 
         self.directory_model = QFileSystemModel(self.window)
-        self.directory_model.setFilter(
-            QDir.Filter.AllDirs
-            | QDir.Filter.NoDotAndDotDot
-            | QDir.Filter.Drives
-            | QDir.Filter.Hidden
-        )
+        self._set_directory_model_filter()
         self.directory_model.setReadOnly(True)
         root_index = self.directory_model.setRootPath(str(ROOT_DIRECTORY))
         self.directory_tree.setModel(self.directory_model)
@@ -2929,6 +2945,32 @@ class ImageViewer(QObject):
                 migrated = True
         if migrated:
             self.settings.sync()
+
+    def _set_directory_model_filter(self) -> None:
+        filter_flags = (
+            QDir.Filter.AllDirs | QDir.Filter.NoDotAndDotDot | QDir.Filter.Drives
+        )
+        if self._show_hidden_files:
+            filter_flags |= QDir.Filter.Hidden
+        self.directory_model.setFilter(filter_flags)
+
+    def _set_show_hidden_files(self, checked: bool) -> None:
+        self._show_hidden_files = checked
+        self.settings.setValue(SHOW_HIDDEN_FILES_KEY, checked)
+        self.settings.sync()
+        self._set_directory_model_filter()
+        if self.current_directory is None:
+            return
+        selection = [
+            path
+            for path in self._selected_image_paths()
+            if should_show_path(path, checked)
+        ]
+        if self.current_image is not None and should_show_path(
+            self.current_image, checked
+        ):
+            selection.insert(0, self.current_image)
+        self._show_directory(self.current_directory, selection)
 
     def _start_directory(self) -> Path:
         saved_value = self.settings.value(LAST_DIRECTORY_KEY, "", type=str)
@@ -3118,6 +3160,20 @@ class ImageViewer(QObject):
         self.fullscreen_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.fullscreen_action.triggered.connect(self._toggle_fullscreen)
         self.view_menu.addAction(self.fullscreen_action)
+
+        self.show_hidden_action = QAction(
+            "Versteckte Dateien und Ordner anzeigen", self.window
+        )
+        self.show_hidden_action.setCheckable(True)
+        self.show_hidden_action.setToolTip(
+            "Versteckte Dateien und Ordner in der Dateiansicht anzeigen"
+        )
+        self.show_hidden_action.setStatusTip(
+            "Versteckte Dateien und Ordner in der Dateiansicht anzeigen"
+        )
+        self.show_hidden_action.setChecked(self._show_hidden_files)
+        self.show_hidden_action.toggled.connect(self._set_show_hidden_files)
+        self.view_menu.addAction(self.show_hidden_action)
 
         self.view_menu.addSeparator()
         self.fit_image_action = QAction("Bild einpassen", self.window)
@@ -6606,7 +6662,7 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
                 path = Path(entry.path)
                 try:
                     if (
-                        not entry.name.startswith("._")
+                        should_show_path(path, self._show_hidden_files)
                         and entry.is_file()
                         and path.suffix.lower() in IMAGE_EXTENSIONS
                     ):

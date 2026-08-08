@@ -2,6 +2,23 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.11.0 – Versteckte Dateien und Ordner
+
+### Neu
+
+- Menüpunkt „Ansicht → Versteckte Dateien und Ordner anzeigen“.
+- Versteckte Dateien und Verzeichnisse sind standardmäßig ausgeblendet und
+  lassen sich jederzeit ein- oder ausblenden.
+- Die gewählte Einstellung wird dauerhaft gespeichert.
+
+### Verbessert
+
+- Übersichtlichere Ordnernavigation.
+- `.DS_Store` und AppleDouble-Dateien wie `._Bild.jpg` werden standardmäßig
+  ausgeblendet.
+- Einheitliche Filterung in Ordnerbaum und Thumbnail-Ansicht.
+- Normale Dateien auf Netzwerkfreigaben bleiben unverändert zugänglich.
+
 ## 1.10.0 – Anpassbare Vorschaubildgröße
 
 ### Neu
