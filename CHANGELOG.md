@@ -2,6 +2,39 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.12.0 – PDF-Unterstützung
+
+### Neu
+
+- PDF-Dateien erscheinen in der normalen Thumbnail-Liste.
+- Die erste PDF-Seite wird als Vorschaubild dargestellt.
+- PDF-Dokumente werden direkt im Großbildbereich geöffnet.
+- Sichtbare Navigation durch PDF-Seiten mit Anzeige „Seite X von Y“.
+- PageUp und PageDown zur PDF-Seitennavigation.
+- Zoom und „Bild auf Fenstergröße“ funktionieren auch für PDFs.
+- PDF-Dateien können per Drag-and-drop geöffnet und herausgezogen werden.
+
+### Verbessert
+
+- Das Seitenverhältnis von PDF-Seiten bleibt erhalten; Hoch- und Querformat
+  werden korrekt dargestellt.
+- Große und mehrseitige PDFs lassen sich zuverlässig durchblättern.
+- PDF-Seiten werden auf weißem Hintergrund korrekt zusammengesetzt;
+  transparente oder komplexe Inhalte erscheinen nicht mehr zu dunkel.
+- Vollbild funktioniert für Bilder und PDFs und blendet Navigations- sowie
+  Thumbnail-Bereiche vollständig aus.
+- Beschädigte, leere und passwortgeschützte PDFs werden ohne Absturz behandelt.
+- PDF-Rendering ist vom normalen Bildladen getrennt; QtPdf wird im
+  PyInstaller-Build berücksichtigt.
+
+### Einschränkungen
+
+- PDF-Bearbeitung ist nicht enthalten.
+- Es gibt keine Textsuche oder Textextraktion.
+- PDF-Formulare und Annotationen werden nicht unterstützt.
+- Die vorhandenen Druckfunktionen wurden nicht auf vollständigen
+  PDF-Dokumentdruck erweitert.
+
 ## 1.11.0 – Versteckte Dateien und Ordner
 
 ### Neu

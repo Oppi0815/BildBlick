@@ -11,6 +11,7 @@ analysis = Analysis(
     ],
     hiddenimports=[
         "PySide6.QtPrintSupport",
+        "PySide6.QtPdf",
         "printing",
         "printing.multi_image_print",
         "printing.print_profiles",

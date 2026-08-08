@@ -6,9 +6,9 @@
 
 ![BildBlick Screenshot](docs/bildblick-screenshot.png)
 
-*BildBlick 1.11.0 unter Linux Mint*
+*BildBlick 1.12.0 unter Linux Mint*
 
-**Version 1.11.0**
+**Version 1.12.0**
 
 BildBlick ist ein schneller und komfortabler Bildbetrachter für Linux. Die Anwendung wurde unter Linux Mint entwickelt und getestet und verbindet eine übersichtliche Verzeichnisnavigation mit schnellen Vorschaubildern und praktischen Werkzeugen für die Bildverwaltung.
 
@@ -29,6 +29,21 @@ BildBlick ist ein schneller und komfortabler Bildbetrachter für Linux. Die Anwe
 - Farbschemata: System, Hell, Dunkel, Anthrazit und Warm
 - Suche nach identischen Bildern mit sicherer Papierkorbauswahl
 
+## PDF-Unterstützung
+
+- PDF-Dateien erscheinen als Thumbnails; die erste Seite dient als Vorschau.
+- PDFs öffnen direkt im normalen Bildbereich und behalten beim Zoom und bei
+  „Bild auf Fenstergröße“ ihr Seitenverhältnis.
+- Sichtbare Schaltflächen sowie `PageUp` und `PageDown` wechseln PDF-Seiten;
+  die Anzeige lautet „Seite X von Y“.
+- PDF-Dokumente funktionieren auch im Vollbild und können per Drag-and-drop
+  geöffnet oder als lokale Datei-URL herausgezogen werden.
+- Große mehrseitige PDFs werden bedarfsgerecht gerendert.
+
+„Vorheriges Bild“ und „Nächstes Bild“ wechseln zwischen Dateien. „Vorherige
+Seite“ und „Nächste Seite“ wechseln ausschließlich innerhalb der geöffneten
+PDF. PDF-Bearbeitung, Textsuche und Textextraktion sind nicht enthalten.
+
 ## Drucken
 
 - Einzelbilddruck über den nativen Qt-Druckdialog
@@ -48,17 +63,17 @@ BildBlick ist ein schneller und komfortabler Bildbetrachter für Linux. Die Anwe
 5. **Weiter zum Druckdialog …** wählen.
 6. Drucker oder **In Datei drucken** wählen.
 
-## Unterstützte Bildformate
+## Unterstützte Dateiformate
 
-BildBlick berücksichtigt JPEG (`.jpg`, `.jpeg`), PNG, WebP, BMP, GIF sowie TIFF (`.tif`, `.tiff`). Welche konkreten Varianten dekodiert werden können, hängt zusätzlich von den in Pillow und Qt verfügbaren Bildformat-Plug-ins ab.
+BildBlick berücksichtigt JPEG (`.jpg`, `.jpeg`), PNG, WebP, BMP, GIF sowie TIFF (`.tif`, `.tiff`) und PDF (`.pdf`). Welche konkreten Bildvarianten dekodiert werden können, hängt zusätzlich von den in Pillow und Qt verfügbaren Bildformat-Plug-ins ab.
 
 ## Drag-and-drop
 
-Bilddateien und Ordner können aus Nemo direkt in BildBlick abgelegt werden. Bei einer Bilddatei öffnet BildBlick ihren Ordner und zeigt das abgelegte Bild an. Mehrere Bilder aus demselben Ordner werden gemeinsam markiert; das zuerst abgelegte Bild wird angezeigt. Unterstützt werden ausschließlich die oben genannten Bildformate.
+Bilddateien, PDFs und Ordner können aus Nemo direkt in BildBlick abgelegt werden. Bei einer Datei öffnet BildBlick ihren Ordner und zeigt die abgelegte Datei an. Mehrere Dateien aus demselben Ordner werden gemeinsam markiert; die zuerst abgelegte Datei wird angezeigt. Unterstützt werden die oben genannten Dateiformate.
 
 ### Bilder aus BildBlick herausziehen
 
-Ein oder mehrere markierte Bilder lassen sich aus der Vorschauliste nach Nemo, auf den Schreibtisch oder als Anhang in ein Thunderbird-Verfassenfenster ziehen. BildBlick übergibt lokale Datei-URLs als Kopiervorgang; die Originale werden nicht verändert.
+Ein oder mehrere markierte Bilder oder PDFs lassen sich aus der Vorschauliste nach Nemo, auf den Schreibtisch oder als Anhang in ein Thunderbird-Verfassenfenster ziehen. BildBlick übergibt lokale Datei-URLs als Kopiervorgang; die Originale werden nicht verändert.
 
 ## Installation aus dem Quellcode
 
@@ -95,6 +110,7 @@ Das Ergebnis wird als `dist/BildBlick` erzeugt. Diese Binärdatei gehört nicht 
 | Taste | Funktion |
 |---|---|
 | `←` / `→` | Vorheriges beziehungsweise nächstes Bild |
+| `PageUp` / `PageDown` | Vorherige beziehungsweise nächste Seite der geöffneten PDF |
 | `Pos1` / `Ende` | Erstes beziehungsweise letztes Bild |
 | `0` | Bild einpassen |
 | `1` | Originalgröße |

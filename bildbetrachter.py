@@ -129,10 +129,16 @@ from printing.print_profiles import (
     overwrite_user_profile,
     save_user_profile,
 )
+from pdf_support import (
+    PDF_EXTENSIONS,
+    load_pdf,
+    render_pdf_page,
+    render_pdf_page_with_fallback,
+)
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.11.0"
+APP_VERSION = "1.12.0"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 
 _DialogResult = TypeVar("_DialogResult")
@@ -160,6 +166,7 @@ _pictures_location = QStandardPaths.writableLocation(
 )
 START_DIRECTORY = Path(_pictures_location) if _pictures_location else HOME_DIRECTORY
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
+SUPPORTED_FILE_EXTENSIONS = IMAGE_EXTENSIONS | PDF_EXTENSIONS
 THUMBNAIL_SIZE = QSize(160, 120)
 THUMBNAIL_GRID_SIZE = QSize(190, 175)
 THUMBNAIL_SPACING = 8
@@ -1102,6 +1109,11 @@ class ThumbnailTask(QRunnable):
             pass
 
     def _load_or_create_thumbnail(self) -> QImage:
+        if self.path.suffix.lower() in PDF_EXTENSIONS:
+            result = load_pdf(self.path)
+            if result.document is None:
+                return QImage()
+            return render_pdf_page(result.document, 0, self.thumbnail_size)
         cache_name = thumbnail_cache_name(self.path, self.thumbnail_size)
         cache_file = CACHE_DIRECTORY / cache_name
 
@@ -2659,9 +2671,12 @@ class ImageViewer(QObject):
         self.right_splitter = self._widget(QSplitter, "rightSplitter")
         self.directory_panel = self.directory_tree.parentWidget()
         self.preview_panel = self.image_scroll_area.parentWidget()
+        self._install_pdf_page_navigation()
         self._install_thumbnail_size_controls()
         self.current_directory: Path | None = None
         self.current_image: Path | None = None
+        self._pdf_document = None
+        self._pdf_page = 0
         self._folder_history: list[Path] = []
         self._folder_history_index = -1
         self._current_file_size: int | None = None
@@ -2858,7 +2873,6 @@ class ImageViewer(QObject):
         self.clipboard.dataChanged.connect(self._clipboard_changed)
         self._clipboard_changed()
         self._update_navigation_buttons()
-
         self._expand_initial_path(self.start_directory)
         if self.start_directory.is_dir():
             self._show_directory(
@@ -2866,10 +2880,36 @@ class ImageViewer(QObject):
                 [self.startup_image] if self.startup_image is not None else None,
             )
 
+    def _install_pdf_page_navigation(self) -> None:
+        """Add PDF-only page controls beside the existing file navigation."""
+        navigation_layout = self.window.findChild(QHBoxLayout, "navigationLayout")
+        if navigation_layout is None:
+            raise RuntimeError("Die untere Navigationsleiste wurde nicht gefunden.")
+        self.pdf_page_navigation = QWidget(self.preview_panel)
+        self.pdf_page_navigation.setObjectName("pdfPageNavigation")
+        layout = QHBoxLayout(self.pdf_page_navigation)
+        layout.setContentsMargins(8, 0, 0, 0)
+        layout.setSpacing(4)
+        self.previous_pdf_page_button = QPushButton("◀ Seite", self.pdf_page_navigation)
+        self.previous_pdf_page_button.setObjectName("previousPdfPageButton")
+        self.pdf_page_label = QLabel("", self.pdf_page_navigation)
+        self.pdf_page_label.setObjectName("pdfPageLabel")
+        self.pdf_page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.next_pdf_page_button = QPushButton("Seite ▶", self.pdf_page_navigation)
+        self.next_pdf_page_button.setObjectName("nextPdfPageButton")
+        for button in (self.previous_pdf_page_button, self.next_pdf_page_button):
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        layout.addWidget(self.previous_pdf_page_button)
+        layout.addWidget(self.pdf_page_label)
+        layout.addWidget(self.next_pdf_page_button)
+        navigation_layout.addWidget(self.pdf_page_navigation)
+        self.pdf_page_navigation.hide()
+
     def _install_thumbnail_size_controls(self) -> None:
         thumbnail_index = self.right_splitter.indexOf(self.thumbnail_list)
         thumbnail_panel = QWidget(self.right_splitter)
         thumbnail_panel.setObjectName("thumbnailPanel")
+        self.thumbnail_panel = thumbnail_panel
         thumbnail_layout = QVBoxLayout(thumbnail_panel)
         thumbnail_layout.setContentsMargins(0, 0, 0, 0)
         thumbnail_layout.setSpacing(2)
@@ -3160,6 +3200,20 @@ class ImageViewer(QObject):
         self.fullscreen_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.fullscreen_action.triggered.connect(self._toggle_fullscreen)
         self.view_menu.addAction(self.fullscreen_action)
+
+        self.previous_pdf_page_action = QAction("PDF-Seite zurück", self.window)
+        self.previous_pdf_page_action.setShortcut(QKeySequence(Qt.Key.Key_PageUp))
+        self.previous_pdf_page_action.triggered.connect(lambda: self._change_pdf_page(-1))
+        self.next_pdf_page_action = QAction("PDF-Seite weiter", self.window)
+        self.next_pdf_page_action.setShortcut(QKeySequence(Qt.Key.Key_PageDown))
+        self.next_pdf_page_action.triggered.connect(lambda: self._change_pdf_page(1))
+        self.view_menu.addAction(self.previous_pdf_page_action)
+        self.view_menu.addAction(self.next_pdf_page_action)
+        self.previous_pdf_page_button.clicked.connect(
+            lambda: self._change_pdf_page(-1)
+        )
+        self.next_pdf_page_button.clicked.connect(lambda: self._change_pdf_page(1))
+        self._update_pdf_page_navigation()
 
         self.show_hidden_action = QAction(
             "Versteckte Dateien und Ordner anzeigen", self.window
@@ -6664,7 +6718,7 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
                     if (
                         should_show_path(path, self._show_hidden_files)
                         and entry.is_file()
-                        and path.suffix.lower() in IMAGE_EXTENSIONS
+                        and path.suffix.lower() in SUPPORTED_FILE_EXTENSIONS
                     ):
                         self._pending_images.append(path)
                         try:
@@ -7246,8 +7300,25 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
         if self.current_image is None:
             self._exif_oriented_image = QImage()
             self._current_file_size = None
+            self._clear_pdf_state()
             self._update_status_bar()
             return
+        if self.current_image.suffix.lower() in PDF_EXTENSIONS:
+            result = load_pdf(self.current_image)
+            if result.document is None:
+                self._clear_pdf_state()
+                self.original_image = QImage()
+                self.image_label.setText(result.error or "Die PDF konnte nicht geöffnet werden")
+                self._update_view_actions()
+                return
+            self._pdf_document = result.document
+            self._pdf_page = 0
+            self._zoom_mode = "fit"
+            self._render_pdf_page()
+            return
+        self._pdf_document = None
+        self._pdf_page = 0
+        self._update_pdf_page_navigation()
         try:
             self._current_file_size = self.current_image.stat().st_size
         except OSError:
@@ -7276,6 +7347,70 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
         self._update_view_actions()
         self._zoom_mode = "fit"
         self._render_current_image()
+
+    def _render_pdf_page(self, requested_page: int | None = None) -> bool:
+        if self._pdf_document is None:
+            return False
+        page_count = self._pdf_document.pageCount()
+        if page_count < 1:
+            self._clear_pdf_state()
+            self.image_label.setText("Die PDF enthält keine Seiten.")
+            return False
+        page = self._pdf_page if requested_page is None else requested_page
+        page = max(0, min(page_count - 1, page))
+        viewport = self.image_scroll_area.viewport().size()
+        render_scale = max(1.0, self._zoom_factor) if self._zoom_mode == "manual" else 1.0
+        target = QSize(
+            max(2, round(viewport.width() * 2 * render_scale)),
+            max(2, round(viewport.height() * 2 * render_scale)),
+        )
+        image = render_pdf_page_with_fallback(self._pdf_document, page, target)
+        if image.isNull() or image.width() <= 0 or image.height() <= 0:
+            self.original_image = QImage()
+            self.image_label.clear()
+            self.image_label.resize(self.image_scroll_area.viewport().size())
+            self.image_label.setText("Die PDF-Seite konnte nicht gerendert werden")
+            self._update_pdf_page_navigation()
+            return False
+        self._pdf_page = page
+        self.original_image = image
+        if self._zoom_mode != "manual":
+            self._zoom_mode = "fit"
+        self._render_current_image()
+        self._set_file_name_text(self.current_image.name)
+        self._update_pdf_page_navigation()
+        return True
+
+    def _change_pdf_page(self, offset: int) -> None:
+        if self._pdf_document is None:
+            return
+        page_count = self._pdf_document.pageCount()
+        if page_count < 1:
+            self._clear_pdf_state()
+            return
+        requested_page = max(0, min(page_count - 1, self._pdf_page + offset))
+        self._render_pdf_page(requested_page)
+
+    def _clear_pdf_state(self) -> None:
+        self._pdf_document = None
+        self._pdf_page = 0
+        self._update_pdf_page_navigation()
+
+    def _update_pdf_page_navigation(self) -> None:
+        document = self._pdf_document
+        page_count = document.pageCount() if document is not None else 0
+        is_pdf = page_count > 0
+        self.pdf_page_navigation.setVisible(is_pdf)
+        self.previous_pdf_page_action.setEnabled(is_pdf and self._pdf_page > 0)
+        self.next_pdf_page_action.setEnabled(is_pdf and self._pdf_page + 1 < page_count)
+        if not is_pdf:
+            self.pdf_page_label.clear()
+            self.previous_pdf_page_button.setEnabled(False)
+            self.next_pdf_page_button.setEnabled(False)
+            return
+        self.pdf_page_label.setText(f"Seite {self._pdf_page + 1} von {page_count}")
+        self.previous_pdf_page_button.setEnabled(self._pdf_page > 0)
+        self.next_pdf_page_button.setEnabled(self._pdf_page + 1 < page_count)
 
     def _activate_rotation_target(self, image_path: Path | None = None) -> bool:
         target_path = image_path or self.current_image
@@ -7726,7 +7861,7 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
         )
         scaled_image = self.original_image.scaled(
             scaled_size,
-            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
         self.image_label.resize(scaled_size)
@@ -7844,13 +7979,16 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
             central_layout.setContentsMargins(0, 0, 0, 0)
 
         self.directory_panel.hide()
-        self.thumbnail_list.hide()
+        self.thumbnail_panel.hide()
         self.previous_button.hide()
         self.next_button.hide()
+        self.pdf_page_navigation.hide()
         self.file_name_label.hide()
         self.window.menuBar().hide()
         self.splitter.handle(1).hide()
         self.right_splitter.handle(1).hide()
+        self.splitter.setSizes([0, max(1, self.splitter.width())])
+        self.right_splitter.setSizes([0, max(1, self.right_splitter.width())])
         self.window.setStyleSheet("background-color: black;")
         self.image_label.setStyleSheet("background-color: black;")
         self.window.showFullScreen()
@@ -7875,9 +8013,10 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
             central_layout.setContentsMargins(*self._normal_central_margins)
 
         self.directory_panel.show()
-        self.thumbnail_list.show()
+        self.thumbnail_panel.show()
         self.previous_button.show()
         self.next_button.show()
+        self._update_pdf_page_navigation()
         self.file_name_label.show()
         self.window.menuBar().show()
         self.splitter.handle(1).show()
@@ -7904,8 +8043,11 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
             )
         ):
             return super().eventFilter(watched, event)
-        image_widgets = (self.image_label, self.image_scroll_area.viewport())
-        thumbnail_viewport = self.thumbnail_list.viewport()
+        try:
+            image_widgets = (self.image_label, self.image_scroll_area.viewport())
+            thumbnail_viewport = self.thumbnail_list.viewport()
+        except RuntimeError:
+            return False
         if watched is self.window or watched in image_widgets:
             if event.type() == QEvent.Type.DragEnter:
                 self.dragEnterEvent(event)
@@ -8094,11 +8236,11 @@ def resolve_startup_path(
         return candidate, None, None
     if not candidate.is_file():
         return None, None, f"Der angegebene Pfad ist keine normale Datei:\n{candidate}"
-    if candidate.suffix.lower() not in IMAGE_EXTENSIONS:
+    if candidate.suffix.lower() not in SUPPORTED_FILE_EXTENSIONS:
         return (
             None,
             None,
-            "Die angegebene Datei hat kein unterstütztes Bildformat:\n"
+            "Die angegebene Datei hat kein unterstütztes Bild- oder PDF-Format:\n"
             f"{candidate}",
         )
     return candidate.parent, candidate, None
@@ -8180,7 +8322,7 @@ def exportable_image_paths(paths: list[Path]) -> list[Path]:
     exportable: list[Path] = []
     seen_paths: set[Path] = set()
     for path in paths:
-        if path.suffix.lower() not in IMAGE_EXTENSIONS or not path.is_file():
+        if path.suffix.lower() not in SUPPORTED_FILE_EXTENSIONS or not path.is_file():
             continue
         try:
             resolved_path = path.resolve(strict=True)

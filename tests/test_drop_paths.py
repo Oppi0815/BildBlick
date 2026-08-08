@@ -90,14 +90,14 @@ def test_drop_rejects_mixed_directory_and_image(tmp_path: Path):
 
 
 def test_drop_rejects_unsupported_file(tmp_path: Path):
-    document = tmp_path / "notizen.pdf"
+    document = tmp_path / "notizen.txt"
     document.touch()
 
     resolution = resolve_dropped_paths([document])
 
     assert resolution.directory is None
     assert resolution.error_message is not None
-    assert "kein unterstütztes Bildformat" in resolution.error_message
+    assert "kein unterstütztes Bild- oder PDF-Format" in resolution.error_message
 
 
 def test_drop_ignores_unsupported_file_when_a_valid_image_is_present(tmp_path: Path):
