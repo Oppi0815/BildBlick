@@ -6,9 +6,9 @@
 
 ![BildBlick Screenshot](docs/bildblick-screenshot.png)
 
-*BildBlick 1.8.0 unter Linux Mint*
+*BildBlick 1.9.0 unter Linux Mint*
 
-**Version 1.8.0**
+**Version 1.9.0**
 
 BildBlick ist ein schneller und komfortabler Bildbetrachter für Linux. Die Anwendung wurde unter Linux Mint entwickelt und getestet und verbindet eine übersichtliche Verzeichnisnavigation mit schnellen Vorschaubildern und praktischen Werkzeugen für die Bildverwaltung.
 
@@ -47,6 +47,14 @@ BildBlick ist ein schneller und komfortabler Bildbetrachter für Linux. Die Anwe
 ## Unterstützte Bildformate
 
 BildBlick berücksichtigt JPEG (`.jpg`, `.jpeg`), PNG, WebP, BMP, GIF sowie TIFF (`.tif`, `.tiff`). Welche konkreten Varianten dekodiert werden können, hängt zusätzlich von den in Pillow und Qt verfügbaren Bildformat-Plug-ins ab.
+
+## Drag-and-drop
+
+Bilddateien und Ordner können aus Nemo direkt in BildBlick abgelegt werden. Bei einer Bilddatei öffnet BildBlick ihren Ordner und zeigt das abgelegte Bild an. Mehrere Bilder aus demselben Ordner werden gemeinsam markiert; das zuerst abgelegte Bild wird angezeigt. Unterstützt werden ausschließlich die oben genannten Bildformate.
+
+### Bilder aus BildBlick herausziehen
+
+Ein oder mehrere markierte Bilder lassen sich aus der Vorschauliste nach Nemo, auf den Schreibtisch oder als Anhang in ein Thunderbird-Verfassenfenster ziehen. BildBlick übergibt lokale Datei-URLs als Kopiervorgang; die Originale werden nicht verändert.
 
 ## Installation aus dem Quellcode
 

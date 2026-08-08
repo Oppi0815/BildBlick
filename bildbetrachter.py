@@ -47,6 +47,8 @@ from PySide6.QtGui import (
     QBrush,
     QColor,
     QCursor,
+    QDrag,
+    QFileOpenEvent,
     QFont,
     QIcon,
     QImage,
@@ -130,8 +132,8 @@ from printing.print_profiles import (
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.8.0"
-APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter für Linux"
+APP_VERSION = "1.9.0"
+APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 
 _DialogResult = TypeVar("_DialogResult")
 
@@ -2643,6 +2645,9 @@ class ImageViewer(QObject):
         self._mouse_press_position = None
         self._pan_last_position = None
         self._dragging_image = False
+        self._thumbnail_drag_start_position = None
+        self._thumbnail_drag_pressed_path: Path | None = None
+        self._thumbnail_drag_selected_paths_snapshot: list[Path] = []
         self._slideshow_running = False
         self._slideshow_paused = False
         self._slideshow_entered_fullscreen = False
@@ -2716,8 +2721,13 @@ class ImageViewer(QObject):
         self.thumbnail_list.setContextMenuPolicy(
             Qt.ContextMenuPolicy.CustomContextMenu
         )
+        self.thumbnail_list.setAcceptDrops(True)
+        self.thumbnail_list.viewport().setAcceptDrops(True)
         self.image_scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_scroll_area.setWidgetResizable(False)
+        self.window.setAcceptDrops(True)
+        self.image_scroll_area.viewport().setAcceptDrops(True)
+        self.image_label.setAcceptDrops(True)
         self.image_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.image_label.setMinimumSize(1, 1)
         self.image_label.setScaledContents(False)
@@ -2744,6 +2754,18 @@ class ImageViewer(QObject):
         self.zoom_indicator.setStyleSheet(ZOOM_INDICATOR_STYLESHEET)
         self.zoom_indicator.hide()
 
+        self.drop_hint_label = QLabel(self.image_scroll_area.viewport())
+        self.drop_hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.drop_hint_label.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+        self.drop_hint_label.setStyleSheet(
+            "QLabel { background-color: rgba(25, 85, 145, 210); color: white;"
+            " border: 2px dashed rgba(255, 255, 255, 210); border-radius: 10px;"
+            " font-size: 18px; font-weight: 600; margin: 16px; }"
+        )
+        self.drop_hint_label.hide()
+
         self.slideshow_message_label = QLabel(
             self.image_scroll_area.viewport()
         )
@@ -2767,7 +2789,10 @@ class ImageViewer(QObject):
 
         self.directory_model = QFileSystemModel(self.window)
         self.directory_model.setFilter(
-            QDir.Filter.AllDirs | QDir.Filter.NoDotAndDotDot | QDir.Filter.Drives
+            QDir.Filter.AllDirs
+            | QDir.Filter.NoDotAndDotDot
+            | QDir.Filter.Drives
+            | QDir.Filter.Hidden
         )
         self.directory_model.setReadOnly(True)
         root_index = self.directory_model.setRootPath(str(ROOT_DIRECTORY))
@@ -2790,6 +2815,7 @@ class ImageViewer(QObject):
         self.right_splitter.splitterMoved.connect(self._schedule_image_render)
         self.image_label.installEventFilter(self)
         self.image_scroll_area.viewport().installEventFilter(self)
+        self.thumbnail_list.viewport().installEventFilter(self)
         self.file_name_label.installEventFilter(self)
         self.window.installEventFilter(self)
         self.escape_shortcut = QShortcut(QKeySequence("Escape"), self.window)
@@ -4791,6 +4817,52 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
             for item in self.thumbnail_list.selectedItems()
         ]
 
+    def _selected_thumbnail_paths_in_display_order(self) -> list[Path]:
+        return [
+            Path(self.thumbnail_list.item(row).data(Qt.ItemDataRole.UserRole))
+            for row in range(self.thumbnail_list.count())
+            if self.thumbnail_list.item(row).isSelected()
+        ]
+
+    def _restore_thumbnail_selection(
+        self, paths: list[Path], current_path: Path | None
+    ) -> None:
+        selected_paths = {path.resolve(strict=False) for path in paths}
+        self.thumbnail_list.clearSelection()
+        for row in range(self.thumbnail_list.count()):
+            item = self.thumbnail_list.item(row)
+            item_path = Path(item.data(Qt.ItemDataRole.UserRole))
+            if item_path.resolve(strict=False) in selected_paths:
+                item.setSelected(True)
+            if (
+                current_path is not None
+                and item_path.resolve(strict=False) == current_path.resolve(strict=False)
+            ):
+                self.thumbnail_list.setCurrentItem(
+                    item, QItemSelectionModel.SelectionFlag.NoUpdate
+                )
+
+    def _start_thumbnail_drag(self, source_paths: list[Path] | None = None) -> bool:
+        paths = exportable_image_paths(
+            source_paths
+            if source_paths is not None
+            else self._selected_thumbnail_paths_in_display_order()
+        )
+        if not paths:
+            return False
+
+        mime_data = QMimeData()
+        mime_data.setUrls([QUrl.fromLocalFile(str(path)) for path in paths])
+        drag = QDrag(self.thumbnail_list)
+        drag.setMimeData(mime_data)
+        first_item = self.thumbnail_list.currentItem()
+        if first_item is not None:
+            preview = first_item.icon().pixmap(self._thumbnail_size)
+            if not preview.isNull():
+                drag.setPixmap(preview)
+        drag.exec(Qt.DropAction.CopyAction)
+        return True
+
     def _show_resized_export_dialog(
         self, context_image_path: Path | None = None
     ) -> None:
@@ -5221,11 +5293,13 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
     def _start_file_manager_fallback(
         parent_directory: Path, errors: list[str]
     ) -> bool:
-        candidates = (
+        candidates: tuple[tuple[str, list[str]], ...] = (
             ("nemo", [str(parent_directory)]),
             ("xdg-open", [str(parent_directory)]),
             ("gio", ["open", str(parent_directory)]),
         )
+        if sys.platform == "darwin":
+            candidates = (("open", [str(parent_directory)]),)
         for executable_name, arguments in candidates:
             executable = shutil.which(executable_name)
             if executable is None:
@@ -6283,6 +6357,7 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
         self,
         directory: Path,
         select_paths: list[Path] | None = None,
+        primary_path: Path | None = None,
         add_to_history: bool = True,
         show_open_error: bool = False,
     ) -> bool:
@@ -6324,7 +6399,9 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
             path.resolve(strict=False) for path in (select_paths or [])
         }
         self._pending_primary_path = (
-            select_paths[0].resolve(strict=False) if select_paths else None
+            primary_path.resolve(strict=False)
+            if primary_path is not None
+            else (select_paths[0].resolve(strict=False) if select_paths else None)
         )
         self.thumbnail_list.clear()
         self._update_navigation_buttons()
@@ -6344,6 +6421,84 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
         self.settings.sync()
         QTimer.singleShot(0, lambda: self._scan_directory_batch(generation))
         return True
+
+    def _show_drop_hint(self) -> None:
+        self.drop_hint_label.setText("Bild oder Ordner hier ablegen")
+        self.drop_hint_label.setGeometry(self.image_scroll_area.viewport().rect())
+        self.drop_hint_label.show()
+        self.drop_hint_label.raise_()
+
+    def _hide_drop_hint(self) -> None:
+        self.drop_hint_label.hide()
+
+    @staticmethod
+    def _local_drop_paths(mime_data: QMimeData) -> list[Path] | None:
+        urls = mime_data.urls()
+        if not urls or any(not url.isLocalFile() for url in urls):
+            return None
+        return [Path(url.toLocalFile()) for url in urls]
+
+    def dragEnterEvent(self, event) -> None:
+        if self._local_drop_paths(event.mimeData()) is None:
+            event.ignore()
+            return
+        self._show_drop_hint()
+        event.acceptProposedAction()
+
+    def dragMoveEvent(self, event) -> None:
+        if self._local_drop_paths(event.mimeData()) is None:
+            event.ignore()
+            return
+        self._show_drop_hint()
+        event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event) -> None:
+        self._hide_drop_hint()
+        event.accept()
+
+    def dropEvent(self, event) -> None:
+        self._hide_drop_hint()
+        paths = self._local_drop_paths(event.mimeData())
+        if paths is None:
+            event.ignore()
+            return
+        resolution = resolve_dropped_paths(paths)
+        if resolution.error_message is not None:
+            dialog = QMessageBox(self.window)
+            dialog.setWindowTitle("Ablage nicht möglich")
+            dialog.setIcon(QMessageBox.Icon.Warning)
+            dialog.setText("Die abgelegten Elemente können nicht geöffnet werden.")
+            dialog.setInformativeText(resolution.error_message)
+            dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+            dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+            self._style_message_box(dialog)
+            dialog.exec()
+            event.acceptProposedAction()
+            return
+        if resolution.directory is not None:
+            self._show_directory(
+                resolution.directory,
+                resolution.selected_paths,
+                resolution.primary_path,
+            )
+        if resolution.ignored_paths:
+            dialog = QMessageBox(self.window)
+            dialog.setWindowTitle("Nicht alle Elemente geöffnet")
+            dialog.setIcon(QMessageBox.Icon.Information)
+            dialog.setText(
+                "Es wurden nur unterstützte Bilder aus dem Ordner des ersten "
+                "Bildes geöffnet."
+            )
+            dialog.setInformativeText(
+                "Ignoriert:\n" + "\n".join(
+                    str(path) for path in resolution.ignored_paths
+                )
+            )
+            dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+            dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+            self._style_message_box(dialog)
+            dialog.exec()
+        event.acceptProposedAction()
 
     def _scan_directory_batch(self, generation: int) -> None:
         if generation != self._load_generation or self._directory_iterator is None:
@@ -7586,6 +7741,92 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
         self._schedule_image_render()
 
     def eventFilter(self, watched, event) -> bool:
+        # Qt can deliver events for the status bar while the window is still
+        # being assembled, before the drag-and-drop widgets exist.
+        if not all(
+            hasattr(self, attribute)
+            for attribute in (
+                "image_label",
+                "image_scroll_area",
+                "thumbnail_list",
+            )
+        ):
+            return super().eventFilter(watched, event)
+        image_widgets = (self.image_label, self.image_scroll_area.viewport())
+        thumbnail_viewport = self.thumbnail_list.viewport()
+        if watched is self.window or watched in image_widgets:
+            if event.type() == QEvent.Type.DragEnter:
+                self.dragEnterEvent(event)
+                return event.isAccepted()
+            if event.type() == QEvent.Type.DragMove:
+                self.dragMoveEvent(event)
+                return event.isAccepted()
+            if event.type() == QEvent.Type.DragLeave:
+                self.dragLeaveEvent(event)
+                return event.isAccepted()
+            if event.type() == QEvent.Type.Drop:
+                self.dropEvent(event)
+                return event.isAccepted()
+        if watched is thumbnail_viewport:
+            if event.type() == QEvent.Type.DragEnter:
+                self.dragEnterEvent(event)
+                return event.isAccepted()
+            if event.type() == QEvent.Type.DragMove:
+                self.dragMoveEvent(event)
+                return event.isAccepted()
+            if event.type() == QEvent.Type.DragLeave:
+                self.dragLeaveEvent(event)
+                return event.isAccepted()
+            if event.type() == QEvent.Type.Drop:
+                self.dropEvent(event)
+                return event.isAccepted()
+            if (
+                event.type() == QEvent.Type.MouseButtonPress
+                and event.button() == Qt.MouseButton.LeftButton
+            ):
+                pressed_item = self.thumbnail_list.itemAt(event.position().toPoint())
+                if pressed_item is not None:
+                    self._thumbnail_drag_start_position = event.globalPosition().toPoint()
+                    self._thumbnail_drag_pressed_path = Path(
+                        pressed_item.data(Qt.ItemDataRole.UserRole)
+                    )
+                    selected_paths = self._selected_thumbnail_paths_in_display_order()
+                    self._thumbnail_drag_selected_paths_snapshot = (
+                        selected_paths
+                        if pressed_item.isSelected() and len(selected_paths) > 1
+                        else []
+                    )
+                else:
+                    self._thumbnail_drag_start_position = None
+                    self._thumbnail_drag_pressed_path = None
+                    self._thumbnail_drag_selected_paths_snapshot = []
+            elif (
+                event.type() == QEvent.Type.MouseMove
+                and self._thumbnail_drag_start_position is not None
+                and event.buttons() & Qt.MouseButton.LeftButton
+            ):
+                current_position = event.globalPosition().toPoint()
+                if (
+                    current_position - self._thumbnail_drag_start_position
+                ).manhattanLength() >= QApplication.startDragDistance():
+                    drag_paths = drag_paths_for_selection(
+                        self._selected_thumbnail_paths_in_display_order(),
+                        self._thumbnail_drag_pressed_path,
+                        self._thumbnail_drag_selected_paths_snapshot,
+                    )
+                    if self._thumbnail_drag_selected_paths_snapshot:
+                        self._restore_thumbnail_selection(
+                            self._thumbnail_drag_selected_paths_snapshot,
+                            self._thumbnail_drag_pressed_path,
+                        )
+                    self._thumbnail_drag_start_position = None
+                    self._thumbnail_drag_pressed_path = None
+                    self._thumbnail_drag_selected_paths_snapshot = []
+                    return self._start_thumbnail_drag(drag_paths)
+            elif event.type() == QEvent.Type.MouseButtonRelease:
+                self._thumbnail_drag_start_position = None
+                self._thumbnail_drag_pressed_path = None
+                self._thumbnail_drag_selected_paths_snapshot = []
         if watched is self.status_info_label:
             if event.type() == QEvent.Type.Resize:
                 self._refresh_status_info_text()
@@ -7598,7 +7839,6 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
             and event.type() == QEvent.Type.Resize
         ):
             self._update_directory_heading()
-        image_widgets = (self.image_label, self.image_scroll_area.viewport())
         if self._fullscreen_mode and watched in image_widgets:
             if event.type() == QEvent.Type.ToolTip:
                 return True
@@ -7620,6 +7860,10 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
             watched is self.image_scroll_area.viewport()
             and event.type() == QEvent.Type.Resize
         ):
+            if self.drop_hint_label.isVisible():
+                self.drop_hint_label.setGeometry(
+                    self.image_scroll_area.viewport().rect()
+                )
             self._position_zoom_indicator()
             self._position_slideshow_overlays()
             self._update_slideshow_metadata_overlay()
@@ -7708,6 +7952,111 @@ def resolve_startup_path(
     return candidate.parent, candidate, None
 
 
+@dataclass
+class DropResolution:
+    """The safe, ordered result of accepting local drag-and-drop paths."""
+
+    directory: Path | None
+    selected_paths: list[Path]
+    primary_path: Path | None
+    ignored_paths: list[Path]
+    error_message: str | None
+
+
+def resolve_dropped_paths(paths: list[Path]) -> DropResolution:
+    """Accept supported images from the first valid image directory only."""
+    if not paths:
+        return DropResolution(
+            None, [], None, [], "Es wurden keine Dateien oder Ordner abgelegt."
+        )
+
+    resolved_entries: list[tuple[Path, Path | None, str | None]] = []
+    directories: list[Path] = []
+    images_present = False
+    for path in paths:
+        directory, image, error = resolve_startup_path(str(path))
+        resolved_entries.append((path, image, error))
+        if error is None and image is None and directory is not None:
+            directories.append(directory)
+        elif error is None and image is not None:
+            images_present = True
+
+    if directories:
+        if len(paths) != 1 or images_present:
+            return DropResolution(
+                None,
+                [],
+                None,
+                [],
+                "Bitte legen Sie entweder einen einzelnen Ordner oder Bilddateien ab.",
+            )
+        return DropResolution(directories[0], [], None, [], None)
+
+    selected_paths: list[Path] = []
+    ignored_paths: list[Path] = []
+    seen_paths: set[Path] = set()
+    primary_directory: Path | None = None
+    first_error: str | None = None
+    for original_path, image, error in resolved_entries:
+        if error is not None or image is None:
+            ignored_paths.append(original_path)
+            if first_error is None:
+                first_error = error
+            continue
+        resolved_image = image.resolve(strict=False)
+        if primary_directory is None:
+            primary_directory = resolved_image.parent
+        if resolved_image.parent != primary_directory or resolved_image in seen_paths:
+            ignored_paths.append(original_path)
+            continue
+        seen_paths.add(resolved_image)
+        selected_paths.append(resolved_image)
+
+    if not selected_paths:
+        return DropResolution(None, [], None, ignored_paths, first_error)
+    return DropResolution(
+        primary_directory,
+        selected_paths,
+        selected_paths[0],
+        ignored_paths,
+        None,
+    )
+
+
+def exportable_image_paths(paths: list[Path]) -> list[Path]:
+    """Return existing, supported image files suitable for a Copy drag."""
+    exportable: list[Path] = []
+    seen_paths: set[Path] = set()
+    for path in paths:
+        if path.suffix.lower() not in IMAGE_EXTENSIONS or not path.is_file():
+            continue
+        try:
+            resolved_path = path.resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        if resolved_path not in seen_paths:
+            seen_paths.add(resolved_path)
+            exportable.append(resolved_path)
+    return exportable
+
+
+def drag_paths_for_selection(
+    current_selected_paths: list[Path],
+    pressed_path: Path | None,
+    snapshot_paths: list[Path],
+) -> list[Path]:
+    """Keep a pre-click multi-selection intact when its item starts a drag."""
+    if pressed_path is not None:
+        pressed_resolved = pressed_path.resolve(strict=False)
+        snapshot_resolved = {
+            path.resolve(strict=False) for path in snapshot_paths
+        }
+        if len(snapshot_paths) > 1 and pressed_resolved in snapshot_resolved:
+            return exportable_image_paths(snapshot_paths)
+        return exportable_image_paths([pressed_path])
+    return exportable_image_paths(current_selected_paths)
+
+
 def show_startup_error(viewer: ImageViewer, message: str) -> None:
     dialog = QMessageBox(viewer.window)
     dialog.setWindowTitle(f"{APP_NAME} – Startpfad")
@@ -7720,8 +8069,27 @@ def show_startup_error(viewer: ImageViewer, message: str) -> None:
     dialog.exec()
 
 
+class BildBlickApplication(QApplication):
+    """Receives macOS Finder 'open document' events for an already running app."""
+
+    file_open_requested = Signal(str)
+
+    def __init__(self, arguments: list[str]) -> None:
+        super().__init__(arguments)
+        self.pending_file_opens: list[str] = []
+
+    def event(self, event: QEvent) -> bool:
+        if isinstance(event, QFileOpenEvent):
+            path = event.file() or event.url().toLocalFile()
+            if path:
+                self.pending_file_opens.append(path)
+                self.file_open_requested.emit(path)
+                return True
+        return super().event(event)
+
+
 def main() -> int:
-    app = QApplication(sys.argv)
+    app = BildBlickApplication(sys.argv)
     install_selection_accent_style(app)
     app.setWindowIcon(QIcon(str(resource_path("assets/bildblick.png"))))
     app.setOrganizationName(SETTINGS_ORGANIZATION)
@@ -7751,7 +8119,21 @@ def main() -> int:
         )
 
     viewer = ImageViewer(startup_directory, startup_image)
+
+    def open_path_from_macos(path: str) -> None:
+        directory, image, error = resolve_startup_path(path)
+        if error is not None:
+            show_startup_error(viewer, error)
+        elif directory is not None:
+            viewer._show_directory(
+                directory,
+                [image] if image is not None else None,
+            )
+
+    app.file_open_requested.connect(open_path_from_macos)
     viewer.show()
+    for path in app.pending_file_opens:
+        QTimer.singleShot(0, lambda path=path: open_path_from_macos(path))
     if startup_error is not None:
         QTimer.singleShot(
             0, lambda message=startup_error: show_startup_error(viewer, message)

@@ -2,6 +2,29 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.9.0 – Drag-and-drop und macOS-Vorbereitung
+
+*Veröffentlicht am 08.08.2026*
+
+### Neu
+
+- Bilder und Ordner lassen sich per Drag-and-drop in BildBlick öffnen.
+- Mehrere abgelegte Bilder werden gemeinsam markiert; das erste Bild wird
+  automatisch angezeigt.
+- Markierte Bilder lassen sich aus BildBlick herausziehen, auch mehrere
+  gleichzeitig nach Nemo, auf den Schreibtisch oder in kompatible Programme.
+- Dateiübergabe erfolgt als lokale Datei-URLs; E-Mail-Anhänge per Drag-and-drop
+  werden beispielsweise von Thunderbird unterstützt.
+- macOS-Dateiöffnungsereignisse und plattformabhängige Vorbereitung.
+
+### Verbessert
+
+- Mehrfachauswahl bleibt beim Drag-out vollständig erhalten und die Reihenfolge
+  der gezogenen Bilder ist stabil.
+- Drag-out kopiert Dateien, statt sie zu verschieben; Drag-in und Drag-out
+  beeinflussen Copy & Paste nicht.
+- Ungültige oder nicht mehr vorhandene Dateien werden robust behandelt.
+
 ## 1.8.0 – Mehrbilddruck und Kontaktabzug
 
 *Veröffentlicht am 07.08.2026*
