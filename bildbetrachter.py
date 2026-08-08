@@ -132,7 +132,7 @@ from printing.print_profiles import (
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.9.0"
+APP_VERSION = "1.10.0"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 
 _DialogResult = TypeVar("_DialogResult")
@@ -724,6 +724,19 @@ def normalized_thumbnail_pixels(value: int) -> int:
     bounded = min(THUMBNAIL_MAXIMUM, max(THUMBNAIL_MINIMUM, value))
     steps = round((bounded - THUMBNAIL_MINIMUM) / THUMBNAIL_STEP)
     return THUMBNAIL_MINIMUM + steps * THUMBNAIL_STEP
+
+
+def thumbnail_size_slider_maximum() -> int:
+    return (THUMBNAIL_MAXIMUM - THUMBNAIL_MINIMUM) // THUMBNAIL_STEP
+
+
+def thumbnail_size_slider_value(pixels: int) -> int:
+    return (normalized_thumbnail_pixels(pixels) - THUMBNAIL_MINIMUM) // THUMBNAIL_STEP
+
+
+def thumbnail_pixels_from_slider_value(value: int) -> int:
+    bounded = min(thumbnail_size_slider_maximum(), max(0, value))
+    return THUMBNAIL_MINIMUM + bounded * THUMBNAIL_STEP
 
 
 def thumbnail_size_for_pixels(pixels: int) -> QSize:
@@ -2556,6 +2569,9 @@ class ImageViewer(QObject):
             THUMBNAIL_SIZE_KEY, THUMBNAIL_DEFAULT, type=int
         )
         self._thumbnail_pixels = normalized_thumbnail_pixels(saved_thumbnail_size)
+        if saved_thumbnail_size != self._thumbnail_pixels:
+            self.settings.setValue(THUMBNAIL_SIZE_KEY, self._thumbnail_pixels)
+            self.settings.sync()
         self._thumbnail_size = thumbnail_size_for_pixels(self._thumbnail_pixels)
         self._thumbnail_grid_size = thumbnail_grid_size_for_pixels(
             self._thumbnail_pixels
@@ -2622,6 +2638,7 @@ class ImageViewer(QObject):
         self.right_splitter = self._widget(QSplitter, "rightSplitter")
         self.directory_panel = self.directory_tree.parentWidget()
         self.preview_panel = self.image_scroll_area.parentWidget()
+        self._install_thumbnail_size_controls()
         self.current_directory: Path | None = None
         self.current_image: Path | None = None
         self._folder_history: list[Path] = []
@@ -2832,6 +2849,68 @@ class ImageViewer(QObject):
                 self.start_directory,
                 [self.startup_image] if self.startup_image is not None else None,
             )
+
+    def _install_thumbnail_size_controls(self) -> None:
+        thumbnail_index = self.right_splitter.indexOf(self.thumbnail_list)
+        thumbnail_panel = QWidget(self.right_splitter)
+        thumbnail_panel.setObjectName("thumbnailPanel")
+        thumbnail_layout = QVBoxLayout(thumbnail_panel)
+        thumbnail_layout.setContentsMargins(0, 0, 0, 0)
+        thumbnail_layout.setSpacing(2)
+
+        self.thumbnail_list.setParent(thumbnail_panel)
+        thumbnail_layout.addWidget(self.thumbnail_list, 1)
+
+        controls = QWidget(thumbnail_panel)
+        controls_layout = QHBoxLayout(controls)
+        controls_layout.setContentsMargins(6, 2, 6, 3)
+        controls_layout.setSpacing(4)
+
+        self.thumbnail_size_decrease_button = QToolButton(controls)
+        self.thumbnail_size_decrease_button.setObjectName(
+            "thumbnailSizeDecreaseButton"
+        )
+        self.thumbnail_size_decrease_button.setText("−")
+        self.thumbnail_size_decrease_button.setToolTip("Vorschaubilder verkleinern")
+        self.thumbnail_size_decrease_button.setAutoRaise(True)
+        self.thumbnail_size_decrease_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        self.thumbnail_size_slider = QSlider(Qt.Orientation.Horizontal, controls)
+        self.thumbnail_size_slider.setObjectName("thumbnailSizeSlider")
+        self.thumbnail_size_slider.setToolTip("Größe der Vorschaubilder")
+        self.thumbnail_size_slider.setRange(0, thumbnail_size_slider_maximum())
+        self.thumbnail_size_slider.setSingleStep(1)
+        self.thumbnail_size_slider.setPageStep(1)
+        self.thumbnail_size_slider.setValue(
+            thumbnail_size_slider_value(self._thumbnail_pixels)
+        )
+
+        self.thumbnail_size_increase_button = QToolButton(controls)
+        self.thumbnail_size_increase_button.setObjectName(
+            "thumbnailSizeIncreaseButton"
+        )
+        self.thumbnail_size_increase_button.setText("+")
+        self.thumbnail_size_increase_button.setToolTip("Vorschaubilder vergrößern")
+        self.thumbnail_size_increase_button.setAutoRaise(True)
+        self.thumbnail_size_increase_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        controls_layout.addWidget(self.thumbnail_size_decrease_button)
+        controls_layout.addWidget(self.thumbnail_size_slider, 1)
+        controls_layout.addWidget(self.thumbnail_size_increase_button)
+        thumbnail_layout.addWidget(controls)
+        self.right_splitter.insertWidget(thumbnail_index, thumbnail_panel)
+
+        self.thumbnail_size_decrease_button.clicked.connect(
+            lambda: self._change_thumbnail_size(-THUMBNAIL_STEP)
+        )
+        self.thumbnail_size_increase_button.clicked.connect(
+            lambda: self._change_thumbnail_size(THUMBNAIL_STEP)
+        )
+        self.thumbnail_size_slider.valueChanged.connect(
+            lambda value: self._apply_thumbnail_size(
+                thumbnail_pixels_from_slider_value(value)
+            )
+        )
 
     def _migrate_legacy_settings(self) -> None:
         legacy_settings = QSettings(
@@ -4667,10 +4746,25 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
         self.reset_thumbnail_size_action.setEnabled(
             enabled and self._thumbnail_pixels != THUMBNAIL_DEFAULT
         )
+        self.thumbnail_size_decrease_button.setEnabled(
+            enabled and self._thumbnail_pixels > THUMBNAIL_MINIMUM
+        )
+        self.thumbnail_size_slider.setEnabled(enabled)
+        self.thumbnail_size_increase_button.setEnabled(
+            enabled and self._thumbnail_pixels < THUMBNAIL_MAXIMUM
+        )
+
+    def _sync_thumbnail_size_slider(self) -> None:
+        blocker = QSignalBlocker(self.thumbnail_size_slider)
+        self.thumbnail_size_slider.setValue(
+            thumbnail_size_slider_value(self._thumbnail_pixels)
+        )
+        del blocker
 
     def _apply_thumbnail_size(self, pixels: int) -> None:
         pixels = normalized_thumbnail_pixels(pixels)
         if pixels == self._thumbnail_pixels:
+            self._sync_thumbnail_size_slider()
             self._set_thumbnail_size_actions_enabled(True)
             return
         self._thumbnail_pixels = pixels
@@ -4678,8 +4772,8 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
         self._thumbnail_grid_size = thumbnail_grid_size_for_pixels(pixels)
         self.settings.setValue(THUMBNAIL_SIZE_KEY, pixels)
         self.settings.sync()
+        self._sync_thumbnail_size_slider()
 
-        self._set_thumbnail_size_actions_enabled(False)
         self.thread_pool.clear()
         self._load_generation += 1
         generation = self._load_generation
@@ -4694,8 +4788,10 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
         self.thumbnail_list.setGridSize(self._thumbnail_grid_size)
         for row in range(self.thumbnail_list.count()):
             item = self.thumbnail_list.item(row)
-            item.setIcon(QIcon())
             item.setSizeHint(self._thumbnail_grid_size)
+        current_item = self.thumbnail_list.currentItem()
+        if current_item is not None:
+            self.thumbnail_list.scrollToItem(current_item)
         self._update_loading_text()
         self._start_more_thumbnail_jobs(generation)
 

@@ -2,6 +2,25 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.10.0 – Anpassbare Vorschaubildgröße
+
+### Neu
+
+- Horizontaler Größenregler unterhalb der Vorschaubilder.
+- Vorschaubilder während der Benutzung vergrößern und verkleinern.
+- Minus- und Plus-Schaltflächen zur schrittweisen Größenänderung.
+- Unmittelbare Aktualisierung der Thumbnail-Darstellung.
+- Speicherung der gewählten Vorschaubildgröße über QSettings und
+  Wiederherstellung beim Programmstart.
+
+### Verbessert
+
+- Auswahl und aktuelles Bild bleiben bei Größenänderungen erhalten.
+- Das Seitenverhältnis der Vorschaubilder bleibt unverändert.
+- Gültige Mindest- und Höchstwerte sowie robuste Behandlung ungültiger
+  gespeicherter Werte.
+- Darstellung für helle und dunkle Oberfläche angepasst.
+
 ## 1.9.0 – Drag-and-drop und macOS-Vorbereitung
 
 *Veröffentlicht am 08.08.2026*

@@ -6,9 +6,9 @@
 
 ![BildBlick Screenshot](docs/bildblick-screenshot.png)
 
-*BildBlick 1.9.0 unter Linux Mint*
+*BildBlick 1.10.0 unter Linux Mint*
 
-**Version 1.9.0**
+**Version 1.10.0**
 
 BildBlick ist ein schneller und komfortabler Bildbetrachter für Linux. Die Anwendung wurde unter Linux Mint entwickelt und getestet und verbindet eine übersichtliche Verzeichnisnavigation mit schnellen Vorschaubildern und praktischen Werkzeugen für die Bildverwaltung.
 
@@ -19,6 +19,9 @@ BildBlick ist ein schneller und komfortabler Bildbetrachter für Linux. Die Anwe
 - Zoom, Originalgröße und Vollbildansicht
 - Konfigurierbare Diashow
 - Mehrfachauswahl von Bildern
+- Größe der Vorschaubilder über einen Slider direkt unter der Vorschauliste
+  verändern, mit Minus- und Plus-Schaltflächen sowie sofortiger, dauerhaft
+  gespeicherter Anpassung
 - Kopieren, Ausschneiden und Einfügen, einschließlich Nemo-kompatibler Zwischenablage
 - Sicheres Verschieben in den Linux-Papierkorb
 - EXIF-Tooltips mit Abmessungen, Aufnahmedatum und ISO-Empfindlichkeit
