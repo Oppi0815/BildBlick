@@ -2,6 +2,26 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.12.1 – PDF-Start und Darstellungsqualität
+
+### Neu
+
+- Kommandozeilenparameter `--fullscreen`.
+- Eigener Linux-Desktop-Starter für PDFs.
+- PDF-Dateien können als Standardprogramm direkt mit BildBlick geöffnet werden.
+- Optionaler automatischer Vollbildstart für PDFs.
+
+### Verbessert
+
+- Die erste PDF-Seite wird bereits beim ersten Öffnen scharf dargestellt.
+- Thumbnail-Rendering und Großansicht verwenden getrennte Rendergrößen.
+- Zu kleine PDF-Renderbilder werden nicht mehr für die Großansicht verwendet.
+- Nach Layout- oder Größenänderungen wird bei Bedarf höher aufgelöst neu gerendert.
+- Die PDF-Darstellung berücksichtigt die benötigte Rendergröße.
+- Start über Nemo und per Doppelklick funktioniert zuverlässig.
+- `--fullscreen` verwendet den vorhandenen Vollbildmodus; Escape und F11
+  können ihn weiterhin verlassen.
+
 ## 1.12.0 – PDF-Unterstützung
 
 ### Neu

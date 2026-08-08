@@ -6,9 +6,9 @@
 
 ![BildBlick Screenshot](docs/bildblick-screenshot.png)
 
-*BildBlick 1.12.0 unter Linux Mint*
+*BildBlick 1.12.1 unter Linux Mint*
 
-**Version 1.12.0**
+**Version 1.12.1**
 
 BildBlick ist ein schneller und komfortabler Bildbetrachter für Linux. Die Anwendung wurde unter Linux Mint entwickelt und getestet und verbindet eine übersichtliche Verzeichnisnavigation mit schnellen Vorschaubildern und praktischen Werkzeugen für die Bildverwaltung.
 
@@ -39,6 +39,15 @@ BildBlick ist ein schneller und komfortabler Bildbetrachter für Linux. Die Anwe
 - PDF-Dokumente funktionieren auch im Vollbild und können per Drag-and-drop
   geöffnet oder als lokale Datei-URL herausgezogen werden.
 - Große mehrseitige PDFs werden bedarfsgerecht gerendert.
+- Die erste Großansicht wird in geeigneter Auflösung gerendert und bei Bedarf
+  nach dem Layout höher aufgelöst aktualisiert.
+- Unter Linux kann der Starter „BildBlick PDF“ als Standardprogramm für PDFs
+  verwendet werden; er öffnet PDFs direkt im Vollbild.
+
+```bash
+BildBlick --fullscreen datei.pdf
+xdg-mime default bildblick-pdf.desktop application/pdf
+```
 
 „Vorheriges Bild“ und „Nächstes Bild“ wechseln zwischen Dateien. „Vorherige
 Seite“ und „Nächste Seite“ wechseln ausschließlich innerhalb der geöffneten

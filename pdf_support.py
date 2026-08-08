@@ -8,6 +8,7 @@ from PySide6.QtPdf import QPdfDocument
 
 PDF_EXTENSIONS = {".pdf"}
 PDF_SCREEN_RENDER_MAX_EDGE = 3600
+PDF_DISPLAY_MIN_RENDER_EDGE = 1800
 
 
 @dataclass
@@ -100,4 +101,13 @@ def pdf_page_render_size(
     return fitted_size.scaled(
         QSize(PDF_SCREEN_RENDER_MAX_EDGE, PDF_SCREEN_RENDER_MAX_EDGE),
         Qt.AspectRatioMode.KeepAspectRatio,
+    )
+
+
+def pdf_display_target_size(viewport_size: QSize, zoom_factor: float = 1.0) -> QSize:
+    """Return a high-quality, bounded target for a PDF page in the main view."""
+    safe_zoom = max(1.0, zoom_factor)
+    return QSize(
+        max(PDF_DISPLAY_MIN_RENDER_EDGE, round(max(1, viewport_size.width()) * 2 * safe_zoom)),
+        max(PDF_DISPLAY_MIN_RENDER_EDGE, round(max(1, viewport_size.height()) * 2 * safe_zoom)),
     )

@@ -33,6 +33,7 @@ from PySide6.QtCore import (
     QRectF,
     QStandardPaths,
     QCommandLineParser,
+    QCommandLineOption,
     QCollator,
     Qt,
     QThreadPool,
@@ -131,6 +132,8 @@ from printing.print_profiles import (
 )
 from pdf_support import (
     PDF_EXTENSIONS,
+    pdf_display_target_size,
+    pdf_page_render_size,
     load_pdf,
     render_pdf_page,
     render_pdf_page_with_fallback,
@@ -138,7 +141,7 @@ from pdf_support import (
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.12.0"
+APP_VERSION = "1.12.1"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 
 _DialogResult = TypeVar("_DialogResult")
@@ -2677,6 +2680,8 @@ class ImageViewer(QObject):
         self.current_image: Path | None = None
         self._pdf_document = None
         self._pdf_page = 0
+        self._pdf_render_size = QSize()
+        self._pdf_quality_refresh_pending = False
         self._folder_history: list[Path] = []
         self._folder_history_index = -1
         self._current_file_size: int | None = None
@@ -7313,11 +7318,13 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
                 return
             self._pdf_document = result.document
             self._pdf_page = 0
+            self._pdf_render_size = QSize()
             self._zoom_mode = "fit"
             self._render_pdf_page()
             return
         self._pdf_document = None
         self._pdf_page = 0
+        self._pdf_render_size = QSize()
         self._update_pdf_page_navigation()
         try:
             self._current_file_size = self.current_image.stat().st_size
@@ -7348,7 +7355,11 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
         self._zoom_mode = "fit"
         self._render_current_image()
 
-    def _render_pdf_page(self, requested_page: int | None = None) -> bool:
+    def _render_pdf_page(
+        self,
+        requested_page: int | None = None,
+        schedule_quality_refresh: bool = True,
+    ) -> bool:
         if self._pdf_document is None:
             return False
         page_count = self._pdf_document.pageCount()
@@ -7359,10 +7370,10 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
         page = self._pdf_page if requested_page is None else requested_page
         page = max(0, min(page_count - 1, page))
         viewport = self.image_scroll_area.viewport().size()
-        render_scale = max(1.0, self._zoom_factor) if self._zoom_mode == "manual" else 1.0
-        target = QSize(
-            max(2, round(viewport.width() * 2 * render_scale)),
-            max(2, round(viewport.height() * 2 * render_scale)),
+        render_scale = self._zoom_factor if self._zoom_mode == "manual" else 1.0
+        target = pdf_display_target_size(
+            viewport,
+            render_scale,
         )
         image = render_pdf_page_with_fallback(self._pdf_document, page, target)
         if image.isNull() or image.width() <= 0 or image.height() <= 0:
@@ -7374,11 +7385,14 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
             return False
         self._pdf_page = page
         self.original_image = image
+        self._pdf_render_size = image.size()
         if self._zoom_mode != "manual":
             self._zoom_mode = "fit"
         self._render_current_image()
         self._set_file_name_text(self.current_image.name)
         self._update_pdf_page_navigation()
+        if schedule_quality_refresh:
+            self._schedule_pdf_quality_refresh()
         return True
 
     def _change_pdf_page(self, offset: int) -> None:
@@ -7394,7 +7408,40 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
     def _clear_pdf_state(self) -> None:
         self._pdf_document = None
         self._pdf_page = 0
+        self._pdf_render_size = QSize()
+        self._pdf_quality_refresh_pending = False
         self._update_pdf_page_navigation()
+
+    def _schedule_pdf_quality_refresh(self) -> None:
+        if self._pdf_document is None or self._pdf_quality_refresh_pending:
+            return
+        self._pdf_quality_refresh_pending = True
+        QTimer.singleShot(0, self._refresh_pdf_render_quality)
+
+    def _refresh_pdf_render_quality(self) -> None:
+        self._pdf_quality_refresh_pending = False
+        if self._pdf_document is None or self.original_image.isNull():
+            return
+        render_scale = self._zoom_factor if self._zoom_mode == "manual" else 1.0
+        required_size = pdf_page_render_size(
+            self._pdf_document,
+            self._pdf_page,
+            pdf_display_target_size(
+                self.image_scroll_area.viewport().size(), render_scale
+            ),
+        )
+        if (
+            required_size.isEmpty()
+            or (
+                self._pdf_render_size.width() >= required_size.width()
+                and self._pdf_render_size.height() >= required_size.height()
+            )
+        ):
+            return
+        self._render_pdf_page(
+            self._pdf_page,
+            schedule_quality_refresh=False,
+        )
 
     def _update_pdf_page_navigation(self) -> None:
         document = self._pdf_document
@@ -7919,6 +7966,8 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
     def _schedule_image_render(self, *_args) -> None:
         if self._image_render_pending or self.original_image.isNull():
             return
+        if self._pdf_document is not None:
+            self._schedule_pdf_quality_refresh()
         self._image_render_pending = True
         QTimer.singleShot(0, self._render_current_image)
 
@@ -8363,6 +8412,47 @@ def show_startup_error(viewer: ImageViewer, message: str) -> None:
     dialog.exec()
 
 
+def create_command_line_parser() -> QCommandLineParser:
+    parser = QCommandLineParser()
+    parser.setApplicationDescription(APP_DESCRIPTION)
+    parser.addHelpOption()
+    parser.addVersionOption()
+    parser.addOption(
+        QCommandLineOption(
+            ["fullscreen"],
+            "Die übergebene Datei nach dem Laden im Vollbild öffnen.",
+        )
+    )
+    parser.addPositionalArgument(
+        "pfad",
+        "Optionaler Ordner oder eine zu öffnende Bilddatei.",
+        "[pfad]",
+    )
+    return parser
+
+
+def activate_startup_fullscreen(viewer: ImageViewer) -> bool:
+    """Use the regular F11 toggle once a startup image has finished loading."""
+    if viewer.original_image.isNull():
+        return False
+    if not viewer._fullscreen_mode:
+        viewer._toggle_fullscreen()
+    return True
+
+
+def schedule_startup_fullscreen(viewer: ImageViewer, attempts: int = 100) -> None:
+    """Wait for asynchronous thumbnail/image loading before entering fullscreen."""
+    def activate_when_ready(remaining_attempts: int) -> None:
+        if activate_startup_fullscreen(viewer) or remaining_attempts <= 0:
+            return
+        QTimer.singleShot(
+            25,
+            lambda: activate_when_ready(remaining_attempts - 1),
+        )
+
+    QTimer.singleShot(0, lambda: activate_when_ready(attempts))
+
+
 class BildBlickApplication(QApplication):
     """Receives macOS Finder 'open document' events for an already running app."""
 
@@ -8391,17 +8481,10 @@ def main() -> int:
     app.setApplicationDisplayName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
 
-    parser = QCommandLineParser()
-    parser.setApplicationDescription(APP_DESCRIPTION)
-    parser.addHelpOption()
-    parser.addVersionOption()
-    parser.addPositionalArgument(
-        "pfad",
-        "Optionaler Ordner oder eine zu öffnende Bilddatei.",
-        "[pfad]",
-    )
+    parser = create_command_line_parser()
     parser.process(app)
     arguments = parser.positionalArguments()
+    start_fullscreen = parser.isSet("fullscreen")
     startup_error = None
     startup_directory = None
     startup_image = None
@@ -8426,6 +8509,8 @@ def main() -> int:
 
     app.file_open_requested.connect(open_path_from_macos)
     viewer.show()
+    if start_fullscreen and startup_image is not None and startup_error is None:
+        schedule_startup_fullscreen(viewer)
     for path in app.pending_file_opens:
         QTimer.singleShot(0, lambda path=path: open_path_from_macos(path))
     if startup_error is not None:

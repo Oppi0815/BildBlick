@@ -9,6 +9,8 @@ import bildbetrachter
 from bildbetrachter import ImageViewer
 from pdf_support import (
     PDF_SCREEN_RENDER_MAX_EDGE,
+    PDF_DISPLAY_MIN_RENDER_EDGE,
+    pdf_display_target_size,
     load_pdf,
     pdf_page_render_size,
     prepare_pdf_rendered_image,
@@ -89,6 +91,36 @@ def test_pdf_render_size_has_a_screen_resolution_limit(tmp_path: Path):
 
     assert max(render_size.width(), render_size.height()) == PDF_SCREEN_RENDER_MAX_EDGE
     assert render_size == QSize(PDF_SCREEN_RENDER_MAX_EDGE, PDF_SCREEN_RENDER_MAX_EDGE // 2)
+    application.processEvents()
+
+
+def test_pdf_display_target_uses_a_minimum_resolution_for_invalid_viewports():
+    assert pdf_display_target_size(QSize()) == QSize(
+        PDF_DISPLAY_MIN_RENDER_EDGE,
+        PDF_DISPLAY_MIN_RENDER_EDGE,
+    )
+    assert pdf_display_target_size(QSize(1, 1)) == QSize(
+        PDF_DISPLAY_MIN_RENDER_EDGE,
+        PDF_DISPLAY_MIN_RENDER_EDGE,
+    )
+
+
+def test_pdf_first_display_render_is_never_thumbnail_sized(tmp_path: Path):
+    application = QApplication.instance() or QApplication([])
+    pdf_path = tmp_path / "display-quality.pdf"
+    _write_pdf(pdf_path, [QSizeF(200, 400)])
+    document = load_pdf(pdf_path).document
+
+    thumbnail_size = pdf_page_render_size(document, 0, QSize(160, 120))
+    display_size = pdf_page_render_size(
+        document,
+        0,
+        pdf_display_target_size(QSize()),
+    )
+
+    assert thumbnail_size == QSize(60, 120)
+    assert display_size == QSize(900, 1800)
+    assert display_size.height() > thumbnail_size.height()
     application.processEvents()
 
 
@@ -268,6 +300,34 @@ def test_failed_pdf_page_render_keeps_the_visible_page_index(tmp_path: Path, mon
     assert viewer._pdf_page == 0
     assert viewer.pdf_page_label.text() == "Seite 1 von 3"
     assert viewer.image_label.text() == "Die PDF-Seite konnte nicht gerendert werden"
+    viewer.window.close()
+    application.processEvents()
+
+
+def test_pdf_quality_refresh_rerenders_only_when_the_current_render_is_too_small(
+    tmp_path: Path, monkeypatch
+):
+    application, viewer = _viewer(tmp_path)
+    pdf_path = tmp_path / "quality-refresh.pdf"
+    _write_pdf(pdf_path, [QSizeF(200, 400)])
+    _open_pdf(viewer, pdf_path)
+    rendered_pages: list[tuple[int | None, bool]] = []
+
+    monkeypatch.setattr(
+        viewer,
+        "_render_pdf_page",
+        lambda page, schedule_quality_refresh: rendered_pages.append(
+            (page, schedule_quality_refresh)
+        ),
+    )
+    viewer._pdf_render_size = QSize(60, 120)
+    viewer._refresh_pdf_render_quality()
+    assert rendered_pages == [(0, False)]
+
+    rendered_pages.clear()
+    viewer._pdf_render_size = QSize(3600, 3600)
+    viewer._refresh_pdf_render_quality()
+    assert rendered_pages == []
     viewer.window.close()
     application.processEvents()
 

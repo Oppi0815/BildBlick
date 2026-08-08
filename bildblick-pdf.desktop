@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=BildBlick PDF
+Comment=PDF-Dokumente mit BildBlick im Vollbild öffnen
+Exec=/home/horst/.local/bin/BildBlick --fullscreen %f
+Icon=/home/horst/.local/share/icons/hicolor/512x512/apps/bildblick.png
+Terminal=false
+Categories=Graphics;Viewer;
+MimeType=application/pdf;
+StartupNotify=true
