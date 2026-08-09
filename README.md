@@ -6,9 +6,9 @@
 
 ![BildBlick Screenshot](docs/bildblick-screenshot.png)
 
-*BildBlick 1.14.0 unter Linux Mint und macOS*
+*BildBlick 1.14.1 unter Linux Mint und macOS*
 
-**Version 1.14.0**
+**Version 1.14.1**
 
 BildBlick ist ein schneller und komfortabler Bildbetrachter für Linux. Die Anwendung wurde unter Linux Mint entwickelt und getestet und verbindet eine übersichtliche Verzeichnisnavigation mit schnellen Vorschaubildern und praktischen Werkzeugen für die Bildverwaltung.
 
@@ -31,8 +31,8 @@ BildBlick ist ein schneller und komfortabler Bildbetrachter für Linux. Die Anwe
   dezenten Auswahlflächen
 - Kompakte Steuerzeile mit Thumbnail-Größe, Dateiname sowie Vor- und
   Zurücknavigation unter den Vorschaubildern – unter Linux und macOS
-- Die Schaltflächen `‹` und `›` wechseln zwischen Dateien; die
-  PDF-Seitennavigation bleibt klar davon getrennt.
+- Die Schaltflächen `‹` und `›` unter den Vorschaubildern wechseln zwischen
+  Dateien.
 - Der flachere Thumbnail-Regler schafft zusammen mit der entfernten unteren
   Navigationsleiste mehr Platz für das Hauptbild.
 - Unter Linux können mehrere BildBlick-Instanzen gleichzeitig geöffnet werden.
@@ -43,8 +43,11 @@ BildBlick ist ein schneller und komfortabler Bildbetrachter für Linux. Die Anwe
 - PDF-Dateien erscheinen als Thumbnails; die erste Seite dient als Vorschau.
 - PDFs öffnen direkt im normalen Bildbereich und behalten beim Zoom und bei
   „Bild auf Fenstergröße“ ihr Seitenverhältnis.
-- Sichtbare Schaltflächen sowie `PageUp` und `PageDown` wechseln PDF-Seiten;
-  die Anzeige lautet „Seite X von Y“.
+- Eine eigene, zentrierte Leiste unter der Dokumentansicht enthält
+  „Vorherige PDF-Seite“, „Seite X von Y“ und „Nächste PDF-Seite“.
+- Die PDF-Seitenleiste erscheint nur bei mehrseitigen PDFs, benötigt bei
+  Bildern und einseitigen PDFs keinen Platz und bleibt im Vollbild sichtbar.
+- `PageUp` und `PageDown` wechseln weiterhin PDF-Seiten.
 - PDF-Dokumente funktionieren auch im Vollbild und können per Drag-and-drop
   geöffnet oder als lokale Datei-URL herausgezogen werden.
 - Große mehrseitige PDFs werden bedarfsgerecht gerendert.

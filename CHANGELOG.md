@@ -2,6 +2,24 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.14.1 – Korrigierte PDF-Seitennavigation
+
+### Behoben
+
+- PDF-Seitensteuerung überlappt nicht mehr mit Dateinavigation und Dateiname.
+- Sichtbare PDF-Seitennavigation im Vollbild.
+- Klare Trennung zwischen Dateiwechsel und PDF-Seitenwechsel.
+- Kein leerer Bereich bei normalen Bildern.
+- Kein leerer Bereich bei einseitigen PDFs.
+
+### Verbessert
+
+- Eigene zentrierte PDF-Seitenleiste unter der Dokumentansicht.
+- Kompakte Schaltflächen für vorherige und nächste PDF-Seite.
+- Tooltips und barrierefreie Bezeichnungen für PDF-Seitenbuttons.
+- Korrekte Aktivierung und Deaktivierung an erster und letzter PDF-Seite.
+- Zuverlässige Aktualisierung bei PDF → Bild → PDF.
+
 ## 1.14.0 – Kompakte Bildnavigation
 
 ### Neu

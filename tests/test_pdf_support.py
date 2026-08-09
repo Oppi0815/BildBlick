@@ -229,14 +229,14 @@ def test_thumbnail_and_full_view_use_the_same_pdf_image_preparation():
     assert full_view.pixelColor(0, 0) == QColor(Qt.GlobalColor.white)
 
 
-def test_one_page_pdf_shows_navigation_with_both_buttons_disabled(tmp_path: Path):
+def test_one_page_pdf_hides_navigation(tmp_path: Path):
     application, viewer = _viewer(tmp_path)
     pdf_path = tmp_path / "one.pdf"
     _write_pdf(pdf_path, [QSizeF(200, 400)])
 
     _open_pdf(viewer, pdf_path)
 
-    assert not viewer.pdf_page_navigation.isHidden()
+    assert viewer.pdf_page_navigation.isHidden()
     assert viewer.pdf_page_label.text() == "Seite 1 von 1"
     assert not viewer.previous_pdf_page_button.isEnabled()
     assert not viewer.next_pdf_page_button.isEnabled()
@@ -250,6 +250,12 @@ def test_pdf_page_buttons_follow_current_page(tmp_path: Path):
     _write_pdf(pdf_path, [QSizeF(200, 400)] * 3)
 
     _open_pdf(viewer, pdf_path)
+    assert not viewer.pdf_page_navigation.isHidden()
+    assert viewer.pdf_page_navigation.parentWidget() is viewer.preview_panel
+    assert viewer.previous_pdf_page_button.toolTip() == "Vorherige PDF-Seite"
+    assert viewer.next_pdf_page_button.toolTip() == "Nächste PDF-Seite"
+    assert viewer.previous_pdf_page_button.accessibleName() == "Vorherige PDF-Seite"
+    assert viewer.next_pdf_page_button.accessibleName() == "Nächste PDF-Seite"
     assert not viewer.previous_pdf_page_button.isEnabled()
     assert viewer.next_pdf_page_button.isEnabled()
 
@@ -406,6 +412,7 @@ def test_fullscreen_state_is_stable_for_a_pdf(tmp_path: Path):
         viewer._enter_fullscreen()
         application.processEvents()
         assert viewer.thumbnail_panel.isHidden()
+        assert not viewer.pdf_page_navigation.isHidden()
         viewer._change_pdf_page(1)
         assert viewer.pdf_page_label.text() == "Seite 2 von 2"
         viewer._leave_fullscreen()

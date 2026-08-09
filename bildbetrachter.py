@@ -141,7 +141,7 @@ from pdf_support import (
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.14.0"
+APP_VERSION = "1.14.1"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 
 _DialogResult = TypeVar("_DialogResult")
@@ -523,6 +523,12 @@ QWidget#centralwidget QWidget#thumbnailSizeControls QPushButton {
 QWidget#centralwidget QWidget#thumbnailSizeControls QLabel#fileNameLabel {
     font-size: 12px; padding: 0 5px;
 }
+QWidget#centralwidget QWidget#pdfPageNavigation QPushButton {
+    min-height: 20px; max-height: 20px;
+    min-width: 22px; max-width: 22px;
+    padding: 0; border-radius: 5px;
+}
+QWidget#centralwidget QLabel#pdfPageLabel { padding: 0 4px; }
 QMainWindow#MainWindow QStatusBar {
     min-height: 24px; padding: 0 7px;
 }
@@ -2949,28 +2955,31 @@ class ImageViewer(QObject):
             QTimer.singleShot(0, self._enter_pdf_preview)
 
     def _install_pdf_page_navigation(self) -> None:
-        """Add PDF-only page controls beside the existing file navigation."""
-        navigation_layout = self.window.findChild(QHBoxLayout, "navigationLayout")
-        if navigation_layout is None:
-            raise RuntimeError("Die untere Navigationsleiste wurde nicht gefunden.")
+        """Add compact PDF-only page controls below the preview."""
         self.pdf_page_navigation = QWidget(self.preview_panel)
         self.pdf_page_navigation.setObjectName("pdfPageNavigation")
         layout = QHBoxLayout(self.pdf_page_navigation)
-        layout.setContentsMargins(8, 0, 0, 0)
-        layout.setSpacing(4)
-        self.previous_pdf_page_button = QPushButton("◀ Seite", self.pdf_page_navigation)
+        layout.setContentsMargins(6, 1, 6, 2)
+        layout.setSpacing(6)
+        self.previous_pdf_page_button = QPushButton("‹", self.pdf_page_navigation)
         self.previous_pdf_page_button.setObjectName("previousPdfPageButton")
+        self.previous_pdf_page_button.setToolTip("Vorherige PDF-Seite")
+        self.previous_pdf_page_button.setAccessibleName("Vorherige PDF-Seite")
         self.pdf_page_label = QLabel("", self.pdf_page_navigation)
         self.pdf_page_label.setObjectName("pdfPageLabel")
         self.pdf_page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.next_pdf_page_button = QPushButton("Seite ▶", self.pdf_page_navigation)
+        self.next_pdf_page_button = QPushButton("›", self.pdf_page_navigation)
         self.next_pdf_page_button.setObjectName("nextPdfPageButton")
+        self.next_pdf_page_button.setToolTip("Nächste PDF-Seite")
+        self.next_pdf_page_button.setAccessibleName("Nächste PDF-Seite")
         for button in (self.previous_pdf_page_button, self.next_pdf_page_button):
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setFixedSize(22, 20)
+        layout.addStretch(1)
         layout.addWidget(self.previous_pdf_page_button)
         layout.addWidget(self.pdf_page_label)
         layout.addWidget(self.next_pdf_page_button)
-        navigation_layout.addWidget(self.pdf_page_navigation)
+        layout.addStretch(1)
         self.pdf_page_navigation.hide()
 
     def _install_thumbnail_size_controls(self) -> None:
@@ -2998,7 +3007,6 @@ class ImageViewer(QObject):
             self.previous_button,
             self.file_name_label,
             self.next_button,
-            self.pdf_page_navigation,
         ):
             navigation_layout.removeWidget(widget)
 
@@ -3039,13 +3047,13 @@ class ImageViewer(QObject):
         controls_layout.addWidget(self.previous_button)
         controls_layout.addWidget(self.file_name_label, 1)
         controls_layout.addWidget(self.next_button)
-        controls_layout.addWidget(self.pdf_page_navigation)
         thumbnail_layout.addWidget(controls)
         self.right_splitter.insertWidget(thumbnail_index, thumbnail_panel)
 
         preview_layout = self.preview_panel.layout()
         if isinstance(preview_layout, QVBoxLayout):
             preview_layout.removeItem(navigation_layout)
+            preview_layout.addWidget(self.pdf_page_navigation)
 
         self.thumbnail_size_decrease_button.clicked.connect(
             lambda: self._change_thumbnail_size(-THUMBNAIL_STEP)
@@ -7544,7 +7552,7 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
         document = self._pdf_document
         page_count = document.pageCount() if document is not None else 0
         is_pdf = page_count > 0
-        self.pdf_page_navigation.setVisible(is_pdf)
+        self.pdf_page_navigation.setVisible(is_pdf and page_count > 1)
         self.previous_pdf_page_action.setEnabled(is_pdf and self._pdf_page > 0)
         self.next_pdf_page_action.setEnabled(is_pdf and self._pdf_page + 1 < page_count)
         if not is_pdf:
@@ -8160,7 +8168,6 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
         self.thumbnail_panel.hide()
         self.previous_button.hide()
         self.next_button.hide()
-        self.pdf_page_navigation.hide()
         self.file_name_label.hide()
         self.window.menuBar().hide()
         self.splitter.handle(1).hide()
