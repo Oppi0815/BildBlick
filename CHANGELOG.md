@@ -2,6 +2,61 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.14.0 – Kompakte Bildnavigation
+
+### Neu
+
+- Kompakte Datei-Navigation direkt unter den Vorschaubildern mit kleinen
+  Schaltflächen für die vorherige und nächste Datei.
+- Der Dateiname und die PDF-Seitennavigation befinden sich in derselben
+  kompakten Steuerzeile.
+
+### Verbessert
+
+- Bildname, Vor- und Zurücknavigation sind in die Steuerzeile unter den
+  Vorschaubildern umgezogen.
+- Die bisherige Leiste unter dem Bild entfällt; dadurch steht mehr Höhe für
+  die Bilddarstellung zur Verfügung.
+- Der Thumbnail-Größenregler sowie seine Minus-/Plus-Schaltflächen sind
+  flacher und kompakter.
+- Ordnerbaum, Thumbnail-Liste, Statusleiste und Splitter-Griffe wirken ruhiger
+  und sind für helle wie dunkle Oberflächen besser abgestimmt.
+- Vorheriges und nächstes Bild haben Tooltips und barrierefreie Namen.
+- Die kompakte Navigation gilt unter Linux und macOS; die automatische
+  PDF-Vorschau bleibt auf macOS beschränkt.
+
+## 1.13.2 – Flacher Vorschauregler
+
+### Verbessert
+
+- Die kompakte Steuerung für Vorschaubilder ist nun auch vertikal deutlich
+  flacher und fügt sich zurückhaltender in die Seitenleiste ein.
+
+## 1.13.1 – Dezente Vorschausteuerung
+
+### Verbessert
+
+- Der Regler für die Vorschaubildgröße ist kompakt und mittig angeordnet,
+  bleibt aber mit Minus- und Plus-Schaltfläche vollständig bedienbar.
+
+## 1.13.0 – Überarbeitete Oberfläche
+
+### Verbessert
+
+- Die Hauptansicht wirkt ruhiger und klarer: strukturierte Seitenleiste,
+  großzügigere Listen, abgerundete Auswahlflächen und schlankere Navigation.
+- Bedienelemente und Statusleiste sind optisch einheitlicher und besser
+  proportioniert — auch mit dem macOS-Systemfarbschema.
+
+## 1.12.2 – PDF-Vorschau auf macOS
+
+### Neu
+
+- Ein direkt im Finder geöffnetes PDF wird auf macOS in einer großen Vorschau
+  ohne Verzeichnis- und Dateileisten angezeigt.
+- Escape oder „Ansicht → PDF-Vorschau verlassen“ stellt die Dateileisten wieder
+  her.
+
 ## 1.12.1 – PDF-Start und Darstellungsqualität
 
 ### Neu

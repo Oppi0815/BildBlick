@@ -141,10 +141,19 @@ from pdf_support import (
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.12.1"
+APP_VERSION = "1.14.0"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 
 _DialogResult = TypeVar("_DialogResult")
+
+
+def should_auto_enter_pdf_preview(image_path: Path | None) -> bool:
+    """Return whether a direct PDF open should use the macOS-only preview."""
+    return (
+        sys.platform == "darwin"
+        and image_path is not None
+        and image_path.suffix.lower() in PDF_EXTENSIONS
+    )
 
 
 def run_without_application_stylesheet(
@@ -470,10 +479,62 @@ QMenu::indicator:checked:disabled {{
 """
 
 
+def interface_polish_stylesheet() -> str:
+    """Keep the browser-like main window calm across all color schemes."""
+    return """
+QWidget#centralwidget QWidget#directoryPanel {
+    border-right: 1px solid palette(mid);
+}
+QWidget#centralwidget QLabel#computerLabel {
+    font-size: 13px; font-weight: 650;
+    padding: 11px 12px 3px 12px;
+}
+QWidget#centralwidget QLabel#directoryPathLabel {
+    padding: 0 12px 7px 12px;
+}
+QWidget#centralwidget QTreeView {
+    border: none; padding: 4px 6px;
+}
+QWidget#centralwidget QTreeView::item {
+    min-height: 24px; border-radius: 5px; padding: 1px 5px;
+}
+QWidget#centralwidget QListWidget {
+    border: none; padding: 8px;
+}
+QWidget#centralwidget QListWidget::item {
+    border-radius: 9px; margin: 2px; padding: 4px;
+}
+QWidget#centralwidget QPushButton {
+    min-height: 26px; border-radius: 6px; padding: 4px 11px;
+}
+QWidget#centralwidget QToolButton {
+    min-height: 22px; border-radius: 5px; padding: 2px 6px;
+}
+QWidget#centralwidget QWidget#thumbnailSizeControls QToolButton {
+    min-height: 16px; max-height: 16px;
+    min-width: 18px; max-width: 18px;
+    padding: 0;
+}
+QWidget#centralwidget QWidget#thumbnailSizeControls QPushButton {
+    min-height: 18px; max-height: 18px;
+    min-width: 22px; max-width: 22px;
+    padding: 0; border-radius: 5px;
+}
+QWidget#centralwidget QWidget#thumbnailSizeControls QLabel#fileNameLabel {
+    font-size: 12px; padding: 0 5px;
+}
+QMainWindow#MainWindow QStatusBar {
+    min-height: 24px; padding: 0 7px;
+}
+QWidget#centralwidget QSplitter::handle:horizontal { width: 1px; }
+QWidget#centralwidget QSplitter::handle:vertical { height: 1px; }
+"""
+
+
 def color_scheme_stylesheet(colors: dict[str, str] | None) -> str:
     if colors is None:
-        return selection_menu_stylesheet()
-    return selection_menu_stylesheet() + f"""
+        return selection_menu_stylesheet() + interface_polish_stylesheet()
+    return selection_menu_stylesheet() + interface_polish_stylesheet() + f"""
 QMainWindow, QWidget#centralwidget {{
     background-color: {colors['window']}; color: {colors['text']};
 }}
@@ -2656,18 +2717,15 @@ class ImageViewer(QObject):
         self.next_button = self._widget(QPushButton, "nextButton")
         self.previous_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.next_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.previous_button.setText("‹")
+        self.previous_button.setToolTip("Vorheriges Bild")
+        self.previous_button.setAccessibleName("Vorheriges Bild")
+        self.next_button.setText("›")
+        self.next_button.setToolTip("Nächstes Bild")
+        self.next_button.setAccessibleName("Nächstes Bild")
         self.file_name_label = self._widget(QLabel, "fileNameLabel")
-        navigation_button_text_width = max(
-            self.previous_button.fontMetrics().horizontalAdvance(
-                self.previous_button.text()
-            ),
-            self.next_button.fontMetrics().horizontalAdvance(
-                self.next_button.text()
-            ),
-        )
-        navigation_button_width = max(180, navigation_button_text_width + 40)
-        self.previous_button.setFixedWidth(navigation_button_width)
-        self.next_button.setFixedWidth(navigation_button_width)
+        self.previous_button.setFixedSize(22, 18)
+        self.next_button.setFixedSize(22, 18)
         self._file_name_text = ""
         self._directory_path_text = ""
         self.splitter = self._widget(QSplitter, "mainSplitter")
@@ -2715,6 +2773,9 @@ class ImageViewer(QObject):
         self._slideshow_opacity_effect: QGraphicsOpacityEffect | None = None
         self._image_render_pending = False
         self._fullscreen_mode = False
+        self._pdf_preview_mode = False
+        self._pdf_preview_main_splitter_sizes: list[int] = []
+        self._pdf_preview_right_splitter_sizes: list[int] = []
         self._normal_geometry = None
         self._normal_was_maximized = False
         self._normal_main_splitter_sizes = []
@@ -2884,6 +2945,8 @@ class ImageViewer(QObject):
                 self.start_directory,
                 [self.startup_image] if self.startup_image is not None else None,
             )
+        if should_auto_enter_pdf_preview(self.startup_image):
+            QTimer.singleShot(0, self._enter_pdf_preview)
 
     def _install_pdf_page_navigation(self) -> None:
         """Add PDF-only page controls beside the existing file navigation."""
@@ -2923,9 +2986,21 @@ class ImageViewer(QObject):
         thumbnail_layout.addWidget(self.thumbnail_list, 1)
 
         controls = QWidget(thumbnail_panel)
+        controls.setObjectName("thumbnailSizeControls")
         controls_layout = QHBoxLayout(controls)
-        controls_layout.setContentsMargins(6, 2, 6, 3)
-        controls_layout.setSpacing(4)
+        controls_layout.setContentsMargins(6, 1, 6, 2)
+        controls_layout.setSpacing(6)
+
+        navigation_layout = self.window.findChild(QHBoxLayout, "navigationLayout")
+        if navigation_layout is None:
+            raise RuntimeError("Die untere Navigationsleiste wurde nicht gefunden.")
+        for widget in (
+            self.previous_button,
+            self.file_name_label,
+            self.next_button,
+            self.pdf_page_navigation,
+        ):
+            navigation_layout.removeWidget(widget)
 
         self.thumbnail_size_decrease_button = QToolButton(controls)
         self.thumbnail_size_decrease_button.setObjectName(
@@ -2942,6 +3017,8 @@ class ImageViewer(QObject):
         self.thumbnail_size_slider.setRange(0, thumbnail_size_slider_maximum())
         self.thumbnail_size_slider.setSingleStep(1)
         self.thumbnail_size_slider.setPageStep(1)
+        self.thumbnail_size_slider.setFixedWidth(132)
+        self.thumbnail_size_slider.setFixedHeight(14)
         self.thumbnail_size_slider.setValue(
             thumbnail_size_slider_value(self._thumbnail_pixels)
         )
@@ -2956,10 +3033,19 @@ class ImageViewer(QObject):
         self.thumbnail_size_increase_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         controls_layout.addWidget(self.thumbnail_size_decrease_button)
-        controls_layout.addWidget(self.thumbnail_size_slider, 1)
+        controls_layout.addWidget(self.thumbnail_size_slider)
         controls_layout.addWidget(self.thumbnail_size_increase_button)
+        controls_layout.addSpacing(8)
+        controls_layout.addWidget(self.previous_button)
+        controls_layout.addWidget(self.file_name_label, 1)
+        controls_layout.addWidget(self.next_button)
+        controls_layout.addWidget(self.pdf_page_navigation)
         thumbnail_layout.addWidget(controls)
         self.right_splitter.insertWidget(thumbnail_index, thumbnail_panel)
+
+        preview_layout = self.preview_panel.layout()
+        if isinstance(preview_layout, QVBoxLayout):
+            preview_layout.removeItem(navigation_layout)
 
         self.thumbnail_size_decrease_button.clicked.connect(
             lambda: self._change_thumbnail_size(-THUMBNAIL_STEP)
@@ -3205,6 +3291,13 @@ class ImageViewer(QObject):
         self.fullscreen_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.fullscreen_action.triggered.connect(self._toggle_fullscreen)
         self.view_menu.addAction(self.fullscreen_action)
+
+        self.leave_pdf_preview_action = QAction(
+            "PDF-Vorschau verlassen", self.window
+        )
+        self.leave_pdf_preview_action.triggered.connect(self._leave_pdf_preview)
+        self.leave_pdf_preview_action.setEnabled(False)
+        self.view_menu.addAction(self.leave_pdf_preview_action)
 
         self.previous_pdf_page_action = QAction("PDF-Seite zurück", self.window)
         self.previous_pdf_page_action.setShortcut(QKeySequence(Qt.Key.Key_PageUp))
@@ -6475,6 +6568,8 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
             self._stop_slideshow()
         if self._fullscreen_mode:
             self._leave_fullscreen()
+        elif self._pdf_preview_mode:
+            self._leave_pdf_preview()
 
     def _expand_initial_path(self, directory: Path) -> None:
         if directory.is_dir():
@@ -7322,6 +7417,8 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
             self._zoom_mode = "fit"
             self._render_pdf_page()
             return
+        if self._pdf_preview_mode:
+            self._leave_pdf_preview()
         self._pdf_document = None
         self._pdf_page = 0
         self._pdf_render_size = QSize()
@@ -8009,6 +8106,38 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
         QToolTip.hideText()
         self._fullscreen_tooltip_visible = False
 
+    def _enter_pdf_preview(self) -> None:
+        """Show a directly opened PDF without the directory and thumbnail panes."""
+        if self._pdf_preview_mode or self._fullscreen_mode:
+            return
+        self._pdf_preview_mode = True
+        self._pdf_preview_main_splitter_sizes = self.splitter.sizes()
+        self._pdf_preview_right_splitter_sizes = self.right_splitter.sizes()
+        self.directory_panel.hide()
+        self.thumbnail_panel.hide()
+        self.splitter.handle(1).hide()
+        self.right_splitter.handle(1).hide()
+        self.splitter.setSizes([0, max(1, self.splitter.width())])
+        self.right_splitter.setSizes([0, max(1, self.right_splitter.width())])
+        self.leave_pdf_preview_action.setEnabled(True)
+        self._schedule_image_render()
+
+    def _leave_pdf_preview(self) -> None:
+        """Restore the file panes after a direct PDF preview."""
+        if not self._pdf_preview_mode:
+            return
+        if self._fullscreen_mode:
+            self._leave_fullscreen()
+        self._pdf_preview_mode = False
+        self.directory_panel.show()
+        self.thumbnail_panel.show()
+        self.splitter.handle(1).show()
+        self.right_splitter.handle(1).show()
+        self.splitter.setSizes(self._pdf_preview_main_splitter_sizes)
+        self.right_splitter.setSizes(self._pdf_preview_right_splitter_sizes)
+        self.leave_pdf_preview_action.setEnabled(False)
+        self._schedule_image_render()
+
     def _enter_fullscreen(self) -> None:
         if self._fullscreen_mode or self.original_image.isNull():
             return
@@ -8061,23 +8190,29 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
         if central_layout is not None and self._normal_central_margins is not None:
             central_layout.setContentsMargins(*self._normal_central_margins)
 
-        self.directory_panel.show()
-        self.thumbnail_panel.show()
+        if not self._pdf_preview_mode:
+            self.directory_panel.show()
+            self.thumbnail_panel.show()
         self.previous_button.show()
         self.next_button.show()
         self._update_pdf_page_navigation()
         self.file_name_label.show()
         self.window.menuBar().show()
-        self.splitter.handle(1).show()
-        self.right_splitter.handle(1).show()
+        if not self._pdf_preview_mode:
+            self.splitter.handle(1).show()
+            self.right_splitter.handle(1).show()
 
         self.window.showNormal()
         if self._normal_geometry is not None:
             self.window.setGeometry(self._normal_geometry)
         if self._normal_was_maximized:
             self.window.showMaximized()
-        self.splitter.setSizes(self._normal_main_splitter_sizes)
-        self.right_splitter.setSizes(self._normal_right_splitter_sizes)
+        if self._pdf_preview_mode:
+            self.splitter.setSizes([0, max(1, self.splitter.width())])
+            self.right_splitter.setSizes([0, max(1, self.right_splitter.width())])
+        else:
+            self.splitter.setSizes(self._normal_main_splitter_sizes)
+            self.right_splitter.setSizes(self._normal_right_splitter_sizes)
         self._schedule_image_render()
 
     def eventFilter(self, watched, event) -> bool:
@@ -8497,7 +8632,14 @@ def main() -> int:
 
     viewer = ImageViewer(startup_directory, startup_image)
 
-    def open_path_from_macos(path: str) -> None:
+    def bring_window_to_front() -> None:
+        if viewer.window.isMinimized():
+            viewer.window.showNormal()
+        viewer.window.show()
+        viewer.window.raise_()
+        viewer.window.activateWindow()
+
+    def open_requested_path(path: str, fullscreen: bool = False) -> None:
         directory, image, error = resolve_startup_path(path)
         if error is not None:
             show_startup_error(viewer, error)
@@ -8506,13 +8648,20 @@ def main() -> int:
                 directory,
                 [image] if image is not None else None,
             )
+            if should_auto_enter_pdf_preview(image):
+                viewer._enter_pdf_preview()
+            else:
+                viewer._leave_pdf_preview()
+            if fullscreen and image is not None:
+                schedule_startup_fullscreen(viewer)
+        bring_window_to_front()
 
-    app.file_open_requested.connect(open_path_from_macos)
+    app.file_open_requested.connect(open_requested_path)
     viewer.show()
     if start_fullscreen and startup_image is not None and startup_error is None:
         schedule_startup_fullscreen(viewer)
     for path in app.pending_file_opens:
-        QTimer.singleShot(0, lambda path=path: open_path_from_macos(path))
+        QTimer.singleShot(0, lambda path=path: open_requested_path(path))
     if startup_error is not None:
         QTimer.singleShot(
             0, lambda message=startup_error: show_startup_error(viewer, message)

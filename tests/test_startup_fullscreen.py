@@ -3,7 +3,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QHBoxLayout
 
 from bildbetrachter import (
     ImageViewer,
@@ -11,6 +11,7 @@ from bildbetrachter import (
     create_command_line_parser,
     resolve_startup_path,
     schedule_startup_fullscreen,
+    should_auto_enter_pdf_preview,
 )
 
 
@@ -82,6 +83,58 @@ def test_startup_fullscreen_waits_until_an_image_is_available(tmp_path: Path):
 
     assert not activate_startup_fullscreen(viewer)
     assert not viewer._fullscreen_mode
+    viewer.window.close()
+    application.processEvents()
+
+
+def test_pdf_preview_hides_file_panes_and_escape_restores_them(tmp_path: Path):
+    application, viewer, _image_path = _viewer_with_image(tmp_path)
+
+    viewer._enter_pdf_preview()
+    application.processEvents()
+
+    assert viewer._pdf_preview_mode
+    assert viewer.directory_panel.isHidden()
+    assert viewer.thumbnail_panel.isHidden()
+    assert viewer.leave_pdf_preview_action.isEnabled()
+
+    viewer._handle_escape()
+    application.processEvents()
+
+    assert not viewer._pdf_preview_mode
+    assert not viewer.directory_panel.isHidden()
+    assert not viewer.thumbnail_panel.isHidden()
+    assert not viewer.leave_pdf_preview_action.isEnabled()
+    viewer.window.close()
+    application.processEvents()
+
+
+def test_pdf_preview_is_automatically_enabled_only_on_macos(
+    tmp_path: Path, monkeypatch
+):
+    pdf_path = tmp_path / "Dokument.pdf"
+
+    monkeypatch.setattr("bildbetrachter.sys.platform", "linux")
+    assert not should_auto_enter_pdf_preview(pdf_path)
+
+    monkeypatch.setattr("bildbetrachter.sys.platform", "darwin")
+    assert should_auto_enter_pdf_preview(pdf_path)
+    assert not should_auto_enter_pdf_preview(tmp_path / "Bild.png")
+
+
+def test_compact_navigation_replaces_the_old_preview_layout(tmp_path: Path):
+    application, viewer, image_path = _viewer_with_image(tmp_path)
+
+    controls = viewer.thumbnail_size_slider.parentWidget()
+    assert controls.objectName() == "thumbnailSizeControls"
+    assert viewer.previous_button.parentWidget() is controls
+    assert viewer.next_button.parentWidget() is controls
+    assert viewer.file_name_label.parentWidget() is controls
+    viewer._set_file_name_text(image_path.name)
+    assert viewer.file_name_label.toolTip() == image_path.name
+    assert viewer.thumbnail_size_slider.width() == 132
+    assert viewer.thumbnail_size_slider.height() == 14
+    assert viewer.window.findChild(QHBoxLayout, "navigationLayout") is None
     viewer.window.close()
     application.processEvents()
 
