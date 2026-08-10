@@ -3631,7 +3631,10 @@ class ImageViewer(QObject):
             image = rotated_display_image(image, self._current_display_rotation())
             if image.isNull(): raise RuntimeError("Das Druckbild konnte nicht gedreht werden.")
             source = ImageSourceInfo(self.current_image, image.width(), image.height(), image_print_dpi(self.current_image), image_print_dpi(self.current_image), self.current_image.name, capture_date_text(self.current_image))
-            dialog = SingleImageWysiwygPrintDialog(image, source, self.settings, self.window)
+            dialog = SingleImageWysiwygPrintDialog(
+                image, source, self.settings, self.window,
+                theme_colors=COLOR_SCHEMES[self._color_scheme],
+            )
             if dialog.exec() != QDialog.DialogCode.Accepted: return
             printer = QPrinter(QPrinter.PrinterMode.HighResolution)
             selected_plan = dialog.build_page_plan()
@@ -3669,11 +3672,18 @@ class ImageViewer(QObject):
         if not any(sources.values()):
             QMessageBox.information(self.window, "Keine Bilder zum Drucken", "Es wurden keine gültigen Bilder gefunden.")
             return
-        dialog = MultiImageWysiwygPrintDialog(sources, self.settings, self.window)
+        dialog = MultiImageWysiwygPrintDialog(
+            sources, self.settings, self.window,
+            theme_colors=COLOR_SCHEMES[self._color_scheme],
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         chosen = [source.path for source in dialog.selected_sources()]
-        self._print_multiple_images(chosen, dialog.print_settings(), dialog._page_size())
+        self._print_multiple_images(
+            chosen, dialog.print_settings(), dialog._page_size(),
+            folder_name=dialog.footer_folder_name(),
+            print_date_text=dialog.print_date_text(),
+        )
 
     def _all_thumbnail_image_paths(self) -> list[Path]:
         return [
@@ -4568,7 +4578,7 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
         )
         self._print_multiple_images(paths, print_settings)
 
-    def _print_multiple_images(self, paths: list[Path], print_settings: MultiImagePrintSettings, page_size: PageSizeMm | None = None) -> None:
+    def _print_multiple_images(self, paths: list[Path], print_settings: MultiImagePrintSettings, page_size: PageSizeMm | None = None, *, folder_name: str | None = None, print_date_text: str | None = None) -> None:
         images_per_page = print_settings.effective_images_per_page
         first = QImageReader(str(paths[0])); first.setAutoTransform(True); first_image = first.read()
         orientation = QPageLayout.Orientation.Landscape if print_settings.orientation == "landscape" or (print_settings.orientation == "automatic" and images_per_page == 1 and first_image.width() > first_image.height()) else QPageLayout.Orientation.Portrait
@@ -4590,8 +4600,8 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
                 multi_image_sources(paths, print_settings.show_capture_date),
                 print_settings,
                 source_kind=print_settings.source,
-                folder_name=print_settings.footer_folder_name,
-                print_date_text=current_print_date_text(),
+                folder_name=folder_name if folder_name is not None else print_settings.footer_folder_name,
+                print_date_text=print_date_text if print_date_text is not None else current_print_date_text(),
                 printer_geometry=geometry,
             )
             page_plans = plan_multi_image_pages(document)

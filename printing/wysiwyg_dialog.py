@@ -9,7 +9,7 @@ from PySide6.QtGui import QImage
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout,
     QHBoxLayout, QInputDialog, QLabel, QMessageBox, QPushButton, QScrollArea,
-    QStyle, QStyleOptionButton, QStyleOptionViewItem, QStyledItemDelegate,
+    QSplitter, QStyle, QStyleOptionButton, QStyleOptionViewItem, QStyledItemDelegate,
     QVBoxLayout, QWidget,
 )
 
@@ -18,9 +18,15 @@ from printing.planner import plan_single_image
 from printing.legacy_single_image import rotated_source_info
 from printing.pdf_export import export_page_plan_pdf
 from printing.wysiwyg_preview import WysiwygPagePreview
+from printing.wysiwyg_ui import (
+    SETTINGS_PANEL_WIDTH, configure_wysiwyg_form, configure_wysiwyg_scroll_area,
+    apply_wysiwyg_theme, restore_wysiwyg_dialog_geometry, save_wysiwyg_dialog_geometry,
+    wysiwyg_dialog_stylesheet,
+)
 
 
 PROFILE_KEY = "printing/singleImageProfiles"
+GEOMETRY_KEY = "printing/singleImageWysiwygDialogSize"
 PAPER_SIZES = {"A4": (210.0, 297.0), "10 × 15 cm": (100.0, 150.0), "13 × 18 cm": (130.0, 180.0), "Letter": (215.9, 279.4)}
 BUILTIN_PROFILES = {
     "A4 – Einpassen": {"paper": "A4", "scale": "fit"},
@@ -84,7 +90,7 @@ class _WysiwygComboPopupDelegate(QStyledItemDelegate):
             style.drawPrimitive(QStyle.PrimitiveElement.PE_IndicatorCheckBox, indicator, painter, option.widget)
 
 
-def _configure_wysiwyg_combo_popup(combo: QComboBox, object_name: str) -> _WysiwygComboPopupDelegate:
+def configure_wysiwyg_combo_popup(combo: QComboBox, object_name: str) -> _WysiwygComboPopupDelegate:
     """Apply the shared popup fix to one combo in this dialog only."""
     combo.setObjectName(object_name)
     combo.view().setObjectName(f"{object_name}PopupView")
@@ -93,34 +99,34 @@ def _configure_wysiwyg_combo_popup(combo: QComboBox, object_name: str) -> _Wysiw
     return delegate
 
 
+# Compatibility for callers from earlier revisions.
+_configure_wysiwyg_combo_popup = configure_wysiwyg_combo_popup
+
+
 class SingleImageWysiwygPrintDialog(QDialog):
     """Edits one layout. The default preview intentionally has no hardware margin.
 
     It models PDF/virtual paper until the native printer dialog supplies the
     final hardware paint rectangle at print time.
     """
-    def __init__(self, image: QImage, source: ImageSourceInfo, settings: QSettings, parent=None) -> None:
+    def __init__(self, image: QImage, source: ImageSourceInfo, settings: QSettings, parent=None, theme_colors: dict[str, str] | None = None) -> None:
         super().__init__(parent)
         self.image, self.source, self.settings = image, source, settings
         self.page_plan = None
         self._custom_rect_mm: RectMm | None = None
         self._applying_state = False
         self.setObjectName("singleImageWysiwygPrintDialog")
-        # Keep the correction local.  The 8 px checkbox spacing leaves a
-        # visible gap after the accent indicator in both application themes.
-        self.setStyleSheet("""
-QDialog#singleImageWysiwygPrintDialog QCheckBox { spacing: 8px; }
-QDialog#singleImageWysiwygPrintDialog QCheckBox::indicator { margin-right: 0; }
-""")
+        # Keep checkbox spacing local while palette roles follow Light/Dark mode.
+        apply_wysiwyg_theme(self, theme_colors)
+        self.setStyleSheet(wysiwyg_dialog_stylesheet(self.objectName()))
         self.setWindowTitle("WYSIWYG drucken — BildBlick")
-        self.resize(1080, 720)
-        self.setMinimumSize(720, 540)
         outer = QVBoxLayout(self)
-        split = QHBoxLayout()
-        outer.addLayout(split, 1)
+        self.content_splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        outer.addWidget(self.content_splitter, 1)
         controls = QWidget(self)
         controls.setObjectName("wysiwygPrintSettingsPanel")
         form = QFormLayout(controls)
+        configure_wysiwyg_form(form)
         self.profile = QComboBox(controls); form.addRow("Profil:", self.profile)
         self.profile_popup_delegate = _configure_wysiwyg_combo_popup(self.profile, "profileCombo")
         self.borderless_hint = QLabel(
@@ -168,8 +174,12 @@ QDialog#singleImageWysiwygPrintDialog QCheckBox::indicator { margin-right: 0; }
         self.caption_size = self._spin(10, 4, 36); form.addRow("Schriftgröße (pt):", self.caption_size)
         self.caption_align = QComboBox(controls); self.caption_align.addItem("Links", "left"); self.caption_align.addItem("Mitte", "center"); self.caption_align.addItem("Rechts", "right"); form.addRow("Textausrichtung:", self.caption_align)
         self.text_alignment_popup_delegate = _configure_wysiwyg_combo_popup(self.caption_align, "textAlignmentCombo")
-        scroll = QScrollArea(self); scroll.setWidgetResizable(True); scroll.setWidget(controls); scroll.setMaximumWidth(355); split.addWidget(scroll, 0)
-        right = QVBoxLayout(); split.addLayout(right, 1)
+        self.settings_scroll = QScrollArea(self)
+        configure_wysiwyg_scroll_area(self.settings_scroll, controls)
+        self.content_splitter.addWidget(self.settings_scroll)
+        right_panel = QWidget(self)
+        right = QVBoxLayout(right_panel)
+        self.content_splitter.addWidget(right_panel)
         zoom_row = QHBoxLayout(); zoom_row.addWidget(QLabel("Vorschau-Zoom:"))
         self.zoom = QComboBox(self); self.zoom.addItem("An Fenster anpassen", 0)
         for value in (25, 50, 75, 100, 150, 200): self.zoom.addItem(f"{value} %", value)
@@ -192,7 +202,14 @@ QDialog#singleImageWysiwygPrintDialog QCheckBox::indicator { margin-right: 0; }
         self.preview.geometryEdited.connect(self._set_custom_geometry)
         self.preview.centerRequested.connect(self._center_image)
         self.pdf_button.clicked.connect(self._export_pdf); self.print_button.clicked.connect(self.accept); cancel.clicked.connect(self.reject)
+        self.content_splitter.setSizes([SETTINGS_PANEL_WIDTH, 850])
+        self.content_splitter.setStretchFactor(1, 1)
+        restore_wysiwyg_dialog_geometry(self, self.settings, GEOMETRY_KEY)
         self._update_preview()
+
+    def closeEvent(self, event) -> None:
+        save_wysiwyg_dialog_geometry(self, self.settings, GEOMETRY_KEY)
+        super().closeEvent(event)
 
     @staticmethod
     def _spin(value: float, minimum: float = 0.0, maximum: float = 1000.0) -> QDoubleSpinBox:

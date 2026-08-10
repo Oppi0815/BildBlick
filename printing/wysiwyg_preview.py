@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPen
+from PySide6.QtGui import QColor, QImage, QPainter, QPalette, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from printing.layout import ImageSourceInfo, PagePlan
@@ -172,18 +172,19 @@ class WysiwygPagePreview(QWidget):
 
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#e9edf1"))
+        painter.fillRect(self.rect(), self.palette().color(QPalette.ColorRole.Window))
         if self.page_plan is None:
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Vorschau nicht verfügbar")
             return
         plan = self.page_plan
         paper = self._paper_rect()
-        painter.fillRect(paper.translated(4, 5), QColor(0, 0, 0, 45))
+        shadow = self.palette().color(QPalette.ColorRole.Shadow); shadow.setAlpha(45)
+        painter.fillRect(paper.translated(4, 5), shadow)
         painter.fillRect(paper, Qt.GlobalColor.white)
-        painter.setPen(QPen(QColor("#8b8b8b"), 1))
+        painter.setPen(QPen(self.palette().color(QPalette.ColorRole.Mid), 1))
         painter.drawRect(paper)
         printable = MmTransform(plan, paper).rect_to_target(plan.printable_rect)
-        painter.setPen(QPen(QColor("#777777"), 1, Qt.PenStyle.DashLine))
+        painter.setPen(QPen(self.palette().color(QPalette.ColorRole.Mid), 1, Qt.PenStyle.DashLine))
         painter.drawRect(printable)
         render_page_plan(painter, plan, paper, self.image_provider)
         image_rect = self._image_screen_rect()

@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from PySide6.QtCore import QSettings
-from PySide6.QtGui import QImage
+from PySide6.QtCore import QSettings, QSize, Qt
+from PySide6.QtGui import QImage, QPalette
 from PySide6.QtWidgets import QApplication
 
 from printing.layout import ImageSourceInfo, RectMm
@@ -36,6 +36,8 @@ def test_dialog_has_local_indicator_spacing_and_shared_popup_delegates(tmp_path)
     dialog = _dialog(tmp_path)
     assert dialog.objectName() == "singleImageWysiwygPrintDialog"
     assert "QCheckBox { spacing: 8px; }" in dialog.styleSheet()
+    assert "#ffffff" not in dialog.styleSheet().lower()
+    assert "palette(window-text)" in dialog.styleSheet()
     combos = (
         (dialog.profile, dialog.profile_popup_delegate, "profileCombo"),
         (dialog.paper, dialog.paper_popup_delegate, "paperSizeCombo"),
@@ -82,3 +84,35 @@ def test_borderless_fill_profile_resets_geometry_and_shows_hint(tmp_path):
     dialog.profile.setCurrentIndex(dialog.profile.findText("A4 – Einpassen"))
     dialog._load_selected_profile()
     assert dialog.borderless_hint.isHidden()
+
+
+def test_dialog_uses_screen_bounded_geometry_and_a_non_scrolling_settings_panel(tmp_path):
+    dialog = _dialog(tmp_path)
+    assert dialog.minimumWidth() >= 720
+    assert dialog.settings_scroll.widgetResizable()
+    assert dialog.settings_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    assert dialog.settings_scroll.minimumWidth() >= 420
+    assert dialog.content_splitter.sizes()[1] >= dialog.content_splitter.sizes()[0]
+
+
+def test_tiny_saved_dialog_size_is_not_restored(tmp_path):
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    settings.setValue("printing/singleImageWysiwygDialogSize", QSize(100, 100))
+    image = QImage(1200, 800, QImage.Format.Format_RGB32)
+    source = ImageSourceInfo(Path("example.jpg"), 1200, 800, 300, 300, "example.jpg", "10.08.2026")
+    dialog = SingleImageWysiwygPrintDialog(image, source, settings)
+    assert dialog.size().width() >= dialog.minimumWidth()
+    assert dialog.size().height() >= dialog.minimumHeight()
+
+
+def test_single_dialog_uses_the_same_supplied_theme_palette(tmp_path):
+    image = QImage(1200, 800, QImage.Format.Format_RGB32)
+    source = ImageSourceInfo(Path("example.jpg"), 1200, 800, 300, 300, "example.jpg", "10.08.2026")
+    colors = {
+        "window": "#20242a", "panel": "#292e35", "preview": "#252a30",
+        "text": "#edf0f3", "button": "#343a42", "selection": "#3b8edb",
+        "selection_text": "#ffffff",
+    }
+    dialog = SingleImageWysiwygPrintDialog(image, source, QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat), theme_colors=colors)
+    assert dialog.palette().color(QPalette.ColorGroup.Active, QPalette.ColorRole.Window).name() == colors["window"]
+    assert dialog.palette().color(QPalette.ColorGroup.Active, QPalette.ColorRole.Base).name() == colors["panel"]

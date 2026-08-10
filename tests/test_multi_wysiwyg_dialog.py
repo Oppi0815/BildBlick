@@ -1,6 +1,7 @@
 from pathlib import Path
 
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QSettings, QSize, Qt
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QApplication
 
 from printing.layout import ImageSourceInfo
@@ -19,6 +20,18 @@ def test_multi_wysiwyg_dialog_builds_live_page_plans_and_navigates(tmp_path):
     assert dialog.page_label.text() == "Seite 2 von 2"
     dialog.paper.setCurrentText("10 × 15 cm")
     assert (dialog.page_plans[0].page_size.width_mm, dialog.page_plans[0].page_size.height_mm) == (100, 150)
+
+
+def test_dialog_prefers_selected_then_all_then_current_as_its_initial_source(tmp_path):
+    QApplication.instance() or QApplication([])
+    images = [ImageSourceInfo(Path(f"{index}.jpg"), 1600, 900, filename=f"{index}.jpg") for index in range(3)]
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    selected = MultiImageWysiwygPrintDialog({"current": images[:1], "selected": images[1:], "all": images}, settings)
+    all_images = MultiImageWysiwygPrintDialog({"current": images[:1], "selected": images[:1], "all": images}, settings)
+    current = MultiImageWysiwygPrintDialog({"current": images[:1], "selected": [], "all": images[:1]}, settings)
+    assert selected.source.currentData() == "selected"
+    assert all_images.source.currentData() == "all"
+    assert current.source.currentData() == "current"
 
 
 def test_multi_wysiwyg_dialog_uses_contact_sheet_pageplan_text(tmp_path):
@@ -42,3 +55,90 @@ def test_dialog_keeps_drag_order_and_removals_in_the_print_model(tmp_path):
     assert [image.source.filename for page in dialog.page_plans for image in page.image_elements] == ["2.jpg", "1.jpg"]
     dialog._reset_order()
     assert [source.filename for source in dialog.selected_sources()] == ["0.jpg", "1.jpg", "2.jpg"]
+
+
+def test_multi_dialog_uses_palette_friendly_list_and_resizable_settings_panel(tmp_path):
+    QApplication.instance() or QApplication([])
+    source = ImageSourceInfo(Path("very-long-file-name.jpg"), 1600, 900, filename="very-long-file-name.jpg")
+    dialog = MultiImageWysiwygPrintDialog({"current": [source]}, QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat))
+    assert dialog.settings_scroll.widgetResizable()
+    assert dialog.settings_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    assert dialog.settings_scroll.minimumWidth() >= 420
+    assert dialog.image_list.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    assert dialog.image_list.textElideMode() == Qt.TextElideMode.ElideMiddle
+    assert dialog.image_list.maximumHeight() == 180
+    assert dialog.image_list.item(0).toolTip() == "very-long-file-name.jpg"
+    assert dialog.image_list.palette().color(dialog.image_list.backgroundRole()).isValid()
+    assert "palette(base)" in dialog.styleSheet()
+    assert "#000000" not in dialog.styleSheet().lower()
+    assert dialog.profile.view().itemDelegate() is dialog.profile_popup_delegate
+
+
+def test_action_buttons_keep_their_complete_natural_width(tmp_path):
+    QApplication.instance() or QApplication([])
+    dialog = MultiImageWysiwygPrintDialog({"current": []}, QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat))
+    for button, text in (
+        (dialog.reset_order_button, "Reihenfolge zurücksetzen"),
+        (dialog.remove_button, "Auswahl entfernen"),
+        (dialog.reload_button, "Quelle neu laden"),
+    ):
+        assert button.text() == text
+        assert button.minimumWidth() >= button.sizeHint().width()
+
+
+def test_dialog_uses_theme_palette_roles_without_fixed_light_or_dark_backgrounds(tmp_path):
+    QApplication.instance() or QApplication([])
+    colors = {
+        "window": "#20242a", "panel": "#292e35", "preview": "#252a30",
+        "text": "#edf0f3", "button": "#343a42", "selection": "#3b8edb",
+        "selection_text": "#ffffff",
+    }
+    dialog = MultiImageWysiwygPrintDialog({"current": []}, QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat), theme_colors=colors)
+    palette = dialog.palette()
+    assert palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.Window).name() == colors["window"]
+    assert palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.Base).name() == colors["panel"]
+    assert "#ffffff" not in dialog.styleSheet().lower()
+    assert "#000000" not in dialog.styleSheet().lower()
+    assert "palette(window)" in dialog.styleSheet()
+
+
+def test_multi_dialog_clamps_a_tiny_saved_size(tmp_path):
+    QApplication.instance() or QApplication([])
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    settings.setValue("printing/multiImageWysiwygDialogSize", QSize(100, 100))
+    dialog = MultiImageWysiwygPrintDialog({"current": []}, settings)
+    assert dialog.size().width() >= dialog.minimumWidth()
+    assert dialog.size().height() >= dialog.minimumHeight()
+
+
+def test_footer_options_flow_into_the_wysiwyg_page_plan(tmp_path):
+    QApplication.instance() or QApplication([])
+    source = ImageSourceInfo(Path("/tmp/Urlaub/1.jpg"), 1600, 900, filename="1.jpg")
+    dialog = MultiImageWysiwygPrintDialog({"current": [source], "all": [source]}, QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat))
+    dialog.footer_folder.setChecked(True)
+    roles = {text.semantic_role for text in dialog.page_plans[0].text_elements}
+    assert "folder" in roles
+    assert next(text.text for text in dialog.page_plans[0].text_elements if text.semantic_role == "folder") == "Urlaub"
+    assert "print_date" not in roles
+    assert "page_number" in roles
+    dialog.print_date.setChecked(True)
+    roles = {text.semantic_role for text in dialog.page_plans[0].text_elements}
+    assert {"folder", "page_number", "print_date"} <= roles
+    assert next(text.text for text in dialog.page_plans[0].text_elements if text.semantic_role == "print_date") == dialog.print_date_text()
+    dialog.footer_folder.setChecked(False)
+    dialog.print_date.setChecked(False)
+    roles = {text.semantic_role for text in dialog.page_plans[0].text_elements}
+    assert "folder" not in roles
+    assert "print_date" not in roles
+    assert "page_number" in roles
+
+
+def test_footer_folder_comes_from_the_current_image_folder(tmp_path):
+    QApplication.instance() or QApplication([])
+    current = ImageSourceInfo(Path("/tmp/Aktueller Ordner/current.jpg"), 1600, 900, filename="current.jpg")
+    other = ImageSourceInfo(Path("/tmp/Andere Bilder/other.jpg"), 1600, 900, filename="other.jpg")
+    dialog = MultiImageWysiwygPrintDialog({"current": [current], "all": [other]}, QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat))
+    dialog.source.setCurrentIndex(dialog.source.findData("all"))
+    dialog.footer_folder.setChecked(True)
+    folder = next(text.text for text in dialog.page_plans[0].text_elements if text.semantic_role == "folder")
+    assert folder == "Aktueller Ordner"

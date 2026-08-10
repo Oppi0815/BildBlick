@@ -3,7 +3,7 @@
 from collections.abc import Callable, Sequence
 
 from PySide6.QtCore import QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QImage, QPainter, QPen
+from PySide6.QtGui import QColor, QImage, QPainter, QPalette, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from printing.layout import ImageSourceInfo, PagePlan
@@ -19,11 +19,12 @@ class MultiWysiwygPreview(QWidget):
         self.pages, self.index, self.image_provider = list(pages), min(max(0, index), max(0, len(pages) - 1)), image_provider; self.update()
 
     def paintEvent(self, _event) -> None:
-        painter = QPainter(self); painter.fillRect(self.rect(), QColor("#d7d7d7"))
+        painter = QPainter(self); painter.fillRect(self.rect(), self.palette().color(QPalette.ColorRole.Window))
         if not self.pages: return
         plan = self.pages[self.index]; available = QRectF(self.rect()).adjusted(16, 16, -16, -16)
         scale = min(available.width() / plan.page_size.width_mm, available.height() / plan.page_size.height_mm)
         paper = QRectF(available.center().x() - plan.page_size.width_mm * scale / 2, available.center().y() - plan.page_size.height_mm * scale / 2, plan.page_size.width_mm * scale, plan.page_size.height_mm * scale)
-        painter.fillRect(paper.translated(3, 3), QColor(0, 0, 0, 45)); painter.fillRect(paper, Qt.GlobalColor.white)
-        transform = MmTransform(plan, paper); painter.setPen(QPen(QColor("#999999"), 1, Qt.PenStyle.DashLine)); painter.drawRect(transform.rect_to_target(plan.printable_rect))
+        shadow = self.palette().color(QPalette.ColorRole.Shadow); shadow.setAlpha(45)
+        painter.fillRect(paper.translated(3, 3), shadow); painter.fillRect(paper, Qt.GlobalColor.white)
+        transform = MmTransform(plan, paper); painter.setPen(QPen(self.palette().color(QPalette.ColorRole.Mid), 1, Qt.PenStyle.DashLine)); painter.drawRect(transform.rect_to_target(plan.printable_rect))
         render_page_plan(painter, plan, paper, self.image_provider)
