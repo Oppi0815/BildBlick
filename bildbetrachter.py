@@ -3672,7 +3672,7 @@ class ImageViewer(QObject):
         dialog = MultiImageWysiwygPrintDialog(sources, self.settings, self.window)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        chosen = [source.path for source in sources.get(dialog.print_settings().source, [])]
+        chosen = [source.path for source in dialog.selected_sources()]
         self._print_multiple_images(chosen, dialog.print_settings(), dialog._page_size())
 
     def _all_thumbnail_image_paths(self) -> list[Path]:
