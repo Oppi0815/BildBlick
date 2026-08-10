@@ -47,6 +47,14 @@ def _alignment(value: str) -> Qt.AlignmentFlag:
     return values.get(value, Qt.AlignmentFlag.AlignCenter)
 
 
+def _elide_mode(value: str) -> Qt.TextElideMode | None:
+    return {
+        "left": Qt.TextElideMode.ElideLeft,
+        "middle": Qt.TextElideMode.ElideMiddle,
+        "right": Qt.TextElideMode.ElideRight,
+    }.get(value)
+
+
 def render_page_plan(
     painter: QPainter,
     page_plan: PagePlan,
@@ -97,7 +105,14 @@ def render_page_plan(
         painter.save()
         font = QFont(painter.font())
         font.setPointSizeF(element.font_size_pt)
+        font.setBold(element.bold)
+        font.setItalic(element.italic)
         painter.setFont(font)
-        painter.drawText(transform.rect_to_target(element.rect), _alignment(element.alignment), element.text)
+        rect = transform.rect_to_target(element.rect)
+        text = element.text
+        elide = _elide_mode(element.elide_policy)
+        if elide is not None and "\n" not in text:
+            text = painter.fontMetrics().elidedText(text, elide, max(0, round(rect.width())))
+        painter.drawText(rect, _alignment(element.alignment), text)
         painter.restore()
     painter.restore()

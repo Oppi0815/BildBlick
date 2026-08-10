@@ -206,11 +206,59 @@ class TextElementPlan:
     rect: RectMm
     alignment: str = "center"
     font_size_pt: float = 10.0
+    bold: bool = False
+    italic: bool = False
+    elide_policy: str = "none"
+    semantic_role: str = ""
     metadata: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if self.font_size_pt <= 0:
             raise ValueError("Die Schriftgröße muss größer als 0 Punkt sein.")
+        if self.elide_policy not in {"none", "left", "middle", "right"}:
+            raise ValueError("Unbekannte Textkürzungsregel.")
+
+
+@dataclass(frozen=True)
+class MultiImagePrintDocument:
+    """UI-free, ordered description of one multi-image print job.
+
+    The document is deliberately the hand-off point between the legacy dialog
+    and the new PagePlan path.  It contains values, not widgets or painter
+    coordinates; all geometry remains in millimetres.
+    """
+
+    sources: tuple[ImageSourceInfo, ...]
+    source_kind: str
+    page_size: PageSizeMm
+    printable_rect: RectMm
+    rows: int
+    columns: int
+    page_margin_mm: float
+    cell_spacing_mm: float
+    orientation: Orientation = "portrait"
+    contact_sheet: bool = False
+    show_filename: bool = True
+    show_capture_date: bool = False
+    show_page_number: bool = True
+    show_header: bool = False
+    header_text: str = ""
+    use_folder_name_as_title: bool = False
+    folder_name: str = ""
+    show_folder_in_footer: bool = False
+    show_print_date: bool = False
+    print_date_text: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "sources", tuple(self.sources))
+        if self.source_kind not in {"current", "selected", "all"}:
+            raise ValueError("Unbekannte Bildquelle.")
+        if self.orientation not in {"portrait", "landscape"}:
+            raise ValueError("Unbekannte Papierausrichtung.")
+        if self.rows <= 0 or self.columns <= 0:
+            raise ValueError("Rasterzeilen und -spalten müssen größer als 0 sein.")
+        if self.page_margin_mm < 0 or self.cell_spacing_mm < 0:
+            raise ValueError("Seitenrand und Bildabstand dürfen nicht negativ sein.")
 
 
 @dataclass(frozen=True)

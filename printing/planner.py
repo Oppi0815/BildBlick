@@ -10,6 +10,7 @@ from printing.layout import (
     ImageElementPlan,
     ImageSourceInfo,
     MarginsMm,
+    MultiImagePrintDocument,
     PagePlan,
     PageSizeMm,
     Position,
@@ -169,12 +170,99 @@ def plan_single_image(
     return PagePlan(page_size, printable, (image,), texts, page_number=page_number)
 
 
+def _fit_in_rect(source: ImageSourceInfo, rect: RectMm) -> RectMm:
+    return positioned_rect(_fitted_size(source, rect, False), rect, "center")
+
+
+def _plan_multi_image_document(document: MultiImagePrintDocument) -> list[PagePlan]:
+    """Turn an ordered multi-image document into output-ready PagePlans."""
+
+    if not document.sources:
+        return []
+    paint = document.printable_rect
+    margin = document.page_margin_mm
+    footer_needed = (
+        document.show_page_number
+        or document.show_print_date
+        or (document.show_folder_in_footer and bool(document.folder_name.strip()))
+    )
+    footer_height = 6.0 if footer_needed else 0.0
+    content = RectMm(
+        paint.x_mm + margin,
+        paint.y_mm + margin,
+        paint.width_mm - 2 * margin,
+        paint.height_mm - 2 * margin - footer_height,
+    )
+    if content.width_mm <= 0 or content.height_mm <= 0:
+        raise ValueError("Die Seitenränder lassen keinen bedruckbaren Bereich übrig.")
+    header_text = document.header_text.strip() if document.show_header else ""
+    header_height = max(7.0, 14.0 / 72.0 * 25.4 * 1.45) if header_text else 0.0
+    header_gap = 2.0 if header_text else 0.0
+    grid = RectMm(
+        content.x_mm, content.y_mm + header_height + header_gap,
+        content.width_mm, content.height_mm - header_height - header_gap,
+    )
+    if grid.width_mm <= 0 or grid.height_mm <= 0:
+        raise ValueError("Kopfzeile und Ränder lassen keinen Bildbereich übrig.")
+    cell_width = (grid.width_mm - document.cell_spacing_mm * (document.columns - 1)) / document.columns
+    cell_height = (grid.height_mm - document.cell_spacing_mm * (document.rows - 1)) / document.rows
+    if cell_width <= 0 or cell_height <= 0:
+        raise ValueError("Raster und Bildabstände lassen keine Bildzellen übrig.")
+    per_page = document.rows * document.columns
+    page_count = ceil(len(document.sources) / per_page)
+    footer = RectMm(content.x_mm, content.bottom_mm + margin, content.width_mm, footer_height) if footer_needed else None
+    pages: list[PagePlan] = []
+    for page_index in range(page_count):
+        images: list[ImageElementPlan] = []
+        texts: list[TextElementPlan] = []
+        if header_text:
+            texts.append(TextElementPlan(
+                header_text, RectMm(content.x_mm, content.y_mm, content.width_mm, header_height),
+                font_size_pt=14.0, bold=True, alignment="center", elide_policy="right", semantic_role="header",
+            ))
+        page_sources = document.sources[page_index * per_page:(page_index + 1) * per_page]
+        for offset, source in enumerate(page_sources):
+            row, column = divmod(offset, document.columns)
+            cell = RectMm(
+                grid.x_mm + column * (cell_width + document.cell_spacing_mm),
+                grid.y_mm + row * (cell_height + document.cell_spacing_mm), cell_width, cell_height,
+            )
+            filename = document.contact_sheet and document.show_filename and bool(source.filename or source.path.name)
+            capture_date = document.contact_sheet and document.show_capture_date and bool(source.capture_date)
+            line_height = 4.2
+            if filename and capture_date and cell.height_mm < line_height * 4 + 1.2:
+                capture_date = False
+            line_count = int(filename) + int(capture_date)
+            caption_height = min(cell.height_mm, line_count * line_height + (1.2 if line_count else 0.0))
+            image_area = RectMm(cell.x_mm, cell.y_mm, cell.width_mm, cell.height_mm - caption_height)
+            images.append(ImageElementPlan(source, _fit_in_rect(source, image_area)))
+            if filename:
+                filename_rect = RectMm(cell.x_mm, cell.bottom_mm - caption_height, cell.width_mm, caption_height / line_count)
+                texts.append(TextElementPlan(source.filename or source.path.name, filename_rect, font_size_pt=8.0, alignment="center", elide_policy="middle", semantic_role="filename"))
+            if capture_date:
+                date_y = cell.bottom_mm - caption_height + (caption_height / line_count if filename else 0.0)
+                texts.append(TextElementPlan(source.capture_date or "", RectMm(cell.x_mm, date_y, cell.width_mm, caption_height / line_count), font_size_pt=8.0, alignment="center", elide_policy="right", semantic_role="capture_date"))
+        if footer is not None:
+            # The central page number receives a guaranteed, independently
+            # planned strip so folder/date text can never displace it.
+            center_width = min(footer.width_mm, max(footer.width_mm / 3, 42.0 if document.show_page_number else 0.0))
+            center_x = footer.x_mm + (footer.width_mm - center_width) / 2
+            if document.show_folder_in_footer and document.folder_name.strip():
+                texts.append(TextElementPlan(document.folder_name.strip(), RectMm(footer.x_mm, footer.y_mm, max(0.0, center_x - footer.x_mm), footer.height_mm), alignment="left", font_size_pt=9.0, elide_policy="right", semantic_role="folder"))
+            if document.show_page_number:
+                texts.append(TextElementPlan(f"Seite {page_index + 1} von {page_count}", RectMm(center_x, footer.y_mm, center_width, footer.height_mm), font_size_pt=9.0, alignment="center", elide_policy="right", semantic_role="page_number"))
+            if document.show_print_date and document.print_date_text:
+                texts.append(TextElementPlan(document.print_date_text, RectMm(center_x + center_width, footer.y_mm, max(0.0, footer.right_mm - (center_x + center_width)), footer.height_mm), alignment="right", font_size_pt=9.0, elide_policy="right", semantic_role="print_date"))
+        pages.append(PagePlan(document.page_size, paint, tuple(images), tuple(texts), page_index + 1))
+    return pages
+
+
 def plan_multi_image_pages(
-    sources: Sequence[ImageSourceInfo],
-    page_size: PageSizeMm,
-    margins: MarginsMm,
-    rows: int,
-    columns: int,
+    sources: Sequence[ImageSourceInfo] | MultiImagePrintDocument,
+    page_size: PageSizeMm | None = None,
+    margins: MarginsMm | None = None,
+    rows: int | None = None,
+    columns: int | None = None,
     spacing_mm: float = 0.0,
 ) -> list[PagePlan]:
     """Prepare a pure-mm contact-sheet grid without changing the legacy path.
@@ -184,30 +272,18 @@ def plan_multi_image_pages(
     dialog remain owned by the proven legacy implementation for this phase.
     """
 
+    if isinstance(sources, MultiImagePrintDocument):
+        return _plan_multi_image_document(sources)
     if not sources:
         return []
+    if page_size is None or margins is None or rows is None or columns is None:
+        raise ValueError("Seitenformat, Ränder und Raster müssen angegeben werden.")
     if rows <= 0 or columns <= 0:
         raise ValueError("Rasterzeilen und -spalten müssen größer als 0 sein.")
     if spacing_mm < 0:
         raise ValueError("Der Bildabstand darf nicht negativ sein.")
     printable = printable_rect_mm(page_size, margins)
-    cell_width = (printable.width_mm - spacing_mm * (columns - 1)) / columns
-    cell_height = (printable.height_mm - spacing_mm * (rows - 1)) / rows
-    if cell_width <= 0 or cell_height <= 0:
-        raise ValueError("Raster und Bildabstände lassen keine Bildzellen übrig.")
-    per_page = rows * columns
-    page_count = ceil(len(sources) / per_page)
-    pages: list[PagePlan] = []
-    for page_index in range(page_count):
-        images: list[ImageElementPlan] = []
-        for offset, source in enumerate(sources[page_index * per_page:(page_index + 1) * per_page]):
-            row, column = divmod(offset, columns)
-            cell = RectMm(
-                printable.x_mm + column * (cell_width + spacing_mm),
-                printable.y_mm + row * (cell_height + spacing_mm),
-                cell_width,
-                cell_height,
-            )
-            images.append(ImageElementPlan(source, positioned_rect(_fitted_size(source, cell, False), cell, "center")))
-        pages.append(PagePlan(page_size, printable, tuple(images), page_number=page_index + 1))
-    return pages
+    return _plan_multi_image_document(MultiImagePrintDocument(
+        tuple(sources), "all", page_size, printable, rows, columns,
+        0.0, spacing_mm, show_page_number=False,
+    ))

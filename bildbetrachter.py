@@ -113,12 +113,10 @@ from PySide6.QtWidgets import (
 from duplicate_finder import DuplicateFinderDialog
 from printing.multi_image_print import (
     MultiImagePrintSettings,
-    calculate_multi_image_page,
-    draw_multi_print_header,
-    draw_multi_print_footer,
     folder_title_from_path,
     grid_for,
     current_print_date_text,
+    multi_image_document_from_settings,
 )
 from printing.print_profiles import (
     MultiImagePrintProfile,
@@ -132,6 +130,7 @@ from printing.print_profiles import (
     save_user_profile,
 )
 from printing.layout import ImageSourceInfo, PageSizeMm
+from printing.planner import plan_multi_image_pages
 from printing.legacy_single_image import (
     image_exceeds_printable_area,
     plan_single_image_from_legacy_settings,
@@ -783,6 +782,25 @@ def capture_date_text(path: Path) -> str:
         return datetime.fromtimestamp(path.stat().st_mtime).strftime("%d.%m.%Y %H:%M")
     except (OSError, ValueError):
         return ""
+
+
+def multi_image_sources(
+    paths: list[Path], include_capture_date: bool = False,
+) -> list[ImageSourceInfo]:
+    """Read each image's lightweight metadata once for PagePlan creation."""
+
+    sources: list[ImageSourceInfo] = []
+    for path in paths:
+        reader = QImageReader(str(path))
+        reader.setAutoTransform(True)
+        size = reader.size()
+        width = size.width() if size.isValid() else 1
+        height = size.height() if size.isValid() else 1
+        sources.append(ImageSourceInfo(
+            path, width, height, filename=path.name,
+            capture_date=capture_date_text(path) if include_capture_date else None,
+        ))
+    return sources
 
 
 def load_multi_print_image(
@@ -2545,16 +2563,12 @@ class MultiImagePrintPreview(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.paths: list[Path] = []
-        self.images_per_page = 4
-        self.print_settings = MultiImagePrintSettings()
-        self.landscape = False
+        self.page_plans = []
+        self.page_size = PageSizeMm.a4()
+        self.printable_rect = None
         self.page_index = 0
-        self.contact_sheet = False
-        self.show_filename = False
-        self.show_capture_date = False
-        self.show_page_number = False
-        self.print_date_text = ""
-        self.capture_dates: dict[Path, str] = {}
+        self.plan_error = ""
+        self._images: dict[Path, QImage] = {}
         self.setMinimumSize(420, 420)
         self.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
@@ -2565,27 +2579,53 @@ class MultiImagePrintPreview(QWidget):
         page_index: int, print_date_text: str,
     ) -> None:
         self.paths = paths
-        self.print_settings = print_settings
-        self.images_per_page = print_settings.effective_images_per_page
-        self.landscape = landscape
-        self.page_index = page_index
-        self.contact_sheet = print_settings.contact_sheet
-        self.show_filename = print_settings.show_filename
-        self.show_capture_date = print_settings.show_capture_date
-        self.show_page_number = print_settings.show_page_number
-        self.print_date_text = print_date_text
+        self._images.clear()
+        orientation = "landscape" if landscape else "portrait"
+        geometry = preview_printer_geometry_mm(PageSizeMm.a4(), orientation)
+        self.page_size = geometry.page_size
+        self.printable_rect = geometry.paint_rect
+        try:
+            document = multi_image_document_from_settings(
+                multi_image_sources(paths, print_settings.show_capture_date),
+                print_settings,
+                source_kind=print_settings.source,
+                folder_name=print_settings.footer_folder_name,
+                print_date_text=print_date_text,
+                printer_geometry=geometry,
+            )
+            self.page_plans = plan_multi_image_pages(document)
+            self.plan_error = ""
+        except ValueError as error:
+            self.page_plans = []
+            self.plan_error = str(error)
+        self.page_index = min(max(0, page_index), max(0, len(self.page_plans) - 1))
         self.update()
+
+    @property
+    def page_count(self) -> int:
+        return len(self.page_plans)
+
+    @property
+    def valid(self) -> bool:
+        return not self.plan_error
+
+    def _image_for_source(self, source: ImageSourceInfo) -> QImage:
+        if source.path not in self._images:
+            reader = QImageReader(str(source.path))
+            reader.setAutoTransform(True)
+            size = reader.size()
+            if size.isValid() and (size.width() > 1600 or size.height() > 1200):
+                reader.setScaledSize(size.scaled(QSize(1600, 1200), Qt.AspectRatioMode.KeepAspectRatio))
+            self._images[source.path] = reader.read()
+        return self._images[source.path]
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor("#d7d7d7"))
         available = QRectF(self.rect()).adjusted(16, 16, -16, -16)
-        page_size = QSize(297, 210) if self.landscape else QSize(210, 297)
-        paper_size = page_size.scaled(
-            available.size().toSize(), Qt.AspectRatioMode.KeepAspectRatio
-        )
-        paper_width = paper_size.width()
-        paper_height = paper_size.height()
+        scale = min(available.width() / self.page_size.width_mm, available.height() / self.page_size.height_mm)
+        paper_width = self.page_size.width_mm * scale
+        paper_height = self.page_size.height_mm * scale
         paper_rect = QRectF(
             available.center().x() - paper_width / 2,
             available.center().y() - paper_height / 2,
@@ -2593,55 +2633,21 @@ class MultiImagePrintPreview(QWidget):
         )
         painter.fillRect(paper_rect.translated(3, 3), QColor(0, 0, 0, 45))
         painter.fillRect(paper_rect, Qt.GlobalColor.white)
-        printable_rect = paper_rect.adjusted(
-            paper_rect.width() * 0.04, paper_rect.height() * 0.04,
-            -paper_rect.width() * 0.04, -paper_rect.height() * 0.04,
-        )
-        painter.setPen(QPen(QColor("#999999"), 1, Qt.PenStyle.DashLine))
-        painter.drawRect(printable_rect)
-        if not self.paths:
-            return
-        sizes: list[QSize] = []
-        for path in self.paths:
-            reader = QImageReader(str(path))
-            reader.setAutoTransform(True)
-            image_size = reader.size()
-            sizes.append(image_size if image_size.isValid() else QSize(1, 1))
-        resolution = max(1, round(paper_rect.width() / ((297 if self.landscape else 210) / 25.4)))
-        page = calculate_multi_image_page(
-            sizes, printable_rect, self.images_per_page, resolution,
-            self.landscape, self.page_index, self.contact_sheet,
-            self.show_filename, self.show_capture_date, self.show_page_number,
-            settings=self.print_settings,
-        )
-        draw_multi_print_header(painter, page, self.print_settings)
-        for cell in page.cells:
-            painter.fillRect(cell.rect, Qt.GlobalColor.white)
-            image = load_multi_print_image(
-                self.paths[cell.image_index], cell.image_rect, resolution
+        if self.printable_rect is not None:
+            printable_rect = QRectF(
+                paper_rect.x() + self.printable_rect.x_mm * scale,
+                paper_rect.y() + self.printable_rect.y_mm * scale,
+                self.printable_rect.width_mm * scale,
+                self.printable_rect.height_mm * scale,
             )
-            if image.isNull():
+            painter.setPen(QPen(QColor("#999999"), 1, Qt.PenStyle.DashLine))
+            painter.drawRect(printable_rect)
+        if not self.page_plans:
+            if self.plan_error:
                 painter.setPen(QColor("#777777"))
-                painter.drawText(cell.rect, Qt.AlignmentFlag.AlignCenter, "Bild konnte nicht geladen werden")
-            else:
-                painter.drawImage(cell.image_rect, image)
-            painter.setPen(Qt.GlobalColor.black)
-            font = painter.font(); font.setPointSizeF(max(5, 10 - self.images_per_page / 4)); painter.setFont(font)
-            if self.show_filename and not cell.filename_rect.isEmpty():
-                text = painter.fontMetrics().elidedText(pathlib_name(self.paths[cell.image_index]), Qt.TextElideMode.ElideMiddle, int(cell.filename_rect.width()))
-                painter.drawText(cell.filename_rect, Qt.AlignmentFlag.AlignCenter, text)
-            if self.show_capture_date and not cell.date_rect.isEmpty():
-                path = self.paths[cell.image_index]
-                date = self.capture_dates.setdefault(path, capture_date_text(path))
-                painter.drawText(cell.date_rect, Qt.AlignmentFlag.AlignCenter, date)
-        draw_multi_print_footer(
-            painter,
-            page,
-            self.print_settings,
-            page.page_index + 1,
-            page.page_count,
-            self.print_date_text,
-        )
+                painter.drawText(paper_rect, Qt.AlignmentFlag.AlignCenter, self.plan_error)
+            return
+        render_page_plan(painter, self.page_plans[self.page_index], paper_rect, self._image_for_source)
 
 
 class ImageViewer(QObject):
@@ -3651,7 +3657,12 @@ class ImageViewer(QObject):
         ]
 
     def _show_multi_print_dialog(self, contact_sheet_default: bool = False) -> None:
-        selected = [path for path in self._selected_image_paths() if path.is_file()]
+        # selectedItems() has no documented visual order.  The print job must
+        # retain the thumbnail-list order that the user sees.
+        selected = [
+            path for path in self._selected_thumbnail_paths_in_display_order()
+            if path.is_file()
+        ]
         all_paths = self._all_thumbnail_image_paths()
         current = self.current_image if self.current_image and self.current_image.is_file() else None
         dialog = QDialog(self.window)
@@ -4137,13 +4148,6 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
             custom_hint.setVisible(is_custom)
             custom_hint.setText(f"{custom_rows.value()} × {custom_columns.value()} ergibt {images_per_page} Bilder pro Seite.")
             page_margin_label.setEnabled(True); cell_spacing_label.setEnabled(True)
-            page_count = (len(paths) + images_per_page - 1) // images_per_page
-            if page_count:
-                preview_page[0] = min(preview_page[0], page_count - 1)
-                page_label.setText(f"Seite {preview_page[0] + 1} von {page_count}")
-            else:
-                preview_page[0] = 0
-                page_label.setText("Seite 0 von 0")
             orientation_value = orientation_combo.currentData()
             landscape = orientation_value == "landscape" or (
                 orientation_value == "automatic" and images_per_page == 1
@@ -4153,13 +4157,18 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
             preview.set_options(
                 paths, print_settings, landscape, preview_page[0], print_date_text
             )
-            sample = calculate_multi_image_page([QSize(1, 1)], QRectF(0, 0, 600, 800), images_per_page, 100, landscape, 0, settings=print_settings)
+            page_count = preview.page_count
+            preview_page[0] = preview.page_index
+            if page_count:
+                page_label.setText(f"Seite {preview_page[0] + 1} von {page_count}")
+            else:
+                page_label.setText("Seite 0 von 0")
             messages = []
-            if not sample.valid: messages.append("Mit diesen Einstellungen steht nicht genügend Platz für die Bilder zur Verfügung.")
+            if not preview.valid: messages.append("Mit diesen Einstellungen steht nicht genügend Platz für die Bilder zur Verfügung.")
             elif images_per_page > 32: messages.append("Bei diesem Raster können Bilder und Beschriftungen sehr klein werden.")
             if images_per_page > 64 and contact_check.isChecked(): messages.append("Für dieses Raster empfehlen wir nur den Dateinamen.")
             layout_warning.setText("\n".join(messages)); layout_warning.setVisible(bool(messages)); warning_group.setVisible(bool(messages))
-            continue_button.setEnabled(sample.valid)
+            continue_button.setEnabled(preview.valid and bool(paths))
             previous_button.setEnabled(preview_page[0] > 0)
             next_button.setEnabled(preview_page[0] + 1 < page_count)
             update_profile_state()
@@ -4544,68 +4553,46 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
             print_dialog.exec
         ) == QDialog.DialogCode.Accepted
         if not accepted: return
+        failures: list[str] = []
+        image_cache: dict[Path, QImage] = {}
+        try:
+            geometry = printer_geometry_mm(printer)
+            document = multi_image_document_from_settings(
+                multi_image_sources(paths, print_settings.show_capture_date),
+                print_settings,
+                source_kind=print_settings.source,
+                folder_name=print_settings.footer_folder_name,
+                print_date_text=current_print_date_text(),
+                printer_geometry=geometry,
+            )
+            page_plans = plan_multi_image_pages(document)
+            if not page_plans:
+                raise ValueError("Es wurden keine gültigen Bilder zum Drucken gefunden.")
+        except ValueError as error:
+            QMessageBox.warning(self.window, "Drucklayout nicht möglich", str(error))
+            return
         painter = QPainter()
         if not painter.begin(printer):
             QMessageBox.critical(self.window, "Drucken fehlgeschlagen", "Der Druckauftrag konnte nicht gestartet werden."); return
-        failures = []
-        capture_dates: dict[Path, str] = {}
-        print_date_text = current_print_date_text()
         try:
-            sizes = []
-            for path in paths:
-                reader = QImageReader(str(path))
-                reader.setAutoTransform(True)
-                image_size = reader.size()
-                sizes.append(image_size if image_size.isValid() else QSize(1, 1))
-            viewport = painter.viewport(); drawable = QRectF(0, 0, viewport.width(), viewport.height())
-            landscape = orientation == QPageLayout.Orientation.Landscape
-            validation_layout = calculate_multi_image_page(
-                sizes, drawable, images_per_page, printer.resolution(),
-                landscape, 0, settings=print_settings,
+            viewport = painter.viewport()
+            target = printer_target_rect_for_painter(
+                geometry, QRectF(0, 0, viewport.width(), viewport.height())
             )
-            if not validation_layout.valid:
-                raise MultiImagePrintLayoutError()
-            page_count = (len(paths) + images_per_page - 1) // images_per_page
-            for page in range(page_count):
-                page_layout_data = calculate_multi_image_page(sizes, drawable, images_per_page, printer.resolution(), landscape, page, settings=print_settings)
-                draw_multi_print_header(painter, page_layout_data, print_settings)
-                for cell in page_layout_data.cells:
-                    image = load_multi_print_image(
-                        paths[cell.image_index], cell.image_rect,
-                        printer.resolution(),
-                    )
-                    if image.isNull(): failures.append(paths[cell.image_index].name); continue
-                    painter.fillRect(cell.rect, Qt.GlobalColor.white); painter.drawImage(cell.image_rect, image)
-                    font = QFont(painter.font()); font.setPointSizeF(max(5, 12 - images_per_page / 2)); painter.setFont(font); painter.setPen(Qt.GlobalColor.black)
-                    if print_settings.show_filename and not cell.filename_rect.isEmpty():
-                        text = painter.fontMetrics().elidedText(paths[cell.image_index].name, Qt.TextElideMode.ElideMiddle, int(cell.filename_rect.width()))
-                        painter.drawText(cell.filename_rect, Qt.AlignmentFlag.AlignCenter, text)
-                    if print_settings.show_capture_date and not cell.date_rect.isEmpty():
-                        path = paths[cell.image_index]
-                        date = capture_dates.setdefault(path, capture_date_text(path))
-                        painter.drawText(cell.date_rect, Qt.AlignmentFlag.AlignCenter, date)
-                draw_multi_print_footer(
-                    painter,
-                    page_layout_data,
-                    print_settings,
-                    page + 1,
-                    page_count,
-                    print_date_text,
-                )
-                if page < page_count - 1 and not printer.newPage(): raise RuntimeError("Eine neue Druckseite konnte nicht erzeugt werden.")
-        except MultiImagePrintLayoutError:
-            if painter.isActive():
-                painter.end()
-            printer.abort()
-            QMessageBox.warning(
-                self.window,
-                "Drucklayout nicht möglich",
-                "Mit den gewählten Seitenrändern, Bildabständen und dem aktuellen "
-                "Papierformat steht nicht genügend Platz für die Bilder zur Verfügung.\n\n"
-                "Bitte verringern Sie Seitenrand oder Bildabstand oder wählen Sie ein "
-                "größeres Papierformat.",
-            )
-            return
+
+            def image_provider(source: ImageSourceInfo) -> QImage:
+                if source.path not in image_cache:
+                    reader = QImageReader(str(source.path))
+                    reader.setAutoTransform(True)
+                    image_cache[source.path] = reader.read()
+                    if image_cache[source.path].isNull():
+                        failures.append(source.path.name)
+                return image_cache[source.path]
+
+            for page_index, page_plan in enumerate(page_plans):
+                render_page_plan(painter, page_plan, target, image_provider)
+                if page_index < len(page_plans) - 1 and not printer.newPage():
+                    raise RuntimeError("Eine neue Druckseite konnte nicht erzeugt werden.")
         except Exception as error:
             QMessageBox.critical(self.window, "Drucken fehlgeschlagen", str(error))
         finally:
