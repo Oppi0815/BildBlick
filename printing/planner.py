@@ -265,12 +265,7 @@ def plan_multi_image_pages(
     columns: int | None = None,
     spacing_mm: float = 0.0,
 ) -> list[PagePlan]:
-    """Prepare a pure-mm contact-sheet grid without changing the legacy path.
-
-    This intentionally small adapter is a migration seam for
-    ``calculate_multi_image_page``. Header/footer allocation and the existing
-    dialog remain owned by the proven legacy implementation for this phase.
-    """
+    """Prepare output-ready, pure-mm contact-sheet PagePlans."""
 
     if isinstance(sources, MultiImagePrintDocument):
         return _plan_multi_image_document(sources)

@@ -117,7 +117,7 @@ class SingleImageWysiwygPrintDialog(QDialog):
         self.setObjectName("wysiwygSinglePrintDialog")
         # Keep checkbox spacing local while palette roles follow Light/Dark mode.
         apply_wysiwyg_theme(self, theme_colors)
-        self.setWindowTitle("WYSIWYG drucken — BildBlick")
+        self.setWindowTitle("Drucken — BildBlick")
         outer = QVBoxLayout(self)
         self.content_splitter = QSplitter(Qt.Orientation.Horizontal, self)
         outer.addWidget(self.content_splitter, 1)

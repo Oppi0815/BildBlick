@@ -35,6 +35,7 @@ def test_dialog_replans_for_paper_margins_rotation_and_caption(tmp_path):
 def test_dialog_has_local_indicator_spacing_and_shared_popup_delegates(tmp_path):
     dialog = _dialog(tmp_path)
     assert dialog.objectName() == "wysiwygSinglePrintDialog"
+    assert dialog.windowTitle() == "Drucken — BildBlick"
     assert "QCheckBox { spacing: 8px; }" in dialog.styleSheet()
     assert "#ffffff" not in dialog.styleSheet().lower()
     assert "palette(window-text)" in dialog.styleSheet()

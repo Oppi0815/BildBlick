@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QImage, QKeySequence
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QHBoxLayout
 
@@ -46,6 +46,19 @@ def test_without_fullscreen_option_the_parser_leaves_it_disabled(tmp_path: Path)
     parser.process(["BildBlick", str(tmp_path / "bild.jpg")])
 
     assert not parser.isSet("fullscreen")
+
+
+def test_file_menu_uses_only_the_standard_pageplan_print_actions(tmp_path: Path):
+    QApplication.instance() or QApplication([])
+    viewer = ImageViewer(tmp_path)
+    print_actions = [action for action in viewer.file_menu.actions() if "drucken" in action.text().lower()]
+    assert [action.text() for action in print_actions] == ["Drucken …", "Mehrere Bilder drucken …"]
+    assert "Kontaktabzug …" not in [action.text() for action in viewer.file_menu.actions()]
+    assert viewer.print_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Print)
+    assert not hasattr(viewer, "wysiwyg_print_action")
+    assert not hasattr(viewer, "multi_wysiwyg_print_action")
+    assert not hasattr(viewer, "contact_sheet_action")
+    viewer.window.close()
 
 
 def test_pdf_startup_path_is_preserved_for_fullscreen_launch(tmp_path: Path):

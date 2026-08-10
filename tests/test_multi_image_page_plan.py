@@ -1,14 +1,13 @@
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QRectF, QSize
+from PySide6.QtCore import QRectF
 from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import QApplication
 
 from printing.layout import ImageSourceInfo, PageSizeMm, RectMm
 from printing.multi_image_print import (
     MultiImagePrintSettings,
-    calculate_multi_image_page,
     multi_image_document_from_settings,
     ordered_paths_for_source,
 )
@@ -67,31 +66,6 @@ def test_plan_contains_mm_caption_header_and_footer_regions_without_overlap():
     assert all(image.target_rect.y_mm >= header.bottom_mm for image in page.image_elements)
     assert all(image.target_rect.bottom_mm < footer.y_mm for image in page.image_elements)
     assert isinstance(page.image_elements[0].target_rect, RectMm)
-
-
-@pytest.mark.parametrize("count,custom_rows,custom_columns", [(4, None, None), (9, None, None), (16, None, None), (32, None, None), (6, 3, 2)])
-def test_new_mm_plan_matches_legacy_grid_geometry_for_representative_page(count, custom_rows, custom_columns):
-    settings = MultiImagePrintSettings(
-        images_per_page=0 if custom_rows else count,
-        custom_rows=custom_rows or 4,
-        custom_columns=custom_columns or 3,
-        page_margin_mm=5, cell_spacing_mm=4,
-        contact_sheet=True, show_filename=True, show_capture_date=True,
-        show_header=True, header_text="Titel", show_page_number=True,
-    )
-    resolution = 300
-    page_size = PageSizeMm.a4()
-    legacy = calculate_multi_image_page(
-        [QSize(1600, 900)] * count,
-        QRectF(0, 0, page_size.width_mm / 25.4 * resolution, page_size.height_mm / 25.4 * resolution),
-        settings.effective_images_per_page, resolution, False, 0, settings=settings,
-    )
-    modern = plan_multi_image_pages(multi_image_document_from_settings(sources(count), settings))[0]
-    for old, new in zip(legacy.cells, modern.image_elements):
-        assert new.target_rect.x_mm == pytest.approx(old.image_rect.x() / resolution * 25.4)
-        assert new.target_rect.y_mm == pytest.approx(old.image_rect.y() / resolution * 25.4)
-        assert new.target_rect.width_mm == pytest.approx(old.image_rect.width() / resolution * 25.4)
-        assert new.target_rect.height_mm == pytest.approx(old.image_rect.height() / resolution * 25.4)
 
 
 def test_adapter_rejects_invalid_printable_area_and_unknown_source():

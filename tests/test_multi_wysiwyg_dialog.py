@@ -12,6 +12,7 @@ def test_multi_wysiwyg_dialog_builds_live_page_plans_and_navigates(tmp_path):
     QApplication.instance() or QApplication([])
     sources = [ImageSourceInfo(Path(f"{index}.jpg"), 1600, 900, filename=f"{index}.jpg") for index in range(5)]
     dialog = MultiImageWysiwygPrintDialog({"current": sources[:1], "selected": sources[1:3], "all": sources}, QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat))
+    assert dialog.windowTitle() == "Mehrere Bilder drucken — BildBlick"
     dialog.source.setCurrentIndex(dialog.source.findData("all"))
     dialog.count.setCurrentIndex(dialog.count.findData(4))
     assert [len(page.image_elements) for page in dialog.page_plans] == [4, 1]

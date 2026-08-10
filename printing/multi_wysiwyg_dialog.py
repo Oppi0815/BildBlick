@@ -30,7 +30,7 @@ GEOMETRY_KEY = "printing/multiImageWysiwygDialogSize"
 class MultiImageWysiwygPrintDialog(QDialog):
     def __init__(self, sources_by_kind: dict[str, list[ImageSourceInfo]], settings: QSettings, parent=None, theme_colors: dict[str, str] | None = None) -> None:
         super().__init__(parent); self.sources_by_kind, self.settings = {key: list(value) for key, value in sources_by_kind.items()}, settings; self.active_sources = list(self.sources_by_kind.get("current", [])); self.page_plans = []; self.page_index = 0; self._cache: dict[Path, QImage] = {}; self._print_date_text = ""
-        self.setObjectName("wysiwygMultiPrintDialog"); apply_wysiwyg_theme(self, theme_colors); self.setWindowTitle("Mehrere Bilder WYSIWYG drucken — BildBlick")
+        self.setObjectName("wysiwygMultiPrintDialog"); apply_wysiwyg_theme(self, theme_colors); self.setWindowTitle("Mehrere Bilder drucken — BildBlick")
         outer = QVBoxLayout(self); self.content_splitter = QSplitter(Qt.Orientation.Horizontal, self); outer.addWidget(self.content_splitter, 1)
         panel = QWidget(self); panel.setObjectName("wysiwygPrintSettingsPanel"); form = QFormLayout(panel)
         configure_wysiwyg_form(form)
