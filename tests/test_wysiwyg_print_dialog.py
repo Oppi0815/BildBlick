@@ -2,7 +2,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings, QSize, Qt
 from PySide6.QtGui import QImage, QPalette
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QWidget
 
 from printing.layout import ImageSourceInfo, RectMm
 from printing.wysiwyg_dialog import SingleImageWysiwygPrintDialog
@@ -34,7 +34,7 @@ def test_dialog_replans_for_paper_margins_rotation_and_caption(tmp_path):
 
 def test_dialog_has_local_indicator_spacing_and_shared_popup_delegates(tmp_path):
     dialog = _dialog(tmp_path)
-    assert dialog.objectName() == "singleImageWysiwygPrintDialog"
+    assert dialog.objectName() == "wysiwygSinglePrintDialog"
     assert "QCheckBox { spacing: 8px; }" in dialog.styleSheet()
     assert "#ffffff" not in dialog.styleSheet().lower()
     assert "palette(window-text)" in dialog.styleSheet()
@@ -115,4 +115,37 @@ def test_single_dialog_uses_the_same_supplied_theme_palette(tmp_path):
     }
     dialog = SingleImageWysiwygPrintDialog(image, source, QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat), theme_colors=colors)
     assert dialog.palette().color(QPalette.ColorGroup.Active, QPalette.ColorRole.Window).name() == colors["window"]
-    assert dialog.palette().color(QPalette.ColorGroup.Active, QPalette.ColorRole.Base).name() == colors["panel"]
+    # Qt's stylesheet engine mirrors the explicit dialog background into the
+    # effective Base role; the input-field rule below remains the panel color.
+    assert dialog.palette().color(QPalette.ColorGroup.Active, QPalette.ColorRole.Base).name() != "#ffffff"
+    assert colors["window"] in dialog.styleSheet()
+    assert colors["panel"] in dialog.styleSheet()
+    assert dialog.settings_scroll.viewport().palette().color(QPalette.ColorRole.Window).name() == colors["window"]
+    assert f"QCheckBox, QDialog#{dialog.objectName()} QRadioButton" in dialog.styleSheet()
+    assert f"color: {colors['text']};" in dialog.styleSheet()
+    assert dialog.margin_link.palette().color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text).name() == colors["text"]
+    assert "QComboBox::drop-down" in dialog.styleSheet()
+    assert "QDoubleSpinBox::down-button" in dialog.styleSheet()
+    assert "QComboBox::down-arrow" not in dialog.styleSheet()
+    assert dialog.profile.property("wysiwygDarkArrowStyle")
+    assert dialog.width.property("wysiwygDarkArrowStyle")
+    assert dialog.profile.findChild(QWidget, "wysiwygComboDownArrow") is not None
+    assert dialog.width.findChild(QWidget, "wysiwygSpinUpArrow") is not None
+    assert dialog.width.findChild(QWidget, "wysiwygSpinDownArrow") is not None
+
+
+def test_single_dialog_light_theme_keeps_active_text_dark(tmp_path):
+    image = QImage(1200, 800, QImage.Format.Format_RGB32)
+    source = ImageSourceInfo(Path("example.jpg"), 1200, 800, 300, 300, "example.jpg", "10.08.2026")
+    colors = {
+        "window": "#f4f6f8", "panel": "#ffffff", "preview": "#eef1f4",
+        "text": "#20242a", "muted": "#6a717b", "button": "#ffffff",
+        "selection": "#2878c8", "selection_text": "#ffffff",
+    }
+    dialog = SingleImageWysiwygPrintDialog(image, source, QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat), theme_colors=colors)
+    assert dialog.palette().color(QPalette.ColorGroup.Active, QPalette.ColorRole.WindowText).name() == colors["text"]
+    assert f"color: {colors['text']};" in dialog.styleSheet()
+    assert "QComboBox::drop-down" in dialog.styleSheet()
+    assert dialog.profile.property("wysiwygDarkArrowStyle")
+    assert dialog.profile.findChild(QWidget, "wysiwygComboDownArrow") is not None
+    assert dialog.width.palette().color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Base).name() == colors["preview"]

@@ -2,7 +2,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings, QSize, Qt
 from PySide6.QtGui import QPalette
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QWidget
 
 from printing.layout import ImageSourceInfo
 from printing.multi_wysiwyg_dialog import MultiImageWysiwygPrintDialog
@@ -96,10 +96,26 @@ def test_dialog_uses_theme_palette_roles_without_fixed_light_or_dark_backgrounds
     dialog = MultiImageWysiwygPrintDialog({"current": []}, QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat), theme_colors=colors)
     palette = dialog.palette()
     assert palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.Window).name() == colors["window"]
-    assert palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.Base).name() == colors["panel"]
-    assert "#ffffff" not in dialog.styleSheet().lower()
+    assert palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.Base).name() != "#ffffff"
+    assert palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.WindowText).name() == colors["text"]
+    assert dialog.settings_scroll.viewport().palette().color(QPalette.ColorRole.Window).name() == colors["window"]
+    assert dialog.image_list.palette().color(QPalette.ColorRole.Base).name() == colors["panel"]
+    assert colors["window"] in dialog.styleSheet()
+    assert colors["panel"] in dialog.styleSheet()
+    assert "background-color: #ffffff" not in dialog.styleSheet().lower()
     assert "#000000" not in dialog.styleSheet().lower()
-    assert "palette(window)" in dialog.styleSheet()
+    assert "QDialog#wysiwygMultiPrintDialog" in dialog.styleSheet()
+    assert "QCheckBox:disabled" in dialog.styleSheet()
+    assert f"background-color: {colors['preview']};" in dialog.styleSheet()
+    assert "QComboBox::drop-down" in dialog.styleSheet()
+    assert "QSpinBox::up-button" in dialog.styleSheet()
+    assert "QComboBox:focus" in dialog.styleSheet()
+    assert f"border: 2px solid {colors['selection']}" in dialog.styleSheet()
+    assert dialog.profile.property("wysiwygDarkArrowStyle")
+    assert dialog.rows.property("wysiwygDarkArrowStyle")
+    assert dialog.profile.findChild(QWidget, "wysiwygComboDownArrow") is not None
+    assert dialog.rows.findChild(QWidget, "wysiwygSpinUpArrow") is not None
+    assert dialog.rows.findChild(QWidget, "wysiwygSpinDownArrow") is not None
 
 
 def test_multi_dialog_clamps_a_tiny_saved_size(tmp_path):

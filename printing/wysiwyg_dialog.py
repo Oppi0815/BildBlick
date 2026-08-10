@@ -21,7 +21,6 @@ from printing.wysiwyg_preview import WysiwygPagePreview
 from printing.wysiwyg_ui import (
     SETTINGS_PANEL_WIDTH, configure_wysiwyg_form, configure_wysiwyg_scroll_area,
     apply_wysiwyg_theme, restore_wysiwyg_dialog_geometry, save_wysiwyg_dialog_geometry,
-    wysiwyg_dialog_stylesheet,
 )
 
 
@@ -115,10 +114,9 @@ class SingleImageWysiwygPrintDialog(QDialog):
         self.page_plan = None
         self._custom_rect_mm: RectMm | None = None
         self._applying_state = False
-        self.setObjectName("singleImageWysiwygPrintDialog")
+        self.setObjectName("wysiwygSinglePrintDialog")
         # Keep checkbox spacing local while palette roles follow Light/Dark mode.
         apply_wysiwyg_theme(self, theme_colors)
-        self.setStyleSheet(wysiwyg_dialog_stylesheet(self.objectName()))
         self.setWindowTitle("WYSIWYG drucken — BildBlick")
         outer = QVBoxLayout(self)
         self.content_splitter = QSplitter(Qt.Orientation.Horizontal, self)
@@ -178,6 +176,7 @@ class SingleImageWysiwygPrintDialog(QDialog):
         configure_wysiwyg_scroll_area(self.settings_scroll, controls)
         self.content_splitter.addWidget(self.settings_scroll)
         right_panel = QWidget(self)
+        right_panel.setObjectName("wysiwygPreviewPanel")
         right = QVBoxLayout(right_panel)
         self.content_splitter.addWidget(right_panel)
         zoom_row = QHBoxLayout(); zoom_row.addWidget(QLabel("Vorschau-Zoom:"))
@@ -204,6 +203,7 @@ class SingleImageWysiwygPrintDialog(QDialog):
         self.pdf_button.clicked.connect(self._export_pdf); self.print_button.clicked.connect(self.accept); cancel.clicked.connect(self.reject)
         self.content_splitter.setSizes([SETTINGS_PANEL_WIDTH, 850])
         self.content_splitter.setStretchFactor(1, 1)
+        apply_wysiwyg_theme(self, theme_colors)
         restore_wysiwyg_dialog_geometry(self, self.settings, GEOMETRY_KEY)
         self._update_preview()
 
