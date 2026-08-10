@@ -6,9 +6,9 @@
 
 ![BildBlick Screenshot](docs/bildblick-screenshot.png)
 
-*BildBlick 1.14.1 unter Linux Mint und macOS*
+*BildBlick 1.15.0 unter Linux Mint und macOS*
 
-**Version 1.14.1**
+**Version 1.15.0**
 
 BildBlick ist ein schneller und komfortabler Bildbetrachter für Linux. Die Anwendung wurde unter Linux Mint entwickelt und getestet und verbindet eine übersichtliche Verzeichnisnavigation mit schnellen Vorschaubildern und praktischen Werkzeugen für die Bildverwaltung.
 
@@ -70,19 +70,19 @@ PDF. PDF-Bearbeitung, Textsuche und Textextraktion sind nicht enthalten.
 
 ## Drucken
 
-- Einzelbilddruck über den nativen Qt-Druckdialog
-- Mehrbilddruck und Kontaktabzug mit festen oder benutzerdefinierten Rastern
-- Mehrseitige Druckvorschau mit Seitennavigation
-- Druckprofile einschließlich eigener Benutzerprofile
-- Kopf- und Fußzeilen mit freiem Text, Ordnername, Seitenzahl und Druckdatum
-- PDF-Ausgabe über „In Datei drucken“
-- Dateiname und Aufnahmedatum als Kontaktabzug-Beschriftung
+- **Datei → Drucken …** öffnet den neuen WYSIWYG-Einzelbilddruck mit gemeinsamer PagePlan-/Renderer-Grundlage.
+- **Datei → Mehrere Bilder drucken …** öffnet den WYSIWYG-Mehrbilddruck mit festen oder benutzerdefinierten Rastern.
+- Mehrseitige Druckvorschau, PDF-Ausgabe und echter Druck verwenden denselben PagePlan.
+- Einzelbild- und Mehrbildprofile, einschließlich Randlos-Profil, bleiben verfügbar.
+- Kopf- und Fußzeilen unterstützen freien Text, Ordnername, Seitenzahl und Druckdatum.
+- Für einen Kontaktabzug im Mehrbilddialog **Kontaktabzug** aktivieren und bei Bedarf Dateiname und Aufnahmedatum einblenden.
+- Die Druckdialoge übernehmen den Light- oder Dark-Mode von BildBlick.
 
 ### Mehrere Bilder drucken
 
 1. Bilder markieren.
-2. **Datei → Mehrere Bilder drucken …** oder **Kontaktabzug …** wählen.
-3. Raster und Beschriftung wählen.
+2. **Datei → Mehrere Bilder drucken …** wählen.
+3. Raster und Beschriftung wählen; für einen Kontaktabzug die Option **Kontaktabzug** aktivieren.
 4. Vorschau prüfen.
 5. **Weiter zum Druckdialog …** wählen.
 6. Drucker oder **In Datei drucken** wählen.
@@ -119,7 +119,7 @@ source .venv/bin/activate
 python bildbetrachter.py
 ```
 
-## Eigenständige Anwendung bauen
+## macOS-App und eigenständige Anwendung bauen
 
 Das Build-Skript verwendet die mitgelieferte PyInstaller-Spezifikation:
 
@@ -127,7 +127,7 @@ Das Build-Skript verwendet die mitgelieferte PyInstaller-Spezifikation:
 ./build.sh
 ```
 
-Das Ergebnis wird als `dist/BildBlick` erzeugt. Diese Binärdatei gehört nicht in das Git-Repository und kann separat als GitHub-Release-Datei veröffentlicht werden.
+Unter macOS entsteht `dist/BildBlick.app`. Die App startet per Doppelklick, kann in den Programme-Ordner kopiert oder ins Dock gezogen werden und benötigt keine aktivierte virtuelle Umgebung. Auf anderen Plattformen entsteht `dist/BildBlick`. Build-Artefakte gehören nicht in das Git-Repository und werden separat als Release-Dateien veröffentlicht.
 
 ## Wichtige Tastenkürzel
 

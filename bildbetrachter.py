@@ -133,7 +133,7 @@ from pdf_support import (
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.14.1"
+APP_VERSION = "1.15.0"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 
 _DialogResult = TypeVar("_DialogResult")

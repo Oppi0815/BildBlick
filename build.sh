@@ -20,4 +20,8 @@ fi
 cd "${PROJECT_DIRECTORY}"
 "${VENV_PYTHON}" -m PyInstaller --clean --noconfirm bildbetrachter.spec
 
-echo "Fertig: ${PROJECT_DIRECTORY}/dist/BildBlick"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    echo "Fertig: ${PROJECT_DIRECTORY}/dist/BildBlick.app"
+else
+    echo "Fertig: ${PROJECT_DIRECTORY}/dist/BildBlick"
+fi

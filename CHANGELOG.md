@@ -2,6 +2,25 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.15.0 – Neues Drucksystem und macOS-App
+
+### Neu
+
+- Eigener WYSIWYG-Einzelbilddruck und eigener Mehrbilddruck.
+- Gemeinsame PagePlan-/Renderer-Architektur für Vorschau, PDF und Druck.
+- PDF-Export sowie Einzelbild- und Mehrbildprofile einschließlich Randlos-Profil.
+- Interaktive Einzelbild-Positionierung und Größenänderung.
+- Mehrbild-Reihenfolge per Drag-and-drop und Kontaktabzug im normalen Mehrbilddialog.
+- Light-/Dark-Mode-Unterstützung der Druckdialoge.
+- Native macOS-App `BildBlick.app` mit App-Icon.
+
+### Verbessert
+
+- **Drucken …** und **Mehrere Bilder drucken …** verwenden ausschließlich das neue Drucksystem.
+- Alte parallele WYSIWYG-/Legacy-Menüpunkte und der Legacy-Druckcode wurden entfernt.
+- Druckvorschau, PDF und echter Druck verwenden dieselbe Layoutgrundlage.
+- Druckdialoge sind unter macOS klarer und konsistenter dargestellt.
+
 ## 1.14.1 – Korrigierte PDF-Seitennavigation
 
 ### Behoben

@@ -1,5 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import sys
+
 
 analysis = Analysis(
     ["bildbetrachter.py"],
@@ -28,8 +30,6 @@ pyz = PYZ(analysis.pure)
 executable = EXE(
     pyz,
     analysis.scripts,
-    analysis.binaries,
-    analysis.datas,
     [],
     name="BildBlick",
     debug=False,
@@ -42,4 +42,36 @@ executable = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    exclude_binaries=True,
 )
+
+if sys.platform == "darwin":
+    collection = COLLECT(
+        executable,
+        analysis.binaries,
+        analysis.zipfiles,
+        analysis.datas,
+        name="BildBlick",
+    )
+    app = BUNDLE(
+        collection,
+        name="BildBlick.app",
+        icon="assets/BildBlick.icns",
+        bundle_identifier="de.oppi0815.bildblick",
+        info_plist={
+            "CFBundleName": "BildBlick",
+            "CFBundleDisplayName": "BildBlick",
+            "CFBundleShortVersionString": "1.15.0",
+            "CFBundleVersion": "1.15.0",
+            "LSApplicationCategoryType": "public.app-category.photography",
+            "NSHighResolutionCapable": True,
+        },
+    )
+else:
+    collection = COLLECT(
+        executable,
+        analysis.binaries,
+        analysis.zipfiles,
+        analysis.datas,
+        name="BildBlick",
+    )
