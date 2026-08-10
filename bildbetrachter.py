@@ -30,6 +30,7 @@ from PySide6.QtCore import (
     QRunnable,
     QSettings,
     QSize,
+    QSizeF,
     QRectF,
     QStandardPaths,
     QCommandLineParser,
@@ -130,6 +131,18 @@ from printing.print_profiles import (
     overwrite_user_profile,
     save_user_profile,
 )
+from printing.layout import ImageSourceInfo, PageSizeMm
+from printing.legacy_single_image import (
+    image_exceeds_printable_area,
+    plan_single_image_from_legacy_settings,
+)
+from printing.printer_geometry import (
+    preview_printer_geometry_mm,
+    printer_geometry_mm,
+    printer_target_rect_for_painter,
+)
+from printing.renderer import MmTransform, render_page_plan
+from printing.wysiwyg_dialog import SingleImageWysiwygPrintDialog
 from pdf_support import (
     PDF_EXTENSIONS,
     pdf_display_target_size,
@@ -684,6 +697,11 @@ def calculate_print_layout(
     image_dpi: float,
     centered: bool,
 ) -> PrintLayout:
+    """Legacy pixel layout retained temporarily as a Phase-3 comparison seam.
+
+    ``PrintPreviewWidget`` and the active single-image print path now use
+    ``SingleImageLayout -> PagePlan -> render_page_plan`` instead.
+    """
     width, height = image_size.width(), image_size.height()
     fills_page = mode == "fill"
     if mode == "fill":
@@ -723,6 +741,7 @@ def calculate_print_layout(
 def draw_print_layout(
     painter: QPainter, image: QImage, drawable_rect: QRectF, layout: PrintLayout
 ) -> None:
+    """Legacy renderer retained for comparison; no active preview uses it."""
     painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
     if layout.fills_page:
         painter.save()
@@ -2299,6 +2318,9 @@ class PrintPreviewWidget(QWidget):
         self.size_mode = "fit"
         self.centered = True
         self.image_dpi = 300.0
+        self.page_plan = None
+        self.preview_geometry = None
+        self.preview_error: str | None = None
         self.setMinimumSize(360, 360)
         self.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
@@ -2317,15 +2339,39 @@ class PrintPreviewWidget(QWidget):
         self.size_mode = size_mode
         self.centered = centered
         self.image_dpi = image_dpi
+        try:
+            orientation_name = (
+                "landscape"
+                if orientation == QPageLayout.Orientation.Landscape
+                else "portrait"
+            )
+            self.preview_geometry = preview_printer_geometry_mm(
+                PageSizeMm.a4(), orientation_name,
+            )
+            source = ImageSourceInfo(
+                Path("<Druckvorschau>"), self.image.width(), self.image.height(),
+                image_dpi, image_dpi,
+            )
+            self.page_plan = plan_single_image_from_legacy_settings(
+                source, self.preview_geometry, size_mode, centered,
+                additional_rotation,
+            )
+            self.preview_error = None
+        except (TypeError, ValueError) as error:
+            self.page_plan = None
+            self.preview_error = f"Vorschau nicht verfügbar: {error}"
         self.update()
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.fillRect(self.rect(), self.palette().window())
         available = QRectF(self.rect()).adjusted(18, 18, -18, -18)
-        paper_width, paper_height = (210.0, 297.0)
-        if self.orientation == QPageLayout.Orientation.Landscape:
-            paper_width, paper_height = paper_height, paper_width
+        if self.page_plan is None:
+            painter.setPen(self.palette().text().color())
+            painter.drawText(available, Qt.AlignmentFlag.AlignCenter, self.preview_error or "Vorschau nicht verfügbar.")
+            return
+        paper_width = self.page_plan.page_size.width_mm
+        paper_height = self.page_plan.page_size.height_mm
         paper_scale = min(
             available.width() / paper_width,
             available.height() / paper_height,
@@ -2340,22 +2386,14 @@ class PrintPreviewWidget(QWidget):
         painter.fillRect(paper_rect, Qt.GlobalColor.white)
         painter.setPen(QPen(QColor("#b8b8b8"), 1))
         painter.drawRect(paper_rect)
-        printable_rect = paper_rect.adjusted(
-            paper_rect.width() * 0.06,
-            paper_rect.height() * 0.06,
-            -paper_rect.width() * 0.06,
-            -paper_rect.height() * 0.06,
-        )
-        preview_image = rotated_display_image(
-            self.image, self.additional_rotation
-        )
-        layout = calculate_print_layout(
-            preview_image.size(), printable_rect, self.size_mode, 100,
-            self.image_dpi, self.centered,
-        )
+        # The dashed line is preview chrome only. Image layout, clipping and
+        # rotation are rendered exclusively by the shared PagePlan renderer.
+        printable_rect = MmTransform(
+            self.page_plan, paper_rect,
+        ).rect_to_target(self.page_plan.printable_rect)
         painter.setPen(QPen(QColor("#999999"), 1, Qt.PenStyle.DashLine))
         painter.drawRect(printable_rect)
-        draw_print_layout(painter, preview_image, printable_rect, layout)
+        render_page_plan(painter, self.page_plan, paper_rect, lambda _source: self.image)
 
 
 class PrintSettingsDialog(QDialog):
@@ -2491,24 +2529,6 @@ class PrintSettingsDialog(QDialog):
             "a4": "Das Papierformat wird auf A4 gesetzt und das Bild passend eingepasst.",
         }
         hint = hints[self.size_mode()]
-        if self.size_mode() in {"10x15", "13x18"}:
-            paper_width, paper_height = (210.0, 297.0)
-            if self.selected_orientation() == QPageLayout.Orientation.Landscape:
-                paper_width, paper_height = paper_height, paper_width
-            preview_rect = QRectF(
-                0.0, 0.0,
-                paper_width / 2.54 * 100 * 0.88,
-                paper_height / 2.54 * 100 * 0.88,
-            )
-            preview_image = rotated_display_image(
-                self.image, self.additional_rotation()
-            )
-            layout = calculate_print_layout(
-                preview_image.size(), preview_rect, self.size_mode(), 100,
-                self.image_dpi, self.centered(),
-            )
-            if layout.scaled_down:
-                hint += " Das gewählte Fotoformat ist für die bedruckbare Fläche zu groß und wird verkleinert."
         self.hint_label.setText(hint)
 
     def accept(self) -> None:
@@ -3142,6 +3162,11 @@ class ImageViewer(QObject):
         self.print_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.print_action.triggered.connect(self._print_current_image)
         self.file_menu.addAction(self.print_action)
+        self.wysiwyg_print_action = QAction("WYSIWYG drucken …", self.window)
+        self.wysiwyg_print_action.setShortcut(QKeySequence("Ctrl+Shift+P"))
+        self.wysiwyg_print_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        self.wysiwyg_print_action.triggered.connect(self._show_wysiwyg_print_dialog)
+        self.file_menu.addAction(self.wysiwyg_print_action)
         self.multi_print_action = QAction("Mehrere Bilder drucken …", self.window)
         self.multi_print_action.triggered.connect(self._show_multi_print_dialog)
         self.file_menu.addAction(self.multi_print_action)
@@ -3572,11 +3597,51 @@ class ImageViewer(QObject):
         self.select_all_action.setEnabled(self.thumbnail_list.count() > 0)
 
     def _update_print_action_state(self) -> None:
-        self.print_action.setEnabled(
+        can_print = (
             self.current_image is not None
             and self.current_image.is_file()
             and not self.original_image.isNull()
         )
+        self.print_action.setEnabled(can_print)
+        self.wysiwyg_print_action.setEnabled(can_print)
+
+    def _show_wysiwyg_print_dialog(self) -> None:
+        """Open the Phase-4 path without changing the established print action."""
+        if not (self.current_image and self.current_image.is_file() and not self.original_image.isNull()):
+            self._update_print_action_state()
+            QMessageBox.information(self.window, "Kein Bild geöffnet", "Bitte öffnen oder markieren Sie zuerst ein Bild.")
+            return
+        try:
+            reader = QImageReader(str(self.current_image)); reader.setAutoTransform(True)
+            image = reader.read()
+            if image.isNull(): raise RuntimeError(reader.errorString() or "Das Bild konnte nicht geladen werden.")
+            image = rotated_display_image(image, self._current_display_rotation())
+            if image.isNull(): raise RuntimeError("Das Druckbild konnte nicht gedreht werden.")
+            source = ImageSourceInfo(self.current_image, image.width(), image.height(), image_print_dpi(self.current_image), image_print_dpi(self.current_image), self.current_image.name, capture_date_text(self.current_image))
+            dialog = SingleImageWysiwygPrintDialog(image, source, self.settings, self.window)
+            if dialog.exec() != QDialog.DialogCode.Accepted: return
+            printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+            selected_plan = dialog.build_page_plan()
+            # Seed the native dialog from WYSIWYG paper/orientation. A user
+            # change there is honoured below through final printer geometry.
+            layout = printer.pageLayout()
+            layout.setPageSize(QPageSize(QSizeF(selected_plan.page_size.width_mm, selected_plan.page_size.height_mm), QPageSize.Unit.Millimeter, "BildBlick"))
+            layout.setOrientation(QPageLayout.Orientation.Portrait)
+            printer.setPageLayout(layout)
+            print_dialog = QPrintDialog(printer, self.window); print_dialog.setWindowTitle("Bild drucken")
+            if run_without_application_stylesheet(print_dialog.exec) != QDialog.DialogCode.Accepted: return
+            geometry = printer_geometry_mm(printer)
+            plan = dialog.build_page_plan(geometry.paint_rect, geometry.page_size)
+            painter = QPainter()
+            if not painter.begin(printer): raise RuntimeError("Der Druckauftrag konnte nicht gestartet werden.")
+            try:
+                viewport = painter.viewport()
+                target = printer_target_rect_for_painter(geometry, QRectF(0, 0, viewport.width(), viewport.height()))
+                render_page_plan(painter, plan, target, lambda _source: image)
+            finally:
+                painter.end()
+        except Exception as error:
+            QMessageBox.critical(self.window, "Drucken fehlgeschlagen", str(error))
 
     def _all_thumbnail_image_paths(self) -> list[Path]:
         return [
@@ -4590,14 +4655,15 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
             size_mode = settings_dialog.size_mode()
             centered = settings_dialog.centered()
             image_dpi = settings_dialog.image_dpi
-            image = rotated_display_image(
-                image, settings_dialog.additional_rotation()
+            additional_rotation = settings_dialog.additional_rotation()
+            source = ImageSourceInfo(
+                self.current_image,
+                image.width(),
+                image.height(),
+                image_dpi,
+                image_dpi,
+                self.current_image.name,
             )
-            if image.isNull():
-                raise RuntimeError(
-                    "Das Druckbild konnte nicht erzeugt werden."
-                )
-
             printer = QPrinter(QPrinter.PrinterMode.HighResolution)
             page_layout = printer.pageLayout()
             page_layout.setOrientation(orientation)
@@ -4606,12 +4672,18 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
             printer.setPageLayout(page_layout)
 
             layout_mode = "fit" if size_mode == "a4" else size_mode
-            printable_size = printer.pageRect(QPrinter.Unit.DevicePixel).size()
-            preflight_layout = calculate_print_layout(
-                image.size(), QRectF(0.0, 0.0, printable_size.width(), printable_size.height()),
-                layout_mode, printer.resolution(), image_dpi, centered,
+            initial_geometry = printer_geometry_mm(printer)
+            preflight_plan = plan_single_image_from_legacy_settings(
+                source, initial_geometry, size_mode, centered, additional_rotation,
             )
-            if layout_mode == "original" and preflight_layout.outside_page:
+            original_size_confirmed = False
+            if (
+                layout_mode == "original"
+                and image_exceeds_printable_area(
+                    preflight_plan.image_elements[0].target_rect,
+                    preflight_plan.printable_rect,
+                )
+            ):
                 choice = QMessageBox.question(
                     self.window, "Originalgröße zu groß",
                     "Das Bild ist in Originalgröße größer als die bedruckbare Seite.\n"
@@ -4624,6 +4696,8 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
                     return
                 if choice == QMessageBox.StandardButton.Yes:
                     layout_mode = "fit"
+                else:
+                    original_size_confirmed = True
             print_dialog = QPrintDialog(printer, self.window)
             print_dialog.setWindowTitle("Bild drucken")
             print_result = run_without_application_stylesheet(
@@ -4632,28 +4706,56 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
             if print_result != QDialog.DialogCode.Accepted:
                 return
 
-            page_layout = printer.pageLayout()
-            page_layout.setOrientation(orientation)
-            if size_mode == "a4":
-                page_layout.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
-            printer.setPageLayout(page_layout)
+            # Do not overwrite changes made in the native print dialog. Its
+            # final page layout is converted to mm immediately below.
+            geometry = printer_geometry_mm(printer)
+            final_size_mode = "fit" if layout_mode == "fit" else size_mode
+            page_plan = plan_single_image_from_legacy_settings(
+                source, geometry, final_size_mode, centered, additional_rotation,
+            )
+            if (
+                final_size_mode == "original"
+                and not original_size_confirmed
+                and image_exceeds_printable_area(
+                    page_plan.image_elements[0].target_rect,
+                    page_plan.printable_rect,
+                )
+            ):
+                choice = QMessageBox.question(
+                    self.window, "Originalgröße zu groß",
+                    "Das Bild ist in Originalgröße größer als die bedruckbare Seite.\n"
+                    "Soll es stattdessen passend verkleinert werden?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                    | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Yes,
+                )
+                if choice == QMessageBox.StandardButton.Cancel:
+                    return
+                if choice == QMessageBox.StandardButton.Yes:
+                    page_plan = plan_single_image_from_legacy_settings(
+                        source, geometry, "fit", centered, additional_rotation,
+                    )
 
             painter = QPainter()
             if not painter.begin(printer):
                 raise RuntimeError("Der Druckauftrag konnte nicht gestartet werden.")
             try:
                 viewport = painter.viewport()
-                drawable_rect = QRectF(
+                paint_target_rect = QRectF(
                     0.0,
                     0.0,
                     float(viewport.width()),
                     float(viewport.height()),
                 )
-                layout = calculate_print_layout(
-                    image.size(), drawable_rect, layout_mode,
-                    printer.resolution(), image_dpi, centered,
+                target_rect = printer_target_rect_for_painter(
+                    geometry, paint_target_rect,
                 )
-                draw_print_layout(painter, image, drawable_rect, layout)
+                render_page_plan(
+                    painter,
+                    page_plan,
+                    target_rect,
+                    lambda _source: image,
+                )
             finally:
                 if painter.isActive() and not painter.end():
                     raise RuntimeError(
