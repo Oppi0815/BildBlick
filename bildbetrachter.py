@@ -142,6 +142,7 @@ from printing.printer_geometry import (
 )
 from printing.renderer import MmTransform, render_page_plan
 from printing.wysiwyg_dialog import SingleImageWysiwygPrintDialog
+from printing.multi_wysiwyg_dialog import MultiImageWysiwygPrintDialog
 from pdf_support import (
     PDF_EXTENSIONS,
     pdf_display_target_size,
@@ -3176,6 +3177,11 @@ class ImageViewer(QObject):
         self.multi_print_action = QAction("Mehrere Bilder drucken …", self.window)
         self.multi_print_action.triggered.connect(self._show_multi_print_dialog)
         self.file_menu.addAction(self.multi_print_action)
+        self.multi_wysiwyg_print_action = QAction("Mehrere Bilder WYSIWYG drucken …", self.window)
+        self.multi_wysiwyg_print_action.setShortcut(QKeySequence("Ctrl+Alt+P"))
+        self.multi_wysiwyg_print_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        self.multi_wysiwyg_print_action.triggered.connect(self._show_multi_wysiwyg_print_dialog)
+        self.file_menu.addAction(self.multi_wysiwyg_print_action)
         self.contact_sheet_action = QAction("Kontaktabzug …", self.window)
         self.contact_sheet_action.triggered.connect(
             lambda: self._show_multi_print_dialog(True)
@@ -3598,6 +3604,7 @@ class ImageViewer(QObject):
         self.export_resized_action.setEnabled(has_selection or image_loaded)
         self._update_print_action_state()
         self.multi_print_action.setEnabled(bool(self._all_thumbnail_image_paths()))
+        self.multi_wysiwyg_print_action.setEnabled(bool(self._all_thumbnail_image_paths()))
         self.contact_sheet_action.setEnabled(bool(self._all_thumbnail_image_paths()))
         self.compare_images_action.setEnabled(True)
         self.select_all_action.setEnabled(self.thumbnail_list.count() > 0)
@@ -3648,6 +3655,25 @@ class ImageViewer(QObject):
                 painter.end()
         except Exception as error:
             QMessageBox.critical(self.window, "Drucken fehlgeschlagen", str(error))
+
+    def _show_multi_wysiwyg_print_dialog(self) -> None:
+        """Open the new read-only grid WYSIWYG path beside the legacy dialog."""
+        current = [self.current_image] if self.current_image and self.current_image.is_file() else []
+        selected = [path for path in self._selected_thumbnail_paths_in_display_order() if path.is_file()]
+        all_paths = self._all_thumbnail_image_paths()
+        sources = {
+            "current": multi_image_sources(current),
+            "selected": multi_image_sources(selected),
+            "all": multi_image_sources(all_paths),
+        }
+        if not any(sources.values()):
+            QMessageBox.information(self.window, "Keine Bilder zum Drucken", "Es wurden keine gültigen Bilder gefunden.")
+            return
+        dialog = MultiImageWysiwygPrintDialog(sources, self.settings, self.window)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        chosen = [source.path for source in sources.get(dialog.print_settings().source, [])]
+        self._print_multiple_images(chosen, dialog.print_settings(), dialog._page_size())
 
     def _all_thumbnail_image_paths(self) -> list[Path]:
         return [
@@ -4542,12 +4568,15 @@ QLabel#multiPrintHelpLabel { color: #666666; font-size: 11px; }
         )
         self._print_multiple_images(paths, print_settings)
 
-    def _print_multiple_images(self, paths: list[Path], print_settings: MultiImagePrintSettings) -> None:
+    def _print_multiple_images(self, paths: list[Path], print_settings: MultiImagePrintSettings, page_size: PageSizeMm | None = None) -> None:
         images_per_page = print_settings.effective_images_per_page
         first = QImageReader(str(paths[0])); first.setAutoTransform(True); first_image = first.read()
         orientation = QPageLayout.Orientation.Landscape if print_settings.orientation == "landscape" or (print_settings.orientation == "automatic" and images_per_page == 1 and first_image.width() > first_image.height()) else QPageLayout.Orientation.Portrait
         printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-        page_layout = printer.pageLayout(); page_layout.setOrientation(orientation); printer.setPageLayout(page_layout)
+        page_layout = printer.pageLayout(); page_layout.setOrientation(orientation)
+        if page_size is not None:
+            page_layout.setPageSize(QPageSize(QSizeF(page_size.width_mm, page_size.height_mm), QPageSize.Unit.Millimeter, "BildBlick"))
+        printer.setPageLayout(page_layout)
         print_dialog = QPrintDialog(printer, self.window)
         accepted = run_without_application_stylesheet(
             print_dialog.exec
