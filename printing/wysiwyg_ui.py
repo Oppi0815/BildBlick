@@ -138,6 +138,7 @@ def wysiwyg_dialog_stylesheet(object_name: str, colors: dict[str, str] | None = 
         })
     dark_controls = ""
     light_controls = ""
+    checkbox_controls = ""
     if colors is not None and _is_dark_color(colors["window"]):
         dark_controls = f"""
 QDialog#{object_name} QComboBox, QDialog#{object_name} QSpinBox,
@@ -193,6 +194,15 @@ QDialog#{object_name} QSpinBox::down-button, QDialog#{object_name} QDoubleSpinBo
 QDialog#{object_name} QComboBox:focus, QDialog#{object_name} QSpinBox:focus,
 QDialog#{object_name} QDoubleSpinBox:focus, QDialog#{object_name} QLineEdit:focus {{ border: 2px solid {values['highlight']}; }}
 """
+    if colors is None or not _is_dark_color(colors["window"]):
+        checkbox_controls = f"""
+QDialog#{object_name} QCheckBox::indicator:unchecked:enabled {{
+    background-color: {values['base']}; border: 1px solid {values['highlight']}; border-radius: 3px;
+}}
+QDialog#{object_name} QCheckBox::indicator:disabled {{
+    background-color: {values['disabled_base']}; border: 1px solid {values['border']}; border-radius: 3px;
+}}
+"""
     return f"""
 QDialog#{object_name} QCheckBox {{ spacing: 8px; }}
 QDialog#{object_name} QCheckBox::indicator {{ margin-right: 0; }}
@@ -219,6 +229,7 @@ QDialog#{object_name} QLineEdit[readOnly="true"] {{ background-color: {values['d
 QDialog#{object_name} QListWidget:disabled {{ background-color: {values['disabled_base']}; color: {values['disabled_text']}; }}
 {dark_controls}
 {light_controls}
+{checkbox_controls}
 """
 
 

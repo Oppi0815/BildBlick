@@ -27,25 +27,24 @@ analysis = Analysis(
 )
 pyz = PYZ(analysis.pure)
 
-executable = EXE(
-    pyz,
-    analysis.scripts,
-    [],
-    name="BildBlick",
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=False,
-    console=False,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-    exclude_binaries=True,
-)
-
 if sys.platform == "darwin":
+    executable = EXE(
+        pyz,
+        analysis.scripts,
+        [],
+        name="BildBlick",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        console=False,
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+        exclude_binaries=True,
+    )
     collection = COLLECT(
         executable,
         analysis.binaries,
@@ -68,10 +67,23 @@ if sys.platform == "darwin":
         },
     )
 else:
-    collection = COLLECT(
-        executable,
+    exe = EXE(
+        pyz,
+        analysis.scripts,
         analysis.binaries,
         analysis.zipfiles,
         analysis.datas,
+        [],
         name="BildBlick",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        console=False,
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+        onefile=True,
     )

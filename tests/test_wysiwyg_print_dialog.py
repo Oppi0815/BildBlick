@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 from printing.layout import ImageSourceInfo, RectMm
 from printing.wysiwyg_dialog import SingleImageWysiwygPrintDialog
+from printing.wysiwyg_ui import wysiwyg_dialog_stylesheet
 
 
 def _dialog(tmp_path):
@@ -150,3 +151,33 @@ def test_single_dialog_light_theme_keeps_active_text_dark(tmp_path):
     assert dialog.profile.property("wysiwygDarkArrowStyle")
     assert dialog.profile.findChild(QWidget, "wysiwygComboDownArrow") is not None
     assert dialog.width.palette().color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Base).name() == colors["preview"]
+
+
+def test_light_and_system_checkbox_indicators_keep_unchecked_boxes_visible():
+    light_colors = {
+        "window": "#f4f6f8", "panel": "#ffffff", "preview": "#eef1f4",
+        "text": "#20242a", "muted": "#6a717b", "button": "#ffffff",
+        "border": "#c8cdd3", "selection": "#2878c8", "selection_text": "#ffffff",
+    }
+    light_stylesheet = wysiwyg_dialog_stylesheet("wysiwygSinglePrintDialog", light_colors)
+    assert "QCheckBox::indicator:unchecked:enabled" in light_stylesheet
+    assert "background-color: #ffffff; border: 1px solid #2878c8;" in light_stylesheet
+    assert "QCheckBox::indicator:disabled" in light_stylesheet
+    assert "background-color: #eef1f4; border: 1px solid #c8cdd3;" in light_stylesheet
+    assert "QCheckBox::indicator:checked" not in light_stylesheet
+
+    system_stylesheet = wysiwyg_dialog_stylesheet("wysiwygSinglePrintDialog")
+    assert "background-color: palette(base); border: 1px solid palette(highlight);" in system_stylesheet
+    assert "background-color: palette(alternate-base); border: 1px solid palette(mid);" in system_stylesheet
+    assert "QCheckBox::indicator:checked" not in system_stylesheet
+
+
+def test_dark_theme_keeps_native_checkbox_indicators_unchanged():
+    dark_colors = {
+        "window": "#20242a", "panel": "#292e35", "preview": "#252a30",
+        "text": "#edf0f3", "button": "#343a42", "selection": "#3b8edb",
+        "selection_text": "#ffffff",
+    }
+    stylesheet = wysiwyg_dialog_stylesheet("wysiwygSinglePrintDialog", dark_colors)
+    assert "QCheckBox::indicator:unchecked:enabled" not in stylesheet
+    assert "QCheckBox::indicator:disabled" not in stylesheet

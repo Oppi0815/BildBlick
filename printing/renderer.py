@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QFont, QImage, QPainter
+from PySide6.QtGui import QColor, QFont, QImage, QPainter
 
 from printing.layout import ImageSourceInfo, PagePlan, RectMm
 
@@ -65,7 +65,9 @@ def render_page_plan(
 
     transform = MmTransform(page_plan, target_rect)
     painter.save()
-    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
     for element in page_plan.image_elements:
         image = image_provider(element.source)
         if image.isNull():
@@ -108,6 +110,8 @@ def render_page_plan(
         font.setBold(element.bold)
         font.setItalic(element.italic)
         painter.setFont(font)
+        painter.setPen(QColor("#111111"))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
         rect = transform.rect_to_target(element.rect)
         text = element.text
         elide = _elide_mode(element.elide_policy)

@@ -1,11 +1,12 @@
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, QSize, Qt
-from PySide6.QtGui import QPalette
+from PySide6.QtCore import QSettings, QSize, Qt, QRectF
+from PySide6.QtGui import QColor, QImage, QPalette
 from PySide6.QtWidgets import QApplication, QWidget
 
 from printing.layout import ImageSourceInfo
 from printing.multi_wysiwyg_dialog import MultiImageWysiwygPrintDialog
+from printing.renderer import MmTransform
 
 
 def test_multi_wysiwyg_dialog_builds_live_page_plans_and_navigates(tmp_path):
@@ -159,3 +160,66 @@ def test_footer_folder_comes_from_the_current_image_folder(tmp_path):
     dialog.footer_folder.setChecked(True)
     folder = next(text.text for text in dialog.page_plans[0].text_elements if text.semantic_role == "folder")
     assert folder == "Aktueller Ordner"
+
+
+def test_multi_wysiwyg_preview_shows_header_and_footer_from_the_real_dialog_pageplan(tmp_path):
+    QApplication.instance() or QApplication([])
+    source = ImageSourceInfo(Path("/tmp/TESTORDNER/real-preview.jpg"), 1600, 900, filename="real-preview.jpg", capture_date="10.08.2026")
+    dialog = MultiImageWysiwygPrintDialog({"current": [source], "selected": [], "all": [source]}, QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat))
+    dialog.resize(1280, 900)
+    dialog.show_header.setChecked(True)
+    dialog.header.setText("ECHTER TITEL")
+    dialog.filename.setChecked(True)
+    dialog.capture.setChecked(True)
+    dialog.footer_folder.setChecked(True)
+    dialog.page_number.setChecked(True)
+    dialog.print_date.setChecked(True)
+    dialog._print_date_text = "11.08.2026"
+    dialog.paper.setCurrentText("A4")
+    dialog.count.setCurrentIndex(dialog.count.findData(1))
+    QApplication.processEvents()
+    assert dialog.page_plans
+    header = next(text for text in dialog.page_plans[0].text_elements if text.semantic_role == "header")
+    folder = next(text for text in dialog.page_plans[0].text_elements if text.semantic_role == "folder")
+    page_number = next(text for text in dialog.page_plans[0].text_elements if text.semantic_role == "page_number")
+    print_date = next(text for text in dialog.page_plans[0].text_elements if text.semantic_role == "print_date")
+    assert header.text == "ECHTER TITEL"
+    assert folder.text == "TESTORDNER"
+    assert page_number.text == "Seite 1 von 1"
+    assert print_date.text == "11.08.2026"
+
+    dialog.show()
+    QApplication.processEvents()
+    pixmap = dialog.preview.grab()
+    image = pixmap.toImage()
+    image_dpr = image.devicePixelRatio() or 1.0
+    available = QRectF(dialog.preview.rect()).adjusted(16, 16, -16, -16)
+    scale = min(available.width() / dialog.page_plans[0].page_size.width_mm, available.height() / dialog.page_plans[0].page_size.height_mm)
+    paper = QRectF(
+        available.center().x() - dialog.page_plans[0].page_size.width_mm * scale / 2,
+        available.center().y() - dialog.page_plans[0].page_size.height_mm * scale / 2,
+        dialog.page_plans[0].page_size.width_mm * scale,
+        dialog.page_plans[0].page_size.height_mm * scale,
+    )
+    header_rect = MmTransform(dialog.page_plans[0], paper).rect_to_target(header.rect)
+    transform = MmTransform(dialog.page_plans[0], paper)
+
+    def has_dark_text_pixels(rect: QRectF) -> bool:
+        pixel_rect = QRectF(
+            rect.x() * image_dpr,
+            rect.y() * image_dpr,
+            rect.width() * image_dpr,
+            rect.height() * image_dpr,
+        )
+        tolerance = 2
+        for y in range(max(0, int(pixel_rect.top()) - tolerance), min(image.height(), int(pixel_rect.bottom()) + tolerance + 1)):
+            for x in range(max(0, int(pixel_rect.left()) - tolerance), min(image.width(), int(pixel_rect.right()) + tolerance + 1)):
+                color = image.pixelColor(x, y)
+                if color.alpha() > 0 and color.red() < 200 and color.green() < 200 and color.blue() < 200:
+                    return True
+        return False
+
+    assert has_dark_text_pixels(header_rect)
+    assert has_dark_text_pixels(transform.rect_to_target(folder.rect))
+    assert has_dark_text_pixels(transform.rect_to_target(page_number.rect))
+    assert has_dark_text_pixels(transform.rect_to_target(print_date.rect))
