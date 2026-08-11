@@ -2,6 +2,26 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.15.1
+
+### Behoben
+
+- Mehrbild-Druckvorschau unter Linux korrigiert.
+- HiDPI/DPR-Skalierungsfehler im Preview behoben.
+- Footer-Texte in der Mehrbildvorschau wieder sichtbar.
+- Aufnahmedatum im Mehrbilddruck korrigiert.
+- Drucktextfarbe unabhängig vom UI-Theme gemacht.
+- Checkboxen im Light/System-Modus besser sichtbar.
+
+### Verbessert
+
+- Dateiname/Aufnahmedatum aktivieren automatisch Kontaktabzug.
+- Titeltext aktiviert automatisch Kopfzeile.
+- PDF-Weblinks und `mailto:`-Links anklickbar.
+- Interne PDF-Sprünge unterstützt.
+- Hand-Cursor über PDF-Links.
+- Nur sichere URL-Schemata `http`, `https` und `mailto` werden extern geöffnet.
+
 ## 1.15.0 – Neues Drucksystem und macOS-App
 
 ### Neu

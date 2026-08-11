@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import os
 import random
 import re
@@ -24,6 +25,7 @@ from PySide6.QtCore import (
     QIODevice,
     QItemSelectionModel,
     QLineF,
+    QModelIndex,
     QMimeData,
     QObject,
     QPropertyAnimation,
@@ -31,6 +33,7 @@ from PySide6.QtCore import (
     QSettings,
     QSize,
     QSizeF,
+    QPointF,
     QRectF,
     QStandardPaths,
     QCommandLineParser,
@@ -49,6 +52,7 @@ from PySide6.QtGui import (
     QBrush,
     QColor,
     QCursor,
+    QDesktopServices,
     QDrag,
     QFileOpenEvent,
     QIcon,
@@ -67,6 +71,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtUiTools import QUiLoader
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
+from PySide6.QtPdf import QPdfLinkModel
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -133,8 +138,9 @@ from pdf_support import (
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.15.0"
+APP_VERSION = "1.15.1"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
+LOGGER = logging.getLogger(__name__)
 
 _DialogResult = TypeVar("_DialogResult")
 
@@ -2332,6 +2338,7 @@ class ImageViewer(QObject):
         self.current_directory: Path | None = None
         self.current_image: Path | None = None
         self._pdf_document = None
+        self._pdf_link_model = QPdfLinkModel(self.window)
         self._pdf_page = 0
         self._pdf_render_size = QSize()
         self._pdf_quality_refresh_pending = False
@@ -6048,6 +6055,8 @@ class ImageViewer(QObject):
                 self._update_view_actions()
                 return
             self._pdf_document = result.document
+            self._pdf_link_model.setDocument(result.document)
+            self._pdf_link_model.setPage(0)
             self._pdf_page = 0
             self._pdf_render_size = QSize()
             self._zoom_mode = "fit"
@@ -6056,6 +6065,7 @@ class ImageViewer(QObject):
         if self._pdf_preview_mode:
             self._leave_pdf_preview()
         self._pdf_document = None
+        self._pdf_link_model.setDocument(None)
         self._pdf_page = 0
         self._pdf_render_size = QSize()
         self._update_pdf_page_navigation()
@@ -6117,6 +6127,8 @@ class ImageViewer(QObject):
             self._update_pdf_page_navigation()
             return False
         self._pdf_page = page
+        self._pdf_link_model.setPage(page)
+        self._diagnose_pdf_links()
         self.original_image = image
         self._pdf_render_size = image.size()
         if self._zoom_mode != "manual":
@@ -6140,10 +6152,101 @@ class ImageViewer(QObject):
 
     def _clear_pdf_state(self) -> None:
         self._pdf_document = None
+        self._pdf_link_model.setDocument(None)
         self._pdf_page = 0
         self._pdf_render_size = QSize()
         self._pdf_quality_refresh_pending = False
         self._update_pdf_page_navigation()
+
+    def _diagnose_pdf_links(self) -> None:
+        """Log the annotations Qt found, without attempting URL text detection."""
+        if self._pdf_document is None:
+            return
+        links = self._pdf_link_model
+        diagnostics = []
+        row_count = links.rowCount(QModelIndex())
+        for row in range(row_count):
+            index = links.index(row, 0)
+            link = links.data(index, QPdfLinkModel.Role.Link.value)
+            diagnostics.append(
+                {
+                    "rectangle": links.data(index, QPdfLinkModel.Role.Rectangle.value),
+                    "url": links.data(index, QPdfLinkModel.Role.Url.value),
+                    "page": links.data(index, QPdfLinkModel.Role.Page.value),
+                    "location": links.data(index, QPdfLinkModel.Role.Location.value),
+                    "valid": bool(link and link.isValid()),
+                }
+            )
+        LOGGER.debug(
+            "PDF page %s: QPdfLinkModel rowCount=%s links=%s",
+            self._pdf_page,
+            row_count,
+            diagnostics,
+        )
+
+    def _pdf_link_at_widget_position(self, global_position):
+        """Return the real PDF link below a global mouse position, if any.
+
+        QPdfLinkModel uses PDF page points.  The rendered pixmap fills
+        ``image_label`` exactly, so its size is the visible page rectangle even
+        when the scroll area centers it, is zoomed, or is fullscreen.
+        """
+        if self._pdf_document is None or self.original_image.isNull():
+            return None
+        label_position = self.image_label.mapFromGlobal(global_position)
+        label_rect = self.image_label.rect()
+        if not label_rect.contains(label_position):
+            return None
+        page_size = self._pdf_document.pagePointSize(self._pdf_page)
+        if page_size.isEmpty() or label_rect.width() <= 0 or label_rect.height() <= 0:
+            return None
+        page_position = QPointF(
+            label_position.x() * page_size.width() / label_rect.width(),
+            label_position.y() * page_size.height() / label_rect.height(),
+        )
+        link = self._pdf_link_model.linkAt(page_position)
+        # Qt 6.8 reports ``isValid() == False`` for URI actions even though
+        # the model exposes their URL and rectangle.  A real target is the
+        # reliable criterion across Qt versions; isValid() remains logged.
+        if link.isValid() or not link.url().isEmpty() or link.page() >= 0:
+            return link
+        return None
+
+    @staticmethod
+    def _pdf_link_tooltip(link) -> str:
+        url = link.url()
+        scheme = url.scheme().lower()
+        if scheme in {"http", "https"}:
+            return url.toString()
+        if scheme == "mailto":
+            return url.toString()[len("mailto:") :].split("?", 1)[0]
+        if link.page() >= 0:
+            return f"Seite {link.page() + 1}"
+        return ""
+
+    def _update_pdf_link_hover(self, global_position) -> None:
+        link = self._pdf_link_at_widget_position(global_position)
+        if link is None:
+            self.image_label.unsetCursor()
+            QToolTip.hideText()
+            return
+        self.image_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        tooltip = self._pdf_link_tooltip(link)
+        if tooltip:
+            QToolTip.showText(global_position, tooltip, self.image_label)
+
+    def _open_pdf_link(self, link) -> bool:
+        """Follow an embedded PDF link, allowing only safe external schemes."""
+        url = link.url()
+        scheme = url.scheme().lower()
+        if scheme in {"http", "https", "mailto"}:
+            return QDesktopServices.openUrl(url)
+        if scheme:
+            return False
+        target_page = link.page()
+        if target_page >= 0:
+            return self._render_pdf_page(target_page)
+        return False
 
     def _schedule_pdf_quality_refresh(self) -> None:
         if self._pdf_document is None or self._pdf_quality_refresh_pending:
@@ -6969,6 +7072,11 @@ class ImageViewer(QObject):
             self._show_image_context_menu(event.globalPos())
             self._restart_slideshow_cursor_timer()
             return True
+        if watched in image_widgets and event.type() == QEvent.Type.Leave:
+            self.image_label.unsetCursor()
+            QToolTip.hideText()
+        elif watched in image_widgets and event.type() == QEvent.Type.MouseMove:
+            self._update_pdf_link_hover(event.globalPosition().toPoint())
         if (
             watched is self.image_scroll_area.viewport()
             and event.type() == QEvent.Type.Resize
@@ -6999,6 +7107,12 @@ class ImageViewer(QObject):
         ):
             if self.original_image.isNull():
                 return False
+            pdf_link = self._pdf_link_at_widget_position(
+                event.globalPosition().toPoint()
+            )
+            if pdf_link is not None:
+                self._open_pdf_link(pdf_link)
+                return True
             self._mouse_press_position = event.globalPosition().toPoint()
             self._pan_last_position = self._mouse_press_position
             self._dragging_image = False
