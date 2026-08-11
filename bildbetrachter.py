@@ -3209,9 +3209,9 @@ class ImageViewer(QObject):
         selected = [path for path in self._selected_thumbnail_paths_in_display_order() if path.is_file()]
         all_paths = self._all_thumbnail_image_paths()
         sources = {
-            "current": multi_image_sources(current),
-            "selected": multi_image_sources(selected),
-            "all": multi_image_sources(all_paths),
+            "current": multi_image_sources(current, include_capture_date=True),
+            "selected": multi_image_sources(selected, include_capture_date=True),
+            "all": multi_image_sources(all_paths, include_capture_date=True),
         }
         if not any(sources.values()):
             QMessageBox.information(self.window, "Keine Bilder zum Drucken", "Es wurden keine gültigen Bilder gefunden.")

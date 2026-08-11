@@ -40,9 +40,20 @@ def test_multi_wysiwyg_dialog_uses_contact_sheet_pageplan_text(tmp_path):
     QApplication.instance() or QApplication([])
     source = ImageSourceInfo(Path("photo.jpg"), 1600, 900, filename="photo.jpg", capture_date="10.08.2026")
     dialog = MultiImageWysiwygPrintDialog({"current": [source], "selected": [], "all": [source]}, QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat))
-    dialog.contact.setChecked(True); dialog.filename.setChecked(True); dialog.show_header.setChecked(True); dialog.header.setText("Titel")
+    dialog.contact.setChecked(True); dialog.filename.setChecked(True); dialog.capture.setChecked(True); dialog.show_header.setChecked(True); dialog.header.setText("Titel")
     roles = {text.semantic_role for text in dialog.page_plans[0].text_elements}
-    assert {"filename", "header", "page_number"} <= roles
+    capture_date = next(text for text in dialog.page_plans[0].text_elements if text.semantic_role == "capture_date")
+    assert {"filename", "capture_date", "header", "page_number"} <= roles
+    assert capture_date.text == "10.08.2026"
+
+
+def test_multi_wysiwyg_dialog_omits_capture_date_when_disabled(tmp_path):
+    QApplication.instance() or QApplication([])
+    source = ImageSourceInfo(Path("photo.jpg"), 1600, 900, filename="photo.jpg", capture_date="10.08.2026")
+    dialog = MultiImageWysiwygPrintDialog({"current": [source], "selected": [], "all": [source]}, QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat))
+    dialog.contact.setChecked(True)
+    dialog.capture.setChecked(False)
+    assert "capture_date" not in {text.semantic_role for text in dialog.page_plans[0].text_elements}
 
 
 def test_dialog_keeps_drag_order_and_removals_in_the_print_model(tmp_path):
@@ -169,6 +180,7 @@ def test_multi_wysiwyg_preview_shows_header_and_footer_from_the_real_dialog_page
     dialog.resize(1280, 900)
     dialog.show_header.setChecked(True)
     dialog.header.setText("ECHTER TITEL")
+    dialog.contact.setChecked(True)
     dialog.filename.setChecked(True)
     dialog.capture.setChecked(True)
     dialog.footer_folder.setChecked(True)
@@ -180,10 +192,12 @@ def test_multi_wysiwyg_preview_shows_header_and_footer_from_the_real_dialog_page
     QApplication.processEvents()
     assert dialog.page_plans
     header = next(text for text in dialog.page_plans[0].text_elements if text.semantic_role == "header")
+    capture_date = next(text for text in dialog.page_plans[0].text_elements if text.semantic_role == "capture_date")
     folder = next(text for text in dialog.page_plans[0].text_elements if text.semantic_role == "folder")
     page_number = next(text for text in dialog.page_plans[0].text_elements if text.semantic_role == "page_number")
     print_date = next(text for text in dialog.page_plans[0].text_elements if text.semantic_role == "print_date")
     assert header.text == "ECHTER TITEL"
+    assert capture_date.text == "10.08.2026"
     assert folder.text == "TESTORDNER"
     assert page_number.text == "Seite 1 von 1"
     assert print_date.text == "11.08.2026"
@@ -220,6 +234,7 @@ def test_multi_wysiwyg_preview_shows_header_and_footer_from_the_real_dialog_page
         return False
 
     assert has_dark_text_pixels(header_rect)
+    assert has_dark_text_pixels(transform.rect_to_target(capture_date.rect))
     assert has_dark_text_pixels(transform.rect_to_target(folder.rect))
     assert has_dark_text_pixels(transform.rect_to_target(page_number.rect))
     assert has_dark_text_pixels(transform.rect_to_target(print_date.rect))
