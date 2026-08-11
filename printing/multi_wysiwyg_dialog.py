@@ -57,6 +57,9 @@ class MultiImageWysiwygPrintDialog(QDialog):
         self._populate_profiles(); watched = [self.source, self.paper, self.width, self.height, self.orientation, self.count, self.rows, self.columns, self.margin, self.spacing, self.contact, self.filename, self.capture, self.show_header, self.header, self.footer_folder, self.page_number, self.print_date]
         for widget in watched:
             signal = getattr(widget, "currentIndexChanged", None) or getattr(widget, "valueChanged", None) or getattr(widget, "toggled", None) or getattr(widget, "textChanged", None); signal.connect(self._update)
+        self.filename.clicked.connect(self._enable_contact_sheet_for_caption)
+        self.capture.clicked.connect(self._enable_contact_sheet_for_caption)
+        self.header.textEdited.connect(self._enable_header_for_title)
         self.source.currentIndexChanged.connect(self._reload_source); self.image_list.model().rowsMoved.connect(lambda *_: self._sync_list_order()); self.image_list.itemDoubleClicked.connect(lambda item: self._set_page(self.image_list.row(item) // max(1, self.print_settings().effective_images_per_page))); self.reset_order_button.clicked.connect(self._reset_order); self.remove_button.clicked.connect(self._remove_selected); self.reload_button.clicked.connect(self._reload_source); self.profile.currentIndexChanged.connect(self._apply_profile); self.first.clicked.connect(lambda: self._set_page(0)); self.previous.clicked.connect(lambda: self._set_page(self.page_index - 1)); self.next.clicked.connect(lambda: self._set_page(self.page_index + 1)); self.last.clicked.connect(lambda: self._set_page(len(self.page_plans) - 1)); self.pdf_button.clicked.connect(self._export_pdf); self.save_profile_button.clicked.connect(self._save_profile); self.delete_profile_button.clicked.connect(self._delete_profile); self.print_button.clicked.connect(self.accept); cancel.clicked.connect(self.reject); self.content_splitter.setSizes([SETTINGS_PANEL_WIDTH, 850]); self.content_splitter.setStretchFactor(1, 1); apply_wysiwyg_theme(self, theme_colors); restore_wysiwyg_dialog_geometry(self, self.settings, GEOMETRY_KEY); self._rebuild_list(); self._update()
 
     def closeEvent(self, event):
@@ -91,6 +94,16 @@ class MultiImageWysiwygPrintDialog(QDialog):
             index = combo.findData(data)
             if index >= 0: combo.setCurrentIndex(index)
         self.rows.setValue(value.custom_rows); self.columns.setValue(value.custom_columns); self.margin.setValue(value.page_margin_mm); self.spacing.setValue(value.cell_spacing_mm); self.contact.setChecked(value.contact_sheet); self.filename.setChecked(value.show_filename); self.capture.setChecked(value.show_capture_date); self.page_number.setChecked(value.show_page_number); self.show_header.setChecked(value.show_header); self.header.setText(value.header_text); self.footer_folder.setChecked(value.show_folder_in_footer); self.print_date.setChecked(value.show_print_date)
+
+    def _enable_contact_sheet_for_caption(self, checked: bool) -> None:
+        """Make caption options useful only when a user actively enables one."""
+        if checked and not self.contact.isChecked():
+            self.contact.setChecked(True)
+
+    def _enable_header_for_title(self, text: str) -> None:
+        """Show a user-entered non-empty title without changing profile loading."""
+        if text.strip() and not self.show_header.isChecked():
+            self.show_header.setChecked(True)
 
     def _save_profile(self):
         name, accepted = QInputDialog.getText(self, "Profil speichern", "Name:")

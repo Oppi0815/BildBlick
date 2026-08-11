@@ -5,7 +5,9 @@ from PySide6.QtGui import QColor, QImage, QPalette
 from PySide6.QtWidgets import QApplication, QWidget
 
 from printing.layout import ImageSourceInfo
+from printing.multi_image_print import MultiImagePrintSettings
 from printing.multi_wysiwyg_dialog import MultiImageWysiwygPrintDialog
+from printing.print_profiles import MultiImagePrintProfile
 from printing.renderer import MmTransform
 
 
@@ -54,6 +56,66 @@ def test_multi_wysiwyg_dialog_omits_capture_date_when_disabled(tmp_path):
     dialog.contact.setChecked(True)
     dialog.capture.setChecked(False)
     assert "capture_date" not in {text.semantic_role for text in dialog.page_plans[0].text_elements}
+
+
+def test_caption_checkbox_click_enables_contact_sheet_and_updates_preview(tmp_path):
+    QApplication.instance() or QApplication([])
+    source = ImageSourceInfo(Path("photo.jpg"), 1600, 900, filename="photo.jpg", capture_date="10.08.2026")
+    dialog = MultiImageWysiwygPrintDialog({"current": [source], "selected": [], "all": [source]}, QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat))
+    dialog.contact.setChecked(False)
+    dialog.filename.setChecked(False)
+
+    dialog.filename.click()
+
+    assert dialog.contact.isChecked()
+    assert "filename" in {text.semantic_role for text in dialog.page_plans[0].text_elements}
+
+
+def test_capture_checkbox_click_enables_contact_sheet_but_manual_disable_sticks(tmp_path):
+    QApplication.instance() or QApplication([])
+    source = ImageSourceInfo(Path("photo.jpg"), 1600, 900, filename="photo.jpg", capture_date="10.08.2026")
+    dialog = MultiImageWysiwygPrintDialog({"current": [source], "selected": [], "all": [source]}, QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat))
+    dialog.contact.setChecked(False)
+    dialog.capture.setChecked(False)
+
+    dialog.capture.click()
+    assert dialog.contact.isChecked()
+    assert "capture_date" in {text.semantic_role for text in dialog.page_plans[0].text_elements}
+
+    dialog.contact.click()
+    assert not dialog.contact.isChecked()
+    assert "capture_date" not in {text.semantic_role for text in dialog.page_plans[0].text_elements}
+
+
+def test_user_title_text_enables_header_without_disabling_it_when_cleared(tmp_path):
+    QApplication.instance() or QApplication([])
+    source = ImageSourceInfo(Path("photo.jpg"), 1600, 900, filename="photo.jpg")
+    dialog = MultiImageWysiwygPrintDialog({"current": [source], "selected": [], "all": [source]}, QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat))
+    dialog.show_header.setChecked(False)
+
+    dialog.header.textEdited.emit("Urlaub 2026")
+    dialog.header.setText("Urlaub 2026")
+    assert dialog.show_header.isChecked()
+    assert next(text.text for text in dialog.page_plans[0].text_elements if text.semantic_role == "header") == "Urlaub 2026"
+
+    dialog.header.textEdited.emit("")
+    dialog.header.clear()
+    assert dialog.show_header.isChecked()
+
+
+def test_profile_loading_does_not_auto_enable_dependent_options(tmp_path):
+    QApplication.instance() or QApplication([])
+    source = ImageSourceInfo(Path("photo.jpg"), 1600, 900, filename="photo.jpg")
+    dialog = MultiImageWysiwygPrintDialog({"current": [source], "selected": [], "all": [source]}, QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat))
+    profile = MultiImagePrintProfile("test", "Test", MultiImagePrintSettings(contact_sheet=False, show_filename=True, show_capture_date=True, show_header=False, header_text="Profil-Titel"), False)
+    dialog.profile.addItem(profile.display_name, profile)
+
+    dialog.profile.setCurrentIndex(dialog.profile.findData(profile))
+
+    assert not dialog.contact.isChecked()
+    assert dialog.filename.isChecked() and dialog.capture.isChecked()
+    assert not dialog.show_header.isChecked()
+    assert dialog.header.text() == "Profil-Titel"
 
 
 def test_dialog_keeps_drag_order_and_removals_in_the_print_model(tmp_path):
