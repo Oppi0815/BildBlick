@@ -4,6 +4,7 @@ from pathlib import Path
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QColorSpace, QImage, QPainter
 from PySide6.QtPdf import QPdfDocument
+from i18n import t
 
 
 PDF_EXTENSIONS = {".pdf"}
@@ -23,14 +24,14 @@ def load_pdf(path: Path) -> PdfLoadResult:
     error = document.load(str(path))
     if error != QPdfDocument.Error.None_:
         messages = {
-            QPdfDocument.Error.FileNotFound: "Die PDF-Datei wurde nicht gefunden.",
-            QPdfDocument.Error.InvalidFileFormat: "Die Datei ist keine gültige PDF.",
-            QPdfDocument.Error.IncorrectPassword: "Die PDF ist passwortgeschützt.",
-            QPdfDocument.Error.UnsupportedSecurityScheme: "Die PDF-Verschlüsselung wird nicht unterstützt.",
+            QPdfDocument.Error.FileNotFound: t("Die PDF-Datei wurde nicht gefunden."),
+            QPdfDocument.Error.InvalidFileFormat: t("Die Datei ist keine gültige PDF."),
+            QPdfDocument.Error.IncorrectPassword: t("Die PDF ist passwortgeschützt."),
+            QPdfDocument.Error.UnsupportedSecurityScheme: t("Die PDF-Verschlüsselung wird nicht unterstützt."),
         }
-        return PdfLoadResult(None, 0, messages.get(error, "Die PDF konnte nicht geöffnet werden."))
+        return PdfLoadResult(None, 0, messages.get(error, t("Die PDF konnte nicht geöffnet werden.")))
     if document.pageCount() < 1:
-        return PdfLoadResult(None, 0, "Die PDF enthält keine Seiten.")
+        return PdfLoadResult(None, 0, t("Die PDF enthält keine Seiten."))
     return PdfLoadResult(document, document.pageCount(), None)
 
 

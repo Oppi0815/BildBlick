@@ -22,6 +22,7 @@ from printing.wysiwyg_ui import (
     SETTINGS_PANEL_WIDTH, configure_wysiwyg_form, configure_wysiwyg_scroll_area,
     apply_wysiwyg_theme, restore_wysiwyg_dialog_geometry, save_wysiwyg_dialog_geometry,
 )
+from i18n import LanguageManager
 
 
 PROFILE_KEY = "printing/singleImageProfiles"
@@ -206,6 +207,7 @@ class SingleImageWysiwygPrintDialog(QDialog):
         apply_wysiwyg_theme(self, theme_colors)
         restore_wysiwyg_dialog_geometry(self, self.settings, GEOMETRY_KEY)
         self._update_preview()
+        LanguageManager(self.settings).translate_widget_tree(self)
 
     def closeEvent(self, event) -> None:
         save_wysiwyg_dialog_geometry(self, self.settings, GEOMETRY_KEY)

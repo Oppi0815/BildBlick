@@ -6,9 +6,9 @@
 
 ![BildBlick Screenshot](docs/bildblick-screenshot.png)
 
-*BildBlick 1.16.0 unter Linux Mint und macOS*
+*BildBlick 1.17.0 unter Linux Mint und macOS*
 
-**Version 1.16.0**
+**Version 1.17.0**
 
 BildBlick ist ein schneller und komfortabler Bildbetrachter für Linux. Die Anwendung wurde unter Linux Mint entwickelt und getestet und verbindet eine übersichtliche Verzeichnisnavigation mit schnellen Vorschaubildern und praktischen Werkzeugen für die Bildverwaltung.
 
@@ -38,7 +38,24 @@ BildBlick ist ein schneller und komfortabler Bildbetrachter für Linux. Die Anwe
 - Der flachere Thumbnail-Regler schafft zusammen mit der entfernten unteren
   Navigationsleiste mehr Platz für das Hauptbild.
 - Unter Linux können mehrere BildBlick-Instanzen gleichzeitig geöffnet werden.
-- Suche nach identischen Bildern mit sicherer Papierkorbauswahl
+- Duplikatfinder 2.0 mit mehreren Suchordnern, optionalen Unterordnern und sicherer Papierkorbauswahl
+- Duplikatsuche nach gleichem Dateinamen, exakt gleichem Dateiinhalt sowie visuell gleichen oder ähnlichen Bildern per dHash
+
+## Sprachen
+
+- Deutsch
+- Englisch
+- Französisch
+- Spanisch
+- Ukrainisch
+
+Die Sprachwahl wird dauerhaft gespeichert.
+
+## Duplikatfinder 2.0
+
+- Mehrere Ordner mit optionaler Unterordnersuche
+- Gleicher Dateiname, exakte Dateiidentität und visuelle Ähnlichkeit per dHash
+- Sichere Papierkorb-Verwaltung: keine automatische Löschung, Auswahl und Bestätigung sind immer erforderlich
 
 ## PDF-Unterstützung
 
@@ -157,7 +174,7 @@ Unter macOS entsteht `dist/BildBlick.app`. Die App startet per Doppelklick, kann
 
 BildBlick löscht Bilder nicht dauerhaft, sondern verschiebt sie mit Send2Trash in den Linux-Papierkorb. Vor Papierkorbaktionen ist eine Bestätigung erforderlich.
 
-Die Duplikatsuche erkennt in der aktuellen Version ausschließlich bytegenau identische Dateien. Sie gruppiert zunächst nach Dateigröße, berechnet anschließend SHA-256-Hashes und bestätigt Treffer durch einen blockweisen Inhaltsvergleich. Ähnliche, verkleinerte oder neu komprimierte Bilder gelten nicht als Duplikate.
+Die Duplikatsuche erkennt gleiche Dateinamen, bytegenau identische Dateien sowie visuell gleiche oder ähnliche Bilder. Exakte Treffer werden über Dateigröße, SHA-256 und einen blockweisen Inhaltsvergleich bestätigt. Visuelle Treffer verwenden einen EXIF-korrigierten dHash; sie werden nie automatisch für den Papierkorb markiert.
 
 ## Lizenz
 

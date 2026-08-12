@@ -135,10 +135,11 @@ from pdf_support import (
     render_pdf_page,
     render_pdf_page_with_fallback,
 )
+from i18n import LANGUAGES, LanguageManager, t
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.16.0"
+APP_VERSION = "1.17.0"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 LOGGER = logging.getLogger(__name__)
 
@@ -1097,16 +1098,16 @@ def _exif_value(exif, exif_ifd: dict, tag: int) -> object:
 
 def build_information_metadata(path: Path) -> dict[str, dict[str, str]]:
     """Return present file and EXIF fields, grouped for the information panel."""
-    groups: dict[str, dict[str, str]] = {"BILD": {"Dateiname": path.name}}
+    groups: dict[str, dict[str, str]] = {t("BILD"): {t("Dateiname"): path.name}}
     try:
         file_info = path.stat()
-        groups["BILD"]["Dateipfad"] = str(path)
-        groups["BILD"]["Dateigröße"] = format_file_size(file_info.st_size)
+        groups[t("BILD")][t("Dateipfad")] = str(path)
+        groups[t("BILD")][t("Dateigröße")] = format_file_size(file_info.st_size)
     except OSError:
         pass
     suffix = path.suffix.lstrip(".").upper()
     if suffix:
-        groups["BILD"]["Dateiformat"] = suffix
+        groups[t("BILD")][t("Dateiformat")] = suffix
     if path.suffix.lower() in PDF_EXTENSIONS:
         return groups
 
@@ -1114,15 +1115,15 @@ def build_information_metadata(path: Path) -> dict[str, dict[str, str]]:
     try:
         with PillowImage.open(path) as image:
             width, height = image.size
-            groups["BILD"]["Abmessungen"] = f"{width} × {height} Pixel"
-            groups["BILD"]["Megapixel"] = f"{format_decimal(width * height / 1_000_000, 1)} MP"
+            groups[t("BILD")][t("Abmessungen")] = f"{width} × {height} Pixel"
+            groups[t("BILD")][t("Megapixel")] = f"{format_decimal(width * height / 1_000_000, 1)} MP"
             if image.format:
-                groups["BILD"]["Dateiformat"] = image.format
+                groups[t("BILD")][t("Dateiformat")] = image.format
             dpi = image.info.get("dpi")
             if isinstance(dpi, (tuple, list)) and len(dpi) >= 2:
                 x_dpi, y_dpi = rational_float(dpi[0]), rational_float(dpi[1])
                 if x_dpi is not None and y_dpi is not None:
-                    groups["BILD"]["Auflösung"] = f"{format_decimal(x_dpi)} × {format_decimal(y_dpi)} DPI"
+                    groups[t("BILD")][t("Auflösung")] = f"{format_decimal(x_dpi)} × {format_decimal(y_dpi)} DPI"
             exif = image.getexif()
             exif_found = bool(exif)
             try:
@@ -1139,7 +1140,7 @@ def build_information_metadata(path: Path) -> dict[str, dict[str, str]]:
             if lens_spec and "Objektiv" not in camera:
                 camera["Objektiv"] = lens_spec
             if camera:
-                groups["KAMERA"] = camera
+                groups[t("KAMERA")] = {t(label): value for label, value in camera.items()}
 
             recording: dict[str, str] = {}
             for tag in (36867, 36868, 306):
@@ -1161,14 +1162,14 @@ def build_information_metadata(path: Path) -> dict[str, dict[str, str]]:
             )
             recording.update({label: value for label, value in values if value})
             if recording:
-                groups["AUFNAHME"] = recording
+                groups[t("AUFNAHME")] = {t(label): value for label, value in recording.items()}
 
             orientation = _information_value(exif.get(274))
             color_space = _information_value(_exif_value(exif, exif_ifd, 40961))
             if orientation:
-                groups["BILD"]["Ausrichtung"] = orientation
+                groups[t("BILD")][t("Ausrichtung")] = orientation
             if color_space:
-                groups["BILD"]["Farbraum"] = color_space
+                groups[t("BILD")][t("Farbraum")] = color_space
             try:
                 gps = exif.get_ifd(0x8825)
             except Exception:
@@ -1180,11 +1181,11 @@ def build_information_metadata(path: Path) -> dict[str, dict[str, str]]:
                 altitude = rational_float(gps.get(6))
                 if altitude is not None:
                     gps_group["Höhe"] = f"{format_decimal(altitude)} m"
-                groups["GPS"] = gps_group
+                groups[t("GPS")] = gps_group
     except Exception:
         pass
     if not exif_found:
-        groups["WEITERE EXIF-DATEN"] = {"Hinweis": "Keine EXIF-Daten vorhanden"}
+        groups[t("WEITERE EXIF-DATEN")] = {"Hinweis": t("Keine EXIF-Daten vorhanden")}
     return groups
 
 
@@ -2486,6 +2487,7 @@ class ImageViewer(QObject):
         super().__init__()
         self.settings = QSettings(SETTINGS_ORGANIZATION, SETTINGS_APPLICATION)
         self._migrate_legacy_settings()
+        self.language_manager = LanguageManager(self.settings)
         self.start_directory = startup_directory or self._start_directory()
         self.startup_image = startup_image
         saved_interval = self.settings.value(SLIDESHOW_INTERVAL_KEY, 5, type=int)
@@ -2796,6 +2798,7 @@ class ImageViewer(QObject):
         self.escape_shortcut = QShortcut(QKeySequence("Escape"), self.window)
         self.escape_shortcut.activated.connect(self._handle_escape)
         self._create_application_menus()
+        self.language_manager.translate_widget_tree(self.window)
         self.information_toggle_action = QAction(self.window)
         self.information_toggle_action.setShortcut(QKeySequence("I"))
         self.information_toggle_action.setShortcutContext(
@@ -2959,12 +2962,12 @@ class ImageViewer(QObject):
         panel_layout.setContentsMargins(10, 8, 10, 10)
         panel_layout.setSpacing(6)
         header = QHBoxLayout()
-        title = QLabel("Bildinformationen", self.information_panel)
+        title = QLabel(t("Bildinformationen"), self.information_panel)
         title.setStyleSheet("font-weight: 650;")
         close_button = QToolButton(self.information_panel)
         close_button.setText("×")
-        close_button.setToolTip("Bildinformationen schließen (I)")
-        close_button.setAccessibleName("Bildinformationen schließen")
+        close_button.setToolTip(t("Bildinformationen schließen (I)"))
+        close_button.setAccessibleName(t("Bildinformationen schließen"))
         close_button.setAutoRaise(True)
         close_button.setFixedSize(24, 24)
         close_button.clicked.connect(self._hide_information_panel)
@@ -3003,7 +3006,7 @@ class ImageViewer(QObject):
         self._clear_information_content()
         path = self.current_image
         if path is None or not path.is_file():
-            empty = QLabel("Kein Bild ausgewählt", self.information_content)
+            empty = QLabel(t("Kein Bild ausgewählt"), self.information_content)
             empty.setObjectName("informationEmptyLabel")
             self.information_content_layout.insertWidget(0, empty)
             return
@@ -3047,7 +3050,7 @@ class ImageViewer(QObject):
 
     def _refresh_all_metadata_toggle(self) -> None:
         self.all_metadata_toggle.setText(
-            "▼ Alle Metadaten" if self._all_metadata_expanded else "▶ Alle Metadaten"
+            ("▼ " if self._all_metadata_expanded else "▶ ") + t("Alle Metadaten")
         )
         self.all_metadata_content.setVisible(self._all_metadata_expanded)
 
@@ -3167,8 +3170,8 @@ class ImageViewer(QObject):
         return START_DIRECTORY
 
     def _create_application_menus(self) -> None:
-        self.file_menu = self.window.menuBar().addMenu("Datei")
-        self.rename_image_action = QAction("Umbenennen …", self.window)
+        self.file_menu = self.window.menuBar().addMenu(t("Datei"))
+        self.rename_image_action = QAction(t("Umbenennen …"), self.window)
         self.rename_image_action.setShortcut(QKeySequence("F2"))
         self.rename_image_action.setShortcutContext(
             Qt.ShortcutContext.WindowShortcut
@@ -3178,37 +3181,37 @@ class ImageViewer(QObject):
         )
         self.file_menu.addAction(self.rename_image_action)
         self.export_resized_action = QAction(
-            "Ausgewählte Bilder verkleinert exportieren …", self.window
+            t("Ausgewählte Bilder verkleinert exportieren …"), self.window
         )
         self.export_resized_action.triggered.connect(
             lambda: self._show_resized_export_dialog(self._export_context_path)
         )
         self.file_menu.addAction(self.export_resized_action)
-        self.print_action = QAction("Drucken …", self.window)
+        self.print_action = QAction(t("Drucken …"), self.window)
         self.print_action.setShortcut(QKeySequence.StandardKey.Print)
         self.print_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.print_action.triggered.connect(self._show_wysiwyg_print_dialog)
         self.file_menu.addAction(self.print_action)
-        self.multi_print_action = QAction("Mehrere Bilder drucken …", self.window)
+        self.multi_print_action = QAction(t("Mehrere Bilder drucken …"), self.window)
         self.multi_print_action.triggered.connect(self._show_multi_wysiwyg_print_dialog)
         self.file_menu.addAction(self.multi_print_action)
         self.file_menu.addSeparator()
         self.window.addAction(self.rename_image_action)
 
-        self.quit_action = QAction("Beenden", self.window)
+        self.quit_action = QAction(t("Beenden"), self.window)
         self.quit_action.setShortcut(QKeySequence("Alt+F4"))
         self.quit_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.quit_action.triggered.connect(self.window.close)
         self.file_menu.addAction(self.quit_action)
 
-        self.edit_menu = self.window.menuBar().addMenu("Bearbeiten")
-        self.select_all_action = QAction("Alles auswählen", self.window)
+        self.edit_menu = self.window.menuBar().addMenu(t("Bearbeiten"))
+        self.select_all_action = QAction(t("Alles auswählen"), self.window)
         self.select_all_action.setShortcut(QKeySequence("Ctrl+A"))
         self.select_all_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.select_all_action.triggered.connect(self._select_all_images)
         self.edit_menu.addAction(self.select_all_action)
 
-        self.copy_image_action = QAction("Kopieren", self.window)
+        self.copy_image_action = QAction(t("Kopieren"), self.window)
         self.copy_image_action.setShortcut(QKeySequence("Ctrl+C"))
         self.copy_image_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.copy_image_action.triggered.connect(
@@ -3216,7 +3219,7 @@ class ImageViewer(QObject):
         )
         self.edit_menu.addAction(self.copy_image_action)
 
-        self.cut_image_action = QAction("Ausschneiden", self.window)
+        self.cut_image_action = QAction(t("Ausschneiden"), self.window)
         self.cut_image_action.setShortcut(QKeySequence("Ctrl+X"))
         self.cut_image_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.cut_image_action.triggered.connect(
@@ -3224,7 +3227,7 @@ class ImageViewer(QObject):
         )
         self.edit_menu.addAction(self.cut_image_action)
 
-        self.paste_image_action = QAction("Einfügen", self.window)
+        self.paste_image_action = QAction(t("Einfügen"), self.window)
         self.paste_image_action.setShortcut(QKeySequence("Ctrl+V"))
         self.paste_image_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.paste_image_action.triggered.connect(self._paste_image_from_clipboard)
@@ -3237,9 +3240,9 @@ class ImageViewer(QObject):
         ):
             self.window.addAction(action)
 
-        self.image_menu = self.window.menuBar().addMenu("Bild")
+        self.image_menu = self.window.menuBar().addMenu(t("Bild"))
         self.trash_image_action = QAction(
-            "In den Papierkorb verschieben", self.window
+            t("In den Papierkorb verschieben"), self.window
         )
         self.trash_image_action.setShortcut(QKeySequence("Delete"))
         self.trash_image_action.setShortcutContext(
@@ -3252,7 +3255,7 @@ class ImageViewer(QObject):
         self.edit_menu.addAction(self.trash_image_action)
 
         self.show_in_file_manager_action = QAction(
-            "Im Dateimanager anzeigen", self.window
+            t("Im Dateimanager anzeigen"), self.window
         )
         self.show_in_file_manager_action.triggered.connect(
             lambda: self.show_in_file_manager(
@@ -3376,6 +3379,19 @@ class ImageViewer(QObject):
         self.show_hidden_action.setChecked(self._show_hidden_files)
         self.show_hidden_action.toggled.connect(self._set_show_hidden_files)
         self.view_menu.addAction(self.show_hidden_action)
+
+        self.language_menu = self.view_menu.addMenu("Sprache")
+        self.language_action_group = QActionGroup(self.window)
+        self.language_action_group.setExclusive(True)
+        self.language_actions: dict[str, QAction] = {}
+        for code, label in LANGUAGES.items():
+            action = QAction(label, self.window)
+            action.setCheckable(True)
+            action.setChecked(code == self.language_manager.code)
+            action.triggered.connect(lambda checked=False, value=code: self._set_language(value))
+            self.language_action_group.addAction(action)
+            self.language_menu.addAction(action)
+            self.language_actions[code] = action
 
         self.view_menu.addSeparator()
         self.fit_image_action = QAction("Bild einpassen", self.window)
@@ -3588,6 +3604,14 @@ class ImageViewer(QObject):
         self.about_action = QAction(f"Über {APP_NAME} …", self.window)
         self.about_action.triggered.connect(self._show_about)
         self.help_menu.addAction(self.about_action)
+
+    def _set_language(self, code: str) -> None:
+        """Apply and persist one supported interface language immediately."""
+        self.language_manager.set_language(code)
+        for value, action in self.language_actions.items():
+            action.setChecked(value == self.language_manager.code)
+        self._update_information_panel()
+        self.language_manager.translate_widget_tree(self.window)
 
     def _update_view_actions(self) -> None:
         image_loaded = not self.original_image.isNull()
@@ -4305,7 +4329,7 @@ class ImageViewer(QObject):
         if not self._start_file_manager_fallback(directory, errors):
             self._show_file_manager_error(
                 directory,
-                "Der Zielordner konnte nicht im Dateimanager geöffnet werden."
+                t("Der Zielordner konnte nicht im Dateimanager geöffnet werden.")
                 + (f"\n\n{'\n'.join(errors)}" if errors else ""),
             )
 
@@ -4316,12 +4340,12 @@ class ImageViewer(QObject):
         source_path = Path(source_path)
         if not source_path.is_file():
             self._show_rename_error(
-                "Die Bilddatei wurde nicht gefunden.", str(source_path)
+                t("Die Bilddatei wurde nicht gefunden."), str(source_path)
             )
             return
         if source_path.suffix.lower() not in IMAGE_EXTENSIONS:
             self._show_rename_error(
-                "Dieses Bildformat wird nicht unterstützt.", str(source_path)
+                t("Dieses Bildformat wird nicht unterstützt."), str(source_path)
             )
             return
         if not (
@@ -4329,7 +4353,7 @@ class ImageViewer(QObject):
             and os.access(source_path.parent, os.W_OK | os.X_OK)
         ):
             self._show_rename_error(
-                "Der Ordner ist schreibgeschützt oder nicht beschreibbar.",
+                t("Der Ordner ist schreibgeschützt oder nicht beschreibbar."),
                 str(source_path.parent),
             )
             return
@@ -4337,18 +4361,18 @@ class ImageViewer(QObject):
         extension = source_path.suffix
         base_name = source_path.name[: -len(extension)] if extension else source_path.name
         dialog = QDialog(self.window)
-        dialog.setWindowTitle("Bild umbenennen")
+        dialog.setWindowTitle(t("Bild umbenennen"))
         dialog.setModal(True)
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
-        layout.addWidget(QLabel(f"Bisher:\n{source_path.name}", dialog))
-        layout.addWidget(QLabel("Neuer Name:", dialog))
+        layout.addWidget(QLabel(t("Bisher: {name}").format(name=source_path.name), dialog))
+        layout.addWidget(QLabel(t("Neuer Name:"), dialog))
         name_edit = QLineEdit(base_name, dialog)
         name_edit.selectAll()
         layout.addWidget(name_edit)
         extension_label = QLabel(
-            f"Dateiendung: {extension or '(keine)'}", dialog
+            t("Dateiendung: {extension}").format(extension=extension or t("(keine)")), dialog
         )
         layout.addWidget(extension_label)
         buttons = QDialogButtonBox(dialog)
@@ -4382,7 +4406,7 @@ class ImageViewer(QObject):
             target_path = source_path.with_name(new_base_name + extension)
             if target_path.name == source_path.name:
                 self._show_rename_error(
-                    "Der neue Dateiname ist mit dem bisherigen Namen identisch.",
+                    t("Der neue Dateiname ist mit dem bisherigen Namen identisch."),
                     parent=dialog,
                 )
                 name_edit.setFocus()
@@ -4403,7 +4427,7 @@ class ImageViewer(QObject):
             )
             if target_exists and not (same_file and case_only_target):
                 self._show_rename_error(
-                    "Eine Datei mit diesem Namen existiert bereits.",
+                    t("Eine Datei mit diesem Namen existiert bereits."),
                     str(target_path),
                     dialog,
                 )
@@ -4425,7 +4449,7 @@ class ImageViewer(QObject):
                 )
             except OSError as error:
                 self._show_rename_error(
-                    "Die Bilddatei konnte nicht umbenannt werden.",
+                    t("Die Bilddatei konnte nicht umbenannt werden."),
                     str(error),
                     dialog,
                 )
@@ -4441,17 +4465,17 @@ class ImageViewer(QObject):
         source_path: Path, base_name: str
     ) -> str | None:
         if not base_name:
-            return "Bitte gib einen Dateinamen ein."
+            return t("Bitte gib einen Dateinamen ein.")
         if base_name in (".", ".."):
-            return "Dieser Dateiname ist nicht zulässig."
+            return t("Dieser Dateiname ist nicht zulässig.")
         if "/" in base_name or "\0" in base_name:
-            return "Der Dateiname darf weder „/“ noch Nullzeichen enthalten."
+            return t("Der Dateiname darf weder „/“ noch Nullzeichen enthalten.")
         extension = source_path.suffix
         old_base_name = (
             source_path.name[: -len(extension)] if extension else source_path.name
         )
         if base_name == old_base_name:
-            return "Der neue Dateiname ist mit dem bisherigen Namen identisch."
+            return t("Der neue Dateiname ist mit dem bisherigen Namen identisch.")
         return None
 
     @staticmethod
@@ -4600,13 +4624,13 @@ class ImageViewer(QObject):
         parent: QWidget | None = None,
     ) -> None:
         error_dialog = QMessageBox(parent or self.window)
-        error_dialog.setWindowTitle("Bild umbenennen")
+        error_dialog.setWindowTitle(t("Bild umbenennen"))
         error_dialog.setIcon(QMessageBox.Icon.Warning)
         error_dialog.setText(message)
         if detail:
             error_dialog.setInformativeText(detail)
         error_dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
-        error_dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+        error_dialog.button(QMessageBox.StandardButton.Ok).setText(t("OK"))
         self._style_message_box(error_dialog)
         error_dialog.exec()
 
@@ -4630,7 +4654,7 @@ class ImageViewer(QObject):
         ):
             self._show_file_manager_error(
                 target_path,
-                "Der übergeordnete Ordner ist nicht erreichbar.",
+                t("Der übergeordnete Ordner ist nicht erreichbar."),
             )
             return
 
@@ -4644,7 +4668,7 @@ class ImageViewer(QObject):
             return
         self._show_file_manager_error(
             target_path,
-            "Weder Nemo noch ein anderer Dateimanager konnte gestartet werden."
+            t("Weder Nemo noch ein anderer Dateimanager konnte gestartet werden.")
             + (f"\n\n{'\n'.join(errors)}" if errors else ""),
         )
 
@@ -4718,12 +4742,12 @@ class ImageViewer(QObject):
 
     def _show_file_manager_missing_error(self, image_path: Path) -> None:
         dialog = QMessageBox(self.window)
-        dialog.setWindowTitle("Im Dateimanager anzeigen")
+        dialog.setWindowTitle(t("Im Dateimanager anzeigen"))
         dialog.setIcon(QMessageBox.Icon.Warning)
-        dialog.setText("Die Datei wurde nicht gefunden.")
+        dialog.setText(t("Die Datei wurde nicht gefunden."))
         dialog.setInformativeText(str(image_path.absolute()))
         dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
-        dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+        dialog.button(QMessageBox.StandardButton.Ok).setText(t("OK"))
         self._style_message_box(dialog)
         dialog.exec()
 
@@ -4731,12 +4755,12 @@ class ImageViewer(QObject):
         self, image_path: Path, detail: str
     ) -> None:
         dialog = QMessageBox(self.window)
-        dialog.setWindowTitle("Im Dateimanager anzeigen")
+        dialog.setWindowTitle(t("Im Dateimanager anzeigen"))
         dialog.setIcon(QMessageBox.Icon.Critical)
-        dialog.setText("Der Speicherort konnte nicht geöffnet werden.")
+        dialog.setText(t("Der Speicherort konnte nicht geöffnet werden."))
         dialog.setInformativeText(f"{image_path}\n\n{detail}")
         dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
-        dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+        dialog.button(QMessageBox.StandardButton.Ok).setText(t("OK"))
         self._style_message_box(dialog)
         dialog.exec()
 
@@ -4813,13 +4837,13 @@ class ImageViewer(QObject):
 
     def _show_file_operation_error(self, message: str, detail: str) -> None:
         error_dialog = QMessageBox(self.window)
-        error_dialog.setWindowTitle("Dateivorgang fehlgeschlagen")
+        error_dialog.setWindowTitle(t("Dateivorgang fehlgeschlagen"))
         error_dialog.setIcon(QMessageBox.Icon.Critical)
         error_dialog.setTextFormat(Qt.TextFormat.PlainText)
         error_dialog.setText(message)
         error_dialog.setInformativeText(detail)
         error_dialog.setStandardButtons(QMessageBox.StandardButton.Close)
-        error_dialog.button(QMessageBox.StandardButton.Close).setText("Schließen")
+        error_dialog.button(QMessageBox.StandardButton.Close).setText(t("Schließen"))
         self._style_message_box(error_dialog)
         error_dialog.exec()
 
@@ -4850,26 +4874,26 @@ class ImageViewer(QObject):
             return None, "skip", conflict_policy
 
         conflict_dialog = QMessageBox(self.window)
-        conflict_dialog.setWindowTitle("Datei bereits vorhanden")
+        conflict_dialog.setWindowTitle(t("Datei bereits vorhanden"))
         conflict_dialog.setIcon(QMessageBox.Icon.Warning)
         conflict_dialog.setTextFormat(Qt.TextFormat.PlainText)
         conflict_dialog.setText(
-            "Im Zielordner ist bereits eine Datei mit diesem Namen vorhanden."
+            t("Im Zielordner ist bereits eine Datei mit diesem Namen vorhanden.")
         )
         conflict_dialog.setInformativeText(destination.name)
         replace_button = conflict_dialog.addButton(
-            "Datei ersetzen", QMessageBox.ButtonRole.DestructiveRole
+            t("Datei ersetzen"), QMessageBox.ButtonRole.DestructiveRole
         )
         keep_button = conflict_dialog.addButton(
-            "Beide behalten", QMessageBox.ButtonRole.AcceptRole
+            t("Beide behalten"), QMessageBox.ButtonRole.AcceptRole
         )
         skip_button = conflict_dialog.addButton(
-            "Überspringen", QMessageBox.ButtonRole.ActionRole
+            t("Überspringen"), QMessageBox.ButtonRole.ActionRole
         )
         cancel_button = conflict_dialog.addButton(
-            "Abbrechen", QMessageBox.ButtonRole.RejectRole
+            t("Abbrechen"), QMessageBox.ButtonRole.RejectRole
         )
-        apply_to_all = QCheckBox("Für alle weiteren Konflikte übernehmen")
+        apply_to_all = QCheckBox(t("Für alle weiteren Konflikte übernehmen"))
         conflict_dialog.setCheckBox(apply_to_all)
         conflict_dialog.setDefaultButton(cancel_button)
         conflict_dialog.setEscapeButton(cancel_button)
@@ -4886,16 +4910,16 @@ class ImageViewer(QObject):
             return None, "cancel", conflict_policy
 
         replace_dialog = QMessageBox(self.window)
-        replace_dialog.setWindowTitle("Zieldatei ersetzen")
+        replace_dialog.setWindowTitle(t("Zieldatei ersetzen"))
         replace_dialog.setIcon(QMessageBox.Icon.Warning)
         replace_dialog.setTextFormat(Qt.TextFormat.PlainText)
-        replace_dialog.setText("Möchtest du diese Zieldatei wirklich ersetzen?")
+        replace_dialog.setText(t("Möchtest du diese Zieldatei wirklich ersetzen?"))
         replace_dialog.setInformativeText(str(destination))
         confirm_button = replace_dialog.addButton(
-            "Datei ersetzen", QMessageBox.ButtonRole.DestructiveRole
+            t("Datei ersetzen"), QMessageBox.ButtonRole.DestructiveRole
         )
         replace_cancel_button = replace_dialog.addButton(
-            "Abbrechen", QMessageBox.ButtonRole.RejectRole
+            t("Abbrechen"), QMessageBox.ButtonRole.RejectRole
         )
         replace_dialog.setDefaultButton(replace_cancel_button)
         replace_dialog.setEscapeButton(replace_cancel_button)
@@ -4918,7 +4942,7 @@ class ImageViewer(QObject):
         conflict_policy = None
         for source_path in source_paths:
             if not self._is_suitable_clipboard_image(source_path):
-                failures.append(f"{source_path.name}: nicht verfügbar oder nicht unterstützt")
+                failures.append(t("{name}: nicht verfügbar oder nicht unterstützt").format(name=source_path.name))
                 continue
             destination, decision, conflict_policy = self._resolve_destination_path(
                 source_path, conflict_policy
@@ -4926,7 +4950,7 @@ class ImageViewer(QObject):
             if decision == "cancel":
                 break
             if decision == "skip" or destination is None:
-                failures.append(f"{source_path.name}: übersprungen")
+                failures.append(t("{name}: übersprungen").format(name=source_path.name))
                 continue
             same_file = (
                 source_path.resolve(strict=False)
@@ -4941,7 +4965,7 @@ class ImageViewer(QObject):
                 inserted_paths.append(destination)
                 successful_source_paths.add(source_path.resolve(strict=False))
             except (OSError, shutil.Error) as error:
-                failures.append(f"{source_path.name}: {error}")
+                failures.append(t("{name}: {detail}").format(name=source_path.name, detail=error))
 
         if operation == "cut":
             remaining_paths = [
@@ -4959,7 +4983,7 @@ class ImageViewer(QObject):
             self._show_directory(target_directory, inserted_paths)
         if failures:
             self._show_file_operation_error(
-                "Einige Bilder konnten nicht eingefügt werden.",
+                t("Einige Bilder konnten nicht eingefügt werden."),
                 "\n".join(failures),
             )
 
@@ -4981,25 +5005,24 @@ class ImageViewer(QObject):
             self.slideshow_timer.stop()
 
         confirmation = QMessageBox(self.window)
-        confirmation.setWindowTitle("Bild in den Papierkorb verschieben")
+        confirmation.setWindowTitle(t("Bild in den Papierkorb verschieben"))
         confirmation.setIcon(QMessageBox.Icon.Question)
         confirmation.setTextFormat(Qt.TextFormat.PlainText)
         if len(selected) == 1:
             confirmation.setText(
-                "Möchtest du dieses Bild in den Papierkorb verschieben?"
+                t("Möchtest du dieses Bild in den Papierkorb verschieben?")
             )
             confirmation.setInformativeText(selected[0][1].name)
         else:
             confirmation.setText(
-                f"Möchtest du die ausgewählten {len(selected)} Bilder "
-                "in den Papierkorb verschieben?"
+                t("Möchtest du die ausgewählten {count} Bilder in den Papierkorb verschieben?").format(count=len(selected))
             )
         trash_button = confirmation.addButton(
-            "In den Papierkorb",
+            t("In den Papierkorb"),
             QMessageBox.ButtonRole.AcceptRole,
         )
         cancel_button = confirmation.addButton(
-            "Abbrechen",
+            t("Abbrechen"),
             QMessageBox.ButtonRole.RejectRole,
         )
         confirmation.setDefaultButton(cancel_button)
@@ -5022,7 +5045,7 @@ class ImageViewer(QObject):
             try:
                 send2trash(str(image_path))
             except Exception as error:
-                failures.append(f"{image_path.name}: {error}")
+                failures.append(t("{name}: {detail}").format(name=image_path.name, detail=error))
                 continue
             successful.append((row, image_path))
             if cache_name is not None:
@@ -5088,7 +5111,7 @@ class ImageViewer(QObject):
 
         if failures:
             self._show_file_operation_error(
-                "Einige Bilder konnten nicht in den Papierkorb verschoben werden.",
+                t("Einige Bilder konnten nicht in den Papierkorb verschoben werden."),
                 "\n".join(failures),
             )
 
@@ -5747,12 +5770,12 @@ class ImageViewer(QObject):
 
     def _show_folder_open_error(self, directory: Path, error: OSError) -> None:
         dialog = QMessageBox(self.window)
-        dialog.setWindowTitle("Ordner konnte nicht geöffnet werden")
+        dialog.setWindowTitle(t("Ordner konnte nicht geöffnet werden"))
         dialog.setIcon(QMessageBox.Icon.Warning)
-        dialog.setText("Der Ordner kann nicht geöffnet werden.")
+        dialog.setText(t("Der Ordner kann nicht geöffnet werden."))
         dialog.setInformativeText(f"{directory}\n\n{error}")
         dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
-        dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+        dialog.button(QMessageBox.StandardButton.Ok).setText(t("OK"))
         self._style_message_box(dialog)
         dialog.exec()
 
@@ -5771,7 +5794,7 @@ class ImageViewer(QObject):
             if show_open_error:
                 self._show_folder_open_error(directory, error)
             else:
-                self._set_file_name_text("Ordner konnte nicht gelesen werden")
+                self._set_file_name_text(t("Ordner konnte nicht gelesen werden"))
             return False
         if self._slideshow_running:
             self._stop_slideshow()
@@ -5826,7 +5849,7 @@ class ImageViewer(QObject):
         return True
 
     def _show_drop_hint(self) -> None:
-        self.drop_hint_label.setText("Bild oder Ordner hier ablegen")
+        self.drop_hint_label.setText(t("Bild oder Ordner hier ablegen"))
         self.drop_hint_label.setGeometry(self.image_scroll_area.viewport().rect())
         self.drop_hint_label.show()
         self.drop_hint_label.raise_()
@@ -5868,12 +5891,12 @@ class ImageViewer(QObject):
         resolution = resolve_dropped_paths(paths)
         if resolution.error_message is not None:
             dialog = QMessageBox(self.window)
-            dialog.setWindowTitle("Ablage nicht möglich")
+            dialog.setWindowTitle(t("Ablage nicht möglich"))
             dialog.setIcon(QMessageBox.Icon.Warning)
-            dialog.setText("Die abgelegten Elemente können nicht geöffnet werden.")
-            dialog.setInformativeText(resolution.error_message)
+            dialog.setText(t("Die abgelegten Elemente können nicht geöffnet werden."))
+            dialog.setInformativeText(t("Technische Details: {detail}").format(detail=resolution.error_message))
             dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
-            dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+            dialog.button(QMessageBox.StandardButton.Ok).setText(t("OK"))
             self._style_message_box(dialog)
             dialog.exec()
             event.acceptProposedAction()
@@ -5886,11 +5909,10 @@ class ImageViewer(QObject):
             )
         if resolution.ignored_paths:
             dialog = QMessageBox(self.window)
-            dialog.setWindowTitle("Nicht alle Elemente geöffnet")
+            dialog.setWindowTitle(t("Nicht alle Elemente geöffnet"))
             dialog.setIcon(QMessageBox.Icon.Information)
             dialog.setText(
-                "Es wurden nur unterstützte Bilder aus dem Ordner des ersten "
-                "Bildes geöffnet."
+                t("Es wurden nur unterstützte Bilder aus dem Ordner des ersten Bildes geöffnet.")
             )
             dialog.setInformativeText(
                 "Ignoriert:\n" + "\n".join(
@@ -5898,7 +5920,7 @@ class ImageViewer(QObject):
                 )
             )
             dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
-            dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+            dialog.button(QMessageBox.StandardButton.Ok).setText(t("OK"))
             self._style_message_box(dialog)
             dialog.exec()
         event.acceptProposedAction()
@@ -5941,7 +5963,7 @@ class ImageViewer(QObject):
         except OSError:
             self._directory_iterator.close()
             self._directory_iterator = None
-            self._set_file_name_text("Ordner konnte nicht vollständig gelesen werden")
+            self._set_file_name_text(t("Ordner konnte nicht vollständig gelesen werden"))
             self._set_thumbnail_size_actions_enabled(True)
             return
 
@@ -6356,7 +6378,7 @@ class ImageViewer(QObject):
 
     def _update_directory_heading(self) -> None:
         if self.current_directory is None:
-            self.directory_heading_label.setText("Kein Ordner")
+            self.directory_heading_label.setText(t("Kein Ordner"))
             self._directory_path_text = ""
         else:
             directory = self.current_directory
@@ -6824,14 +6846,13 @@ class ImageViewer(QObject):
         if not is_animated:
             return False
         dialog = QMessageBox(self.window)
-        dialog.setWindowTitle("Drehung speichern")
+        dialog.setWindowTitle(t("Drehung speichern"))
         dialog.setIcon(QMessageBox.Icon.Information)
         dialog.setText(
-            "Das dauerhafte Drehen animierter GIF-Dateien wird derzeit nicht "
-            "unterstützt."
+            t("Das dauerhafte Drehen animierter GIF-Dateien wird derzeit nicht unterstützt.")
         )
         dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
-        dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+        dialog.button(QMessageBox.StandardButton.Ok).setText(t("OK"))
         self._style_message_box(dialog)
         dialog.exec()
         return True
@@ -6848,7 +6869,7 @@ class ImageViewer(QObject):
             return
         destination_name, _selected_filter = QFileDialog.getSaveFileName(
             self.window,
-            "Gedrehte Kopie speichern",
+            t("Gedrehte Kopie speichern"),
             str(suggested_path),
             "Bilder (*.jpg *.jpeg *.png *.webp *.tif *.tiff *.bmp)",
         )
@@ -6861,8 +6882,7 @@ class ImageViewer(QObject):
             == self._resolved_sort_path(self.current_image)
         ):
             self._show_rotation_save_error(
-                "Für das Überschreiben der Originaldatei verwenden Sie bitte "
-                "„Drehung im Original speichern …“."
+                t("Für das Überschreiben der Originaldatei verwenden Sie bitte „Drehung im Original speichern …“.")
             )
             return
         if destination.exists() and not self._confirm_rotated_copy_overwrite(
@@ -6874,15 +6894,15 @@ class ImageViewer(QObject):
 
     def _confirm_rotated_copy_overwrite(self, destination: Path) -> bool:
         dialog = QMessageBox(self.window)
-        dialog.setWindowTitle("Datei überschreiben")
+        dialog.setWindowTitle(t("Datei überschreiben"))
         dialog.setIcon(QMessageBox.Icon.Warning)
-        dialog.setText("Die gewählte Datei ist bereits vorhanden.")
+        dialog.setText(t("Die gewählte Datei ist bereits vorhanden."))
         dialog.setInformativeText(str(destination))
         overwrite_button = dialog.addButton(
-            "Überschreiben", QMessageBox.ButtonRole.AcceptRole
+            t("Überschreiben"), QMessageBox.ButtonRole.AcceptRole
         )
         cancel_button = dialog.addButton(
-            "Abbrechen", QMessageBox.ButtonRole.RejectRole
+            t("Abbrechen"), QMessageBox.ButtonRole.RejectRole
         )
         dialog.setDefaultButton(cancel_button)
         dialog.setEscapeButton(cancel_button)
@@ -6902,17 +6922,14 @@ class ImageViewer(QObject):
         image_path = self.current_image
         if not os.access(image_path, os.W_OK):
             self._show_rotation_save_error(
-                "Die Originaldatei ist schreibgeschützt oder es fehlen "
-                "Schreibrechte."
+                t("Die Originaldatei ist schreibgeschützt oder es fehlen Schreibrechte.")
             )
             return
         dialog = QMessageBox(self.window)
-        dialog.setWindowTitle("Drehung im Original speichern")
+        dialog.setWindowTitle(t("Drehung im Original speichern"))
         dialog.setIcon(QMessageBox.Icon.Warning)
         dialog.setText(
-            "Möchtest du die Drehung dauerhaft in der Originaldatei speichern?\n\n"
-            "Die Bilddaten werden neu gespeichert. Dieser Vorgang kann in "
-            "BildBlick nicht direkt rückgängig gemacht werden."
+            t("Möchtest du die Drehung dauerhaft in der Originaldatei speichern?\n\nDie Bilddaten werden neu gespeichert. Dieser Vorgang kann in BildBlick nicht direkt rückgängig gemacht werden.")
         )
         dialog.setInformativeText(
             f"Dateiname: {image_path.name}\n"
@@ -6920,10 +6937,10 @@ class ImageViewer(QObject):
             f"Aktuelle Drehung: {self._display_rotation_description()}"
         )
         overwrite_button = dialog.addButton(
-            "Original überschreiben", QMessageBox.ButtonRole.DestructiveRole
+            t("Original überschreiben"), QMessageBox.ButtonRole.DestructiveRole
         )
         cancel_button = dialog.addButton(
-            "Abbrechen", QMessageBox.ButtonRole.RejectRole
+            t("Abbrechen"), QMessageBox.ButtonRole.RejectRole
         )
         dialog.setDefaultButton(cancel_button)
         dialog.setEscapeButton(cancel_button)
@@ -7122,12 +7139,12 @@ class ImageViewer(QObject):
 
     def _show_rotation_save_error(self, detail: str) -> None:
         dialog = QMessageBox(self.window)
-        dialog.setWindowTitle("Drehung konnte nicht gespeichert werden")
+        dialog.setWindowTitle(t("Drehung konnte nicht gespeichert werden"))
         dialog.setIcon(QMessageBox.Icon.Critical)
-        dialog.setText("Das gedrehte Bild konnte nicht gespeichert werden.")
+        dialog.setText(t("Das gedrehte Bild konnte nicht gespeichert werden."))
         dialog.setInformativeText(detail)
         dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
-        dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+        dialog.button(QMessageBox.StandardButton.Ok).setText(t("OK"))
         self._style_message_box(dialog)
         dialog.exec()
 
@@ -7621,7 +7638,7 @@ def resolve_dropped_paths(paths: list[Path]) -> DropResolution:
     """Accept supported images from the first valid image directory only."""
     if not paths:
         return DropResolution(
-            None, [], None, [], "Es wurden keine Dateien oder Ordner abgelegt."
+            None, [], None, [], t("Es wurden keine Dateien oder Ordner abgelegt.")
         )
 
     resolved_entries: list[tuple[Path, Path | None, str | None]] = []
@@ -7642,7 +7659,7 @@ def resolve_dropped_paths(paths: list[Path]) -> DropResolution:
                 [],
                 None,
                 [],
-                "Bitte legen Sie entweder einen einzelnen Ordner oder Bilddateien ab.",
+                t("Bitte legen Sie entweder einen einzelnen Ordner oder Bilddateien ab."),
             )
         return DropResolution(directories[0], [], None, [], None)
 

@@ -2,6 +2,26 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.17.0
+
+### Neu
+
+- Mehrsprachige Benutzeroberfläche in Deutsch, Englisch, Französisch, Spanisch und Ukrainisch.
+- Dauerhaft gespeicherte Sprachwahl.
+- Duplikatfinder 2.0 mit mehreren Suchordnern, optionalen Unterordnern und Suche nach gleichen Dateinamen.
+- Erkennung exakt identischer Dateien sowie visuell gleicher und ähnlicher Bilder per dHash.
+- Ähnlichkeitsstufen Streng, Normal und Großzügig, Mehrgrund-Erkennung sowie Abmessungen und Aufnahmedatum in Ergebnissen.
+
+### Verbessert
+
+- Übersichtlichere Duplikatfinder-Oberfläche mit animierter Suchanzeige, klaren Suchphasen und Statuszahlen.
+- Internationale Datei-, Ordner- und Papierkorb-Dialoge.
+
+### Sicherheit
+
+- Keine automatische Löschung; visuelle Treffer werden nie automatisch für den Papierkorb markiert.
+- Mindestens eine Datei je Duplikatgruppe bleibt erhalten.
+
 ## 1.16.0
 
 ### Neu
