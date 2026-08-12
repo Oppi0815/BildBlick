@@ -139,7 +139,7 @@ from i18n import LANGUAGES, LanguageManager, t
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.17.0"
+APP_VERSION = "1.18.0"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 LOGGER = logging.getLogger(__name__)
 
@@ -1742,27 +1742,27 @@ class ImageExportDialog(QDialog):
         self.worker_pool = QThreadPool(self)
         self.worker_pool.setMaxThreadCount(2)
 
-        self.setWindowTitle("Bilder verkleinert exportieren")
+        self.setWindowTitle(t("Bilder verkleinert exportieren"))
         self.setMinimumSize(590, 650)
         self.resize(670, 720)
         self.setStyleSheet(message_box_stylesheet(colors))
         main_layout = QVBoxLayout(self)
-        heading = QLabel(f"{len(paths)} Bilder ausgewählt", self)
+        heading = QLabel(t("{count} Bilder ausgewählt").format(count=len(paths)), self)
         heading.setStyleSheet("font-size: 16px; font-weight: 600;")
         main_layout.addWidget(heading)
 
-        size_group = QGroupBox("Zielgröße", self)
+        size_group = QGroupBox(t("Zielgröße"), self)
         size_form = QFormLayout(size_group)
         self.preset_combo = QComboBox(size_group)
         for label, _size in self.PRESETS:
-            self.preset_combo.addItem(label)
-        size_form.addRow("Voreinstellung:", self.preset_combo)
+            self.preset_combo.addItem(t(label))
+        size_form.addRow(t("Voreinstellung:"), self.preset_combo)
         size_row = QHBoxLayout()
         self.width_spin = QSpinBox(size_group)
         self.height_spin = QSpinBox(size_group)
         for spin in (self.width_spin, self.height_spin):
             spin.setRange(100, 20000)
-            spin.setSuffix(" Pixel")
+            spin.setSuffix(t(" Pixel"))
         self.width_spin.setValue(
             settings.value(EXPORT_WIDTH_KEY, 1920, type=int)
         )
@@ -1772,15 +1772,15 @@ class ImageExportDialog(QDialog):
         size_row.addWidget(self.width_spin)
         size_row.addWidget(QLabel("×", size_group))
         size_row.addWidget(self.height_spin)
-        size_form.addRow("Maximale Breite × Höhe:", size_row)
-        self.enlarge_checkbox = QCheckBox("Kleinere Bilder vergrößern", size_group)
+        size_form.addRow(t("Maximale Breite × Höhe:"), size_row)
+        self.enlarge_checkbox = QCheckBox(t("Kleinere Bilder vergrößern"), size_group)
         self.enlarge_checkbox.setChecked(
             settings.value(EXPORT_ENLARGE_KEY, False, type=bool)
         )
         size_form.addRow("", self.enlarge_checkbox)
         main_layout.addWidget(size_group)
 
-        quality_group = QGroupBox("JPEG-Qualität", self)
+        quality_group = QGroupBox(t("JPEG-Qualität"), self)
         quality_layout = QVBoxLayout(quality_group)
         self.quality_label = QLabel(quality_group)
         self.quality_slider = QSlider(Qt.Orientation.Horizontal, quality_group)
@@ -1792,19 +1792,18 @@ class ImageExportDialog(QDialog):
         quality_layout.addWidget(self.quality_slider)
         quality_layout.addWidget(
             QLabel(
-                "70: kleine Dateien · 85: gute Qualität · 90: sehr gute "
-                "Qualität · 95: sehr hohe Qualität",
+                t("70: kleine Dateien · 85: gute Qualität · 90: sehr gute Qualität · 95: sehr hohe Qualität"),
                 quality_group,
             )
         )
         main_layout.addWidget(quality_group)
 
-        naming_group = QGroupBox("Dateinamen und Zielordner", self)
+        naming_group = QGroupBox(t("Dateinamen und Zielordner"), self)
         naming_form = QFormLayout(naming_group)
         self.suffix_edit = QLineEdit(
             settings.value(EXPORT_SUFFIX_KEY, "-klein", type=str), naming_group
         )
-        naming_form.addRow("Dateinamen-Zusatz:", self.suffix_edit)
+        naming_form.addRow(t("Dateinamen-Zusatz:"), self.suffix_edit)
         destination_row = QHBoxLayout()
         saved_directory = settings.value(EXPORT_DIRECTORY_KEY, "", type=str)
         suggested_directory = (
@@ -1813,22 +1812,22 @@ class ImageExportDialog(QDialog):
             else default_directory / "Export"
         )
         self.destination_edit = QLineEdit(str(suggested_directory), naming_group)
-        browse_button = QPushButton("Durchsuchen …", naming_group)
+        browse_button = QPushButton(t("Durchsuchen …"), naming_group)
         browse_button.clicked.connect(self._browse_destination)
         destination_row.addWidget(self.destination_edit, 1)
         destination_row.addWidget(browse_button)
-        naming_form.addRow("Zielordner:", destination_row)
+        naming_form.addRow(t("Zielordner:"), destination_row)
         main_layout.addWidget(naming_group)
 
-        metadata_group = QGroupBox("Metadaten", self)
+        metadata_group = QGroupBox(t("Metadaten"), self)
         metadata_layout = QVBoxLayout(metadata_group)
         self.metadata_checkbox = QCheckBox(
-            "Aufnahmedaten übernehmen", metadata_group
+            t("Aufnahmedaten übernehmen"), metadata_group
         )
         self.metadata_checkbox.setChecked(
             settings.value(EXPORT_METADATA_KEY, True, type=bool)
         )
-        self.gps_checkbox = QCheckBox("GPS-Daten entfernen", metadata_group)
+        self.gps_checkbox = QCheckBox(t("GPS-Daten entfernen"), metadata_group)
         self.gps_checkbox.setChecked(
             settings.value(EXPORT_REMOVE_GPS_KEY, True, type=bool)
         )
@@ -1836,29 +1835,29 @@ class ImageExportDialog(QDialog):
         metadata_layout.addWidget(self.gps_checkbox)
         main_layout.addWidget(metadata_group)
 
-        estimate_group = QGroupBox("Größenabschätzung", self)
+        estimate_group = QGroupBox(t("Größenabschätzung"), self)
         estimate_layout = QVBoxLayout(estimate_group)
-        self.estimate_label = QLabel("Dateigröße wird geschätzt …", estimate_group)
+        self.estimate_label = QLabel(t("Dateigröße wird geschätzt …"), estimate_group)
         self.average_label = QLabel("", estimate_group)
         estimate_layout.addWidget(self.estimate_label)
         estimate_layout.addWidget(self.average_label)
         main_layout.addWidget(estimate_group)
 
-        progress_group = QGroupBox("Exportfortschritt", self)
+        progress_group = QGroupBox(t("Exportfortschritt"), self)
         progress_layout = QVBoxLayout(progress_group)
         self.progress_bar = QProgressBar(progress_group)
         self.progress_bar.setRange(0, len(paths))
-        self.progress_label = QLabel("Bereit zum Exportieren", progress_group)
+        self.progress_label = QLabel(t("Bereit zum Exportieren"), progress_group)
         progress_layout.addWidget(self.progress_bar)
         progress_layout.addWidget(self.progress_label)
         main_layout.addWidget(progress_group)
 
         buttons = QDialogButtonBox(self)
         self.export_button = buttons.addButton(
-            "Exportieren", QDialogButtonBox.ButtonRole.AcceptRole
+            t("Exportieren"), QDialogButtonBox.ButtonRole.AcceptRole
         )
         self.cancel_button = buttons.addButton(
-            "Abbrechen", QDialogButtonBox.ButtonRole.RejectRole
+            t("Abbrechen"), QDialogButtonBox.ButtonRole.RejectRole
         )
         self.cancel_button.setDefault(True)
         self.cancel_button.setFocus()
@@ -1927,12 +1926,12 @@ class ImageExportDialog(QDialog):
 
     def _update_quality_label(self) -> None:
         self.quality_label.setText(
-            f"JPEG-Qualität: {self.quality_slider.value()} %"
+            t("JPEG-Qualität: {quality} %").format(quality=self.quality_slider.value())
         )
 
     def _schedule_estimate(self) -> None:
         self._estimate_generation += 1
-        self.estimate_label.setText("Dateigröße wird geschätzt …")
+        self.estimate_label.setText(t("Dateigröße wird geschätzt …"))
         self.average_label.clear()
         self.estimate_timer.start()
 
@@ -1951,23 +1950,23 @@ class ImageExportDialog(QDialog):
         if generation != self._estimate_generation:
             return
         if estimated_size is None:
-            self.estimate_label.setText("Größe konnte nicht geschätzt werden.")
+            self.estimate_label.setText(t("Größe konnte nicht geschätzt werden."))
             self.estimate_label.setToolTip(error)
             self.average_label.clear()
             return
         size = int(estimated_size)
         self.estimate_label.setText(
-            f"Geschätzte Gesamtgröße: ca. {format_file_size(size)}"
+            t("Geschätzte Gesamtgröße: ca. {size}").format(size=format_file_size(size))
         )
         average = round(size / len(self.paths)) if self.paths else 0
         self.average_label.setText(
-            f"Durchschnittlich ca. {format_file_size(average)} pro Bild"
+            t("Durchschnittlich ca. {size} pro Bild").format(size=format_file_size(average))
         )
 
     def _browse_destination(self) -> None:
         directory = QFileDialog.getExistingDirectory(
             self,
-            "Zielordner auswählen",
+            t("Zielordner auswählen"),
             self.destination_edit.text() or str(self.default_directory),
         )
         if directory:
@@ -1977,11 +1976,11 @@ class ImageExportDialog(QDialog):
         destination_text = self.destination_edit.text().strip()
         suffix = self.suffix_edit.text().strip()
         if not destination_text:
-            self._show_input_error("Bitte wähle einen Zielordner aus.")
+            self._show_input_error(t("Bitte wähle einen Zielordner aus."))
             return
         if "/" in suffix or "\0" in suffix:
             self._show_input_error(
-                "Der Dateinamen-Zusatz darf weder „/“ noch Nullzeichen enthalten."
+                t("Der Dateinamen-Zusatz darf weder „/“ noch Nullzeichen enthalten.")
             )
             return
         destination = Path(destination_text).expanduser()
@@ -1992,7 +1991,7 @@ class ImageExportDialog(QDialog):
             existing_parent, os.W_OK | os.X_OK
         ):
             self._show_input_error(
-                "Der Zielordner kann nicht angelegt oder beschrieben werden."
+                t("Der Zielordner kann nicht angelegt oder beschrieben werden.")
             )
             return
 
@@ -2008,7 +2007,7 @@ class ImageExportDialog(QDialog):
 
         self._export_running = True
         self.export_button.setEnabled(False)
-        self.cancel_button.setText("Abbrechen")
+        self.cancel_button.setText(t("Abbrechen"))
         self.progress_bar.setValue(0)
         task = ImageExportTask(
             self.paths,
@@ -2025,13 +2024,13 @@ class ImageExportDialog(QDialog):
     def _export_progress(self, current: int, total: int, filename: str) -> None:
         self.progress_bar.setMaximum(total)
         self.progress_bar.setValue(current - 1)
-        self.progress_label.setText(f"Bild {current} von {total}: {filename}")
+        self.progress_label.setText(t("Bild {current} von {total}: {name}").format(current=current, total=total, name=filename))
 
     def _cancel_or_close(self) -> None:
         if self._export_running and self.export_task is not None:
             self.export_task.cancel()
             self.cancel_button.setEnabled(False)
-            self.progress_label.setText("Export wird abgebrochen …")
+            self.progress_label.setText(t("Export wird abgebrochen …"))
             return
         self.reject()
 
@@ -2044,37 +2043,35 @@ class ImageExportDialog(QDialog):
     def _export_finished(self, result: dict[str, object]) -> None:
         self._export_running = False
         self.cancel_button.setEnabled(True)
-        self.cancel_button.setText("Schließen")
+        self.cancel_button.setText(t("Schließen"))
         self.export_button.setEnabled(True)
         successful = list(result["successful"])
         skipped = list(result["skipped"])
         failures = list(result["failures"])
         if result["cancelled"]:
-            self.progress_label.setText("Export abgebrochen")
+            self.progress_label.setText(t("Export abgebrochen"))
         else:
             self.progress_bar.setValue(self.progress_bar.maximum())
-            self.progress_label.setText("Export abgeschlossen")
+            self.progress_label.setText(t("Export abgeschlossen"))
         dialog = QMessageBox(self)
-        dialog.setWindowTitle("Bilder verkleinert exportieren")
+        dialog.setWindowTitle(t("Bilder verkleinert exportieren"))
         dialog.setIcon(QMessageBox.Icon.Information if not failures else QMessageBox.Icon.Warning)
         dialog.setText(
-            f"{len(successful)} Bilder wurden erfolgreich exportiert."
+            t("{count} Bilder wurden erfolgreich exportiert.").format(count=len(successful))
         )
         dialog.setInformativeText(
-            f"Zielordner: {result['destination']}\n"
-            f"Tatsächliche Gesamtgröße: {format_file_size(int(result['total_size']))}\n"
-            f"Übersprungen: {len(skipped)}\n"
-            f"Fehlgeschlagen: {len(failures)}"
-            + ("\nDer Export wurde abgebrochen." if result["cancelled"] else "")
+            t("Zielordner: {path}\nTatsächliche Gesamtgröße: {size}\nÜbersprungen: {skipped}\nFehlgeschlagen: {failed}").format(path=result["destination"], size=format_file_size(int(result["total_size"])), skipped=len(skipped), failed=len(failures)) + ("\n" + t("Der Export wurde abgebrochen.") if result["cancelled"] else "")
         )
         details = skipped + failures
         if details:
-            dialog.setDetailedText("\n".join(details))
+            dialog.setDetailedText(
+                t("Exportfehler: {detail}").format(detail="\n".join(details))
+            )
         open_button = dialog.addButton(
-            "Zielordner öffnen", QMessageBox.ButtonRole.ActionRole
+            t("Zielordner öffnen"), QMessageBox.ButtonRole.ActionRole
         )
         close_button = dialog.addButton(
-            "Schließen", QMessageBox.ButtonRole.RejectRole
+            t("Schließen"), QMessageBox.ButtonRole.RejectRole
         )
         dialog.setDefaultButton(close_button)
         dialog.exec()
@@ -2083,11 +2080,11 @@ class ImageExportDialog(QDialog):
 
     def _show_input_error(self, message: str) -> None:
         dialog = QMessageBox(self)
-        dialog.setWindowTitle("Bilder verkleinert exportieren")
+        dialog.setWindowTitle(t("Bilder verkleinert exportieren"))
         dialog.setIcon(QMessageBox.Icon.Warning)
         dialog.setText(message)
         dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
-        dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+        dialog.button(QMessageBox.StandardButton.Ok).setText(t("OK"))
         dialog.exec()
 
 
@@ -2354,14 +2351,14 @@ class ImageComparisonDialog(QDialog):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Bilder vergleichen")
+        self.setWindowTitle(t("Bilder vergleichen"))
         self.setModal(True)
         self.resize(1200, 760)
         self.setMinimumSize(800, 500)
         self._paths = [left_path, right_path]
 
         layout = QVBoxLayout(self)
-        self.coupling_checkbox = QCheckBox("Zoom und Verschieben koppeln")
+        self.coupling_checkbox = QCheckBox(t("Zoom und Verschieben koppeln"))
         self.coupling_checkbox.setChecked(True)
         layout.addWidget(self.coupling_checkbox)
 
@@ -2377,10 +2374,10 @@ class ImageComparisonDialog(QDialog):
         layout.addWidget(self.splitter, 1)
 
         button_row = QHBoxLayout()
-        self.fit_button = QPushButton("Einpassen")
+        self.fit_button = QPushButton(t("Einpassen"))
         self.actual_size_button = QPushButton("100 %")
-        self.swap_button = QPushButton("Bilder tauschen")
-        self.close_button = QPushButton("Schließen")
+        self.swap_button = QPushButton(t("Bilder tauschen"))
+        self.close_button = QPushButton(t("Schließen"))
         button_row.addWidget(self.fit_button)
         button_row.addWidget(self.actual_size_button)
         button_row.addWidget(self.swap_button)
@@ -2553,7 +2550,7 @@ class ImageViewer(QObject):
         self.status_bar = self.window.statusBar()
         self.status_bar.setSizeGripEnabled(False)
         self.status_bar.setContentsMargins(4, 0, 4, 0)
-        self.status_info_label = QLabel("Kein Bild ausgewählt", self.status_bar)
+        self.status_info_label = QLabel(t("Kein Bild ausgewählt"), self.status_bar)
         self.status_info_label.setObjectName("statusInfoLabel")
         self.status_info_label.setSizePolicy(
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
@@ -2566,7 +2563,7 @@ class ImageViewer(QObject):
         )
         self.status_bar.addWidget(self.status_info_label, 1)
         self.status_bar.addPermanentWidget(self.status_zoom_label)
-        self._status_full_text = "Kein Bild ausgewählt"
+        self._status_full_text = t("Kein Bild ausgewählt")
         self.directory_tree = self._widget(QTreeView, "directoryTreeView")
         self.directory_heading_label = self._widget(QLabel, "computerLabel")
         self.thumbnail_list = self._widget(QListWidget, "thumbnailList")
@@ -2577,11 +2574,11 @@ class ImageViewer(QObject):
         self.previous_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.next_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.previous_button.setText("‹")
-        self.previous_button.setToolTip("Vorheriges Bild")
-        self.previous_button.setAccessibleName("Vorheriges Bild")
+        self.previous_button.setToolTip(t("Vorheriges Bild"))
+        self.previous_button.setAccessibleName(t("Vorheriges Bild"))
         self.next_button.setText("›")
-        self.next_button.setToolTip("Nächstes Bild")
-        self.next_button.setAccessibleName("Nächstes Bild")
+        self.next_button.setToolTip(t("Nächstes Bild"))
+        self.next_button.setAccessibleName(t("Nächstes Bild"))
         self.file_name_label = self._widget(QLabel, "fileNameLabel")
         self.previous_button.setFixedSize(22, 18)
         self.next_button.setFixedSize(22, 18)
@@ -2717,7 +2714,7 @@ class ImageViewer(QObject):
         self.image_label.setWordWrap(True)
         self.image_label.setMouseTracking(True)
         self.image_scroll_area.viewport().setMouseTracking(True)
-        self.image_label.setText("Bild anklicken, um es anzuzeigen")
+        self.image_label.setText(t("Bild anklicken, um es anzuzeigen"))
         self.image_label.resize(self.image_scroll_area.viewport().size())
         image_tooltip = """🖱 Bedienung
 
@@ -2727,8 +2724,8 @@ class ImageViewer(QObject):
 • 0: Bild einpassen
 • 1: Originalgröße
 • F11: Vollbild"""
-        self.image_label.setToolTip(image_tooltip)
-        self.image_scroll_area.viewport().setToolTip(image_tooltip)
+        self.image_label.setToolTip(t(image_tooltip))
+        self.image_scroll_area.viewport().setToolTip(t(image_tooltip))
         self.zoom_indicator = QLabel(self.image_scroll_area.viewport())
         self.zoom_indicator.setAttribute(
             Qt.WidgetAttribute.WA_TransparentForMouseEvents
@@ -2809,6 +2806,7 @@ class ImageViewer(QObject):
         )
         self.window.addAction(self.information_toggle_action)
         self._create_directory_navigation_buttons()
+        self.refresh_i18n()
         self.clipboard.dataChanged.connect(self._clipboard_changed)
         self._clipboard_changed()
         self._update_navigation_buttons()
@@ -2831,14 +2829,14 @@ class ImageViewer(QObject):
         self.previous_pdf_page_button = QPushButton("‹", self.pdf_page_navigation)
         self.previous_pdf_page_button.setObjectName("previousPdfPageButton")
         self.previous_pdf_page_button.setToolTip("Vorherige PDF-Seite")
-        self.previous_pdf_page_button.setAccessibleName("Vorherige PDF-Seite")
+        self.previous_pdf_page_button.setAccessibleName(t("Vorherige PDF-Seite"))
         self.pdf_page_label = QLabel("", self.pdf_page_navigation)
         self.pdf_page_label.setObjectName("pdfPageLabel")
         self.pdf_page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.next_pdf_page_button = QPushButton("›", self.pdf_page_navigation)
         self.next_pdf_page_button.setObjectName("nextPdfPageButton")
         self.next_pdf_page_button.setToolTip("Nächste PDF-Seite")
-        self.next_pdf_page_button.setAccessibleName("Nächste PDF-Seite")
+        self.next_pdf_page_button.setAccessibleName(t("Nächste PDF-Seite"))
         for button in (self.previous_pdf_page_button, self.next_pdf_page_button):
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.setFixedSize(22, 20)
@@ -2962,11 +2960,11 @@ class ImageViewer(QObject):
         panel_layout.setContentsMargins(10, 8, 10, 10)
         panel_layout.setSpacing(6)
         header = QHBoxLayout()
-        title = QLabel(t("Bildinformationen"), self.information_panel)
+        title = QLabel("Bildinformationen", self.information_panel)
         title.setStyleSheet("font-weight: 650;")
         close_button = QToolButton(self.information_panel)
         close_button.setText("×")
-        close_button.setToolTip(t("Bildinformationen schließen (I)"))
+        close_button.setToolTip("Bildinformationen schließen (I)")
         close_button.setAccessibleName(t("Bildinformationen schließen"))
         close_button.setAutoRaise(True)
         close_button.setFixedSize(24, 24)
@@ -3080,7 +3078,7 @@ class ImageViewer(QObject):
             except OSError:
                 pass
         if not fields_by_group:
-            empty = QLabel("Keine weiteren Metadaten vorhanden", self.all_metadata_content)
+            empty = QLabel(t("Keine weiteren Metadaten vorhanden"), self.all_metadata_content)
             empty.setObjectName("informationEmptyLabel")
             empty.setWordWrap(True)
             self.all_metadata_layout.addWidget(empty)
@@ -3268,7 +3266,7 @@ class ImageViewer(QObject):
         display_rotation_tooltip = (
             "Dreht nur die Anzeige. Die Originaldatei bleibt unverändert."
         )
-        self.rotate_left_action = QAction("Nach links drehen", self.window)
+        self.rotate_left_action = QAction(t("Nach links drehen"), self.window)
         self.rotate_left_action.setShortcut(QKeySequence("Ctrl+Left"))
         self.rotate_left_action.setShortcutContext(
             Qt.ShortcutContext.WindowShortcut
@@ -3280,7 +3278,7 @@ class ImageViewer(QObject):
             )
         )
 
-        self.rotate_right_action = QAction("Nach rechts drehen", self.window)
+        self.rotate_right_action = QAction(t("Nach rechts drehen"), self.window)
         self.rotate_right_action.setShortcut(QKeySequence("Ctrl+Right"))
         self.rotate_right_action.setShortcutContext(
             Qt.ShortcutContext.WindowShortcut
@@ -3293,7 +3291,7 @@ class ImageViewer(QObject):
         )
 
         self.reset_rotation_action = QAction(
-            "Drehung zurücksetzen", self.window
+            t("Drehung zurücksetzen"), self.window
         )
         self.reset_rotation_action.setToolTip(display_rotation_tooltip)
         self.reset_rotation_action.triggered.connect(
@@ -3311,7 +3309,7 @@ class ImageViewer(QObject):
 
         self.image_menu.addSeparator()
         self.save_rotated_copy_action = QAction(
-            "Gedrehte Kopie speichern …", self.window
+            t("Gedrehte Kopie speichern …"), self.window
         )
         self.save_rotated_copy_action.triggered.connect(
             lambda: self._save_rotated_copy(self._rotation_context_path)
@@ -3319,7 +3317,7 @@ class ImageViewer(QObject):
         self.image_menu.addAction(self.save_rotated_copy_action)
 
         self.save_rotation_to_original_action = QAction(
-            "Drehung im Original speichern …", self.window
+            t("Drehung im Original speichern …"), self.window
         )
         self.save_rotation_to_original_action.triggered.connect(
             lambda: self._save_rotation_to_original(
@@ -3329,25 +3327,23 @@ class ImageViewer(QObject):
         self.image_menu.addAction(self.save_rotation_to_original_action)
 
         self.compare_images_action = QAction(
-            "Bilder vergleichen …", self.window
+            t("Bilder vergleichen …"), self.window
         )
         self.compare_images_action.triggered.connect(self._compare_selected_images)
         self.image_menu.addSeparator()
-        image_placeholder_action = QAction("Weitere Bildfunktionen folgen …", self.window)
+        image_placeholder_action = QAction(t("Weitere Bildfunktionen folgen …"), self.window)
         image_placeholder_action.setEnabled(False)
         self.image_menu.addAction(image_placeholder_action)
 
-        self.view_menu = self.window.menuBar().addMenu("Ansicht")
-        self.fullscreen_action = QAction("Vollbild", self.window)
+        self.view_menu = self.window.menuBar().addMenu(t("Ansicht"))
+        self.fullscreen_action = QAction(t("Vollbild"), self.window)
         self.fullscreen_action.setCheckable(True)
         self.fullscreen_action.setShortcut(QKeySequence("F11"))
         self.fullscreen_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.fullscreen_action.triggered.connect(self._toggle_fullscreen)
         self.view_menu.addAction(self.fullscreen_action)
 
-        self.leave_pdf_preview_action = QAction(
-            "PDF-Vorschau verlassen", self.window
-        )
+        self.leave_pdf_preview_action = QAction("PDF-Vorschau verlassen", self.window)
         self.leave_pdf_preview_action.triggered.connect(self._leave_pdf_preview)
         self.leave_pdf_preview_action.setEnabled(False)
         self.view_menu.addAction(self.leave_pdf_preview_action)
@@ -3367,7 +3363,7 @@ class ImageViewer(QObject):
         self._update_pdf_page_navigation()
 
         self.show_hidden_action = QAction(
-            "Versteckte Dateien und Ordner anzeigen", self.window
+            t("Versteckte Dateien und Ordner anzeigen"), self.window
         )
         self.show_hidden_action.setCheckable(True)
         self.show_hidden_action.setToolTip(
@@ -3380,7 +3376,7 @@ class ImageViewer(QObject):
         self.show_hidden_action.toggled.connect(self._set_show_hidden_files)
         self.view_menu.addAction(self.show_hidden_action)
 
-        self.language_menu = self.view_menu.addMenu("Sprache")
+        self.language_menu = self.view_menu.addMenu(t("Sprache"))
         self.language_action_group = QActionGroup(self.window)
         self.language_action_group.setExclusive(True)
         self.language_actions: dict[str, QAction] = {}
@@ -3394,13 +3390,13 @@ class ImageViewer(QObject):
             self.language_actions[code] = action
 
         self.view_menu.addSeparator()
-        self.fit_image_action = QAction("Bild einpassen", self.window)
+        self.fit_image_action = QAction(t("Bild einpassen"), self.window)
         self.fit_image_action.setShortcut(QKeySequence("0"))
         self.fit_image_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.fit_image_action.triggered.connect(self._fit_image_to_window)
         self.view_menu.addAction(self.fit_image_action)
 
-        self.actual_size_action = QAction("Originalgröße", self.window)
+        self.actual_size_action = QAction(t("Originalgröße"), self.window)
         self.actual_size_action.setShortcut(QKeySequence("1"))
         self.actual_size_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.actual_size_action.triggered.connect(self._show_image_at_actual_size)
@@ -3408,7 +3404,7 @@ class ImageViewer(QObject):
 
         self.view_menu.addSeparator()
         self.thumbnail_size_action = QAction(
-            "Größe der Vorschaubilder …", self.window
+            t("Größe der Vorschaubilder …"), self.window
         )
         self.thumbnail_size_action.triggered.connect(
             self._show_thumbnail_size_dialog
@@ -3416,7 +3412,7 @@ class ImageViewer(QObject):
         self.view_menu.addAction(self.thumbnail_size_action)
 
         self.increase_thumbnail_size_action = QAction(
-            "Vorschaubilder vergrößern", self.window
+            t("Vorschaubilder vergrößern"), self.window
         )
         self.increase_thumbnail_size_action.setShortcut(QKeySequence("Ctrl++"))
         self.increase_thumbnail_size_action.setShortcutContext(
@@ -3428,7 +3424,7 @@ class ImageViewer(QObject):
         self.view_menu.addAction(self.increase_thumbnail_size_action)
 
         self.decrease_thumbnail_size_action = QAction(
-            "Vorschaubilder verkleinern", self.window
+            t("Vorschaubilder verkleinern"), self.window
         )
         self.decrease_thumbnail_size_action.setShortcut(QKeySequence("Ctrl+-"))
         self.decrease_thumbnail_size_action.setShortcutContext(
@@ -3440,7 +3436,7 @@ class ImageViewer(QObject):
         self.view_menu.addAction(self.decrease_thumbnail_size_action)
 
         self.reset_thumbnail_size_action = QAction(
-            "Vorschaubildgröße zurücksetzen", self.window
+            t("Vorschaubildgröße zurücksetzen"), self.window
         )
         self.reset_thumbnail_size_action.setShortcut(QKeySequence("Ctrl+0"))
         self.reset_thumbnail_size_action.setShortcutContext(
@@ -3453,13 +3449,13 @@ class ImageViewer(QObject):
         self._set_thumbnail_size_actions_enabled(True)
 
         self.view_menu.addSeparator()
-        self.sort_menu = self.view_menu.addMenu("Sortieren nach")
+        self.sort_menu = self.view_menu.addMenu(t("Sortieren nach"))
         self.sort_criterion_action_group = QActionGroup(self.window)
         self.sort_criterion_action_group.setExclusive(True)
         for criterion, label in (
             ("name", "Dateiname"),
             ("recording_date", "Aufnahmedatum"),
-            ("modified", "Änderungsdatum"),
+            ("modified", t("Änderungsdatum")),
             ("size", "Dateigröße"),
         ):
             action = QAction(label, self.window)
@@ -3490,7 +3486,7 @@ class ImageViewer(QObject):
         )
 
         self.view_menu.addSeparator()
-        self.color_scheme_menu = self.view_menu.addMenu("Farbschema")
+        self.color_scheme_menu = self.view_menu.addMenu(t("Farbschema"))
         self.color_scheme_action_group = QActionGroup(self.window)
         self.color_scheme_action_group.setExclusive(True)
         for scheme_name in COLOR_SCHEMES:
@@ -3504,8 +3500,8 @@ class ImageViewer(QObject):
         self._apply_color_scheme()
         self._update_view_actions()
 
-        self.navigation_menu = self.window.menuBar().addMenu("Navigation")
-        self.previous_folder_action = QAction("Vorheriger Ordner", self.window)
+        self.navigation_menu = self.window.menuBar().addMenu(t("Navigation"))
+        self.previous_folder_action = QAction(t("Vorheriger Ordner"), self.window)
         self.previous_folder_action.setShortcut(QKeySequence("Alt+Left"))
         self.previous_folder_action.setShortcutContext(
             Qt.ShortcutContext.WindowShortcut
@@ -3514,7 +3510,7 @@ class ImageViewer(QObject):
         self.previous_folder_action.triggered.connect(self._go_to_previous_folder)
         self.navigation_menu.addAction(self.previous_folder_action)
 
-        self.next_folder_action = QAction("Nächster Ordner", self.window)
+        self.next_folder_action = QAction(t("Nächster Ordner"), self.window)
         self.next_folder_action.setShortcut(QKeySequence("Alt+Right"))
         self.next_folder_action.setShortcutContext(
             Qt.ShortcutContext.WindowShortcut
@@ -3523,7 +3519,7 @@ class ImageViewer(QObject):
         self.next_folder_action.triggered.connect(self._go_to_next_folder)
         self.navigation_menu.addAction(self.next_folder_action)
 
-        self.parent_folder_action = QAction("Übergeordneter Ordner", self.window)
+        self.parent_folder_action = QAction(t("Übergeordneter Ordner"), self.window)
         self.parent_folder_action.setShortcut(QKeySequence("Alt+Up"))
         self.parent_folder_action.setShortcutContext(
             Qt.ShortcutContext.WindowShortcut
@@ -3533,7 +3529,7 @@ class ImageViewer(QObject):
         self.navigation_menu.addAction(self.parent_folder_action)
         self.navigation_menu.addSeparator()
 
-        self.first_image_action = QAction("Erstes Bild", self.window)
+        self.first_image_action = QAction(t("Erstes Bild"), self.window)
         self.first_image_action.setShortcut(QKeySequence("Home"))
         self.first_image_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.first_image_action.triggered.connect(
@@ -3543,7 +3539,7 @@ class ImageViewer(QObject):
         )
         self.navigation_menu.addAction(self.first_image_action)
 
-        self.previous_image_action = QAction("Vorheriges Bild", self.window)
+        self.previous_image_action = QAction(t("Vorheriges Bild"), self.window)
         self.previous_image_action.setShortcut(QKeySequence("Left"))
         self.previous_image_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.previous_image_action.triggered.connect(
@@ -3551,13 +3547,13 @@ class ImageViewer(QObject):
         )
         self.navigation_menu.addAction(self.previous_image_action)
 
-        self.next_image_action = QAction("Nächstes Bild", self.window)
+        self.next_image_action = QAction(t("Nächstes Bild"), self.window)
         self.next_image_action.setShortcut(QKeySequence("Right"))
         self.next_image_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.next_image_action.triggered.connect(lambda: self._select_relative_image(1))
         self.navigation_menu.addAction(self.next_image_action)
 
-        self.last_image_action = QAction("Letztes Bild", self.window)
+        self.last_image_action = QAction(t("Letztes Bild"), self.window)
         self.last_image_action.setShortcut(QKeySequence("End"))
         self.last_image_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.last_image_action.triggered.connect(
@@ -3579,20 +3575,20 @@ class ImageViewer(QObject):
 
         self._create_slideshow_menu()
 
-        self.tools_menu = self.window.menuBar().addMenu("Werkzeuge")
+        self.tools_menu = self.window.menuBar().addMenu(t("Werkzeuge"))
         self.tools_menu.addAction(self.compare_images_action)
         self.tools_menu.addSeparator()
         self.find_duplicates_action = QAction(
-            "Doppelte Bilder finden …", self.window
+            t("Doppelte Bilder finden …"), self.window
         )
         self.find_duplicates_action.triggered.connect(
             self._show_duplicate_finder
         )
         self.tools_menu.addAction(self.find_duplicates_action)
 
-        self.help_menu = self.window.menuBar().addMenu("Hilfe")
+        self.help_menu = self.window.menuBar().addMenu(t("Hilfe"))
         self.controls_help_action = QAction(
-            "Bedienung und Tastenkürzel", self.window
+            t("Bedienung und Tastenkürzel"), self.window
         )
         self.controls_help_action.setShortcut(QKeySequence("F1"))
         self.controls_help_action.setShortcutContext(
@@ -3612,6 +3608,42 @@ class ImageViewer(QObject):
             action.setChecked(value == self.language_manager.code)
         self._update_information_panel()
         self.language_manager.translate_widget_tree(self.window)
+        self.refresh_i18n()
+
+    def refresh_i18n(self) -> None:
+        """Refresh generated main-window text after a live language switch."""
+        for menu, source in (
+            (self.file_menu, "Datei"), (self.edit_menu, "Bearbeiten"),
+            (self.image_menu, "Bild"), (self.view_menu, "Ansicht"),
+            (self.navigation_menu, "Navigation"), (self.tools_menu, "Werkzeuge"),
+            (self.help_menu, "Hilfe"), (self.language_menu, "Sprache"),
+            (self.sort_menu, "Sortieren nach"), (self.color_scheme_menu, "Farbschema"),
+        ):
+            menu.setTitle(t(source))
+        for action, source in (
+            (self.leave_pdf_preview_action, "PDF-Vorschau verlassen"),
+            (self.previous_pdf_page_action, "PDF-Seite zurück"),
+            (self.next_pdf_page_action, "PDF-Seite weiter"),
+            (self.previous_folder_action, "Vorheriger Ordner"),
+            (self.next_folder_action, "Nächster Ordner"),
+            (self.parent_folder_action, "Übergeordneter Ordner"),
+            (self.first_image_action, "Erstes Bild"),
+            (self.previous_image_action, "Vorheriges Bild"),
+            (self.next_image_action, "Nächstes Bild"),
+            (self.last_image_action, "Letztes Bild"),
+            (self.about_action, "Über {name} …"),
+        ):
+            action.setText(t(source).format(name=APP_NAME))
+        self.previous_button.setToolTip(t("Vorheriges Bild"))
+        self.next_button.setToolTip(t("Nächstes Bild"))
+        self.previous_button.setAccessibleName(t("Vorheriges Bild"))
+        self.next_button.setAccessibleName(t("Nächstes Bild"))
+        self.previous_pdf_page_button.setAccessibleName(t("Vorherige PDF-Seite"))
+        self.next_pdf_page_button.setAccessibleName(t("Nächste PDF-Seite"))
+        self.previous_pdf_page_button.setToolTip(t("Vorherige PDF-Seite"))
+        self.next_pdf_page_button.setToolTip(t("Nächste PDF-Seite"))
+        self._update_pdf_page_navigation()
+        self._update_status_bar()
 
     def _update_view_actions(self) -> None:
         image_loaded = not self.original_image.isNull()
@@ -3648,14 +3680,14 @@ class ImageViewer(QObject):
         """Open the standard PagePlan-based single-image print dialog."""
         if not (self.current_image and self.current_image.is_file() and not self.original_image.isNull()):
             self._update_print_action_state()
-            QMessageBox.information(self.window, "Kein Bild geöffnet", "Bitte öffnen oder markieren Sie zuerst ein Bild.")
+            QMessageBox.information(self.window, t("Kein Bild geöffnet"), t("Bitte öffnen oder markieren Sie zuerst ein Bild."))
             return
         try:
             reader = QImageReader(str(self.current_image)); reader.setAutoTransform(True)
             image = reader.read()
-            if image.isNull(): raise RuntimeError(reader.errorString() or "Das Bild konnte nicht geladen werden.")
+            if image.isNull(): raise RuntimeError(reader.errorString() or t("Das Bild konnte nicht geladen werden."))
             image = rotated_display_image(image, self._current_display_rotation())
-            if image.isNull(): raise RuntimeError("Das Druckbild konnte nicht gedreht werden.")
+            if image.isNull(): raise RuntimeError(t("Das Druckbild konnte nicht gedreht werden."))
             source = ImageSourceInfo(self.current_image, image.width(), image.height(), image_print_dpi(self.current_image), image_print_dpi(self.current_image), self.current_image.name, capture_date_text(self.current_image))
             dialog = SingleImageWysiwygPrintDialog(
                 image, source, self.settings, self.window,
@@ -3670,7 +3702,7 @@ class ImageViewer(QObject):
             layout.setPageSize(QPageSize(QSizeF(selected_plan.page_size.width_mm, selected_plan.page_size.height_mm), QPageSize.Unit.Millimeter, "BildBlick"))
             layout.setOrientation(QPageLayout.Orientation.Portrait)
             printer.setPageLayout(layout)
-            print_dialog = QPrintDialog(printer, self.window); print_dialog.setWindowTitle("Bild drucken")
+            print_dialog = QPrintDialog(printer, self.window); print_dialog.setWindowTitle(t("Bild drucken"))
             if run_without_application_stylesheet(print_dialog.exec) != QDialog.DialogCode.Accepted: return
             geometry = printer_geometry_mm(printer)
             plan = dialog.build_page_plan(geometry.paint_rect, geometry.page_size)
@@ -3683,7 +3715,7 @@ class ImageViewer(QObject):
             finally:
                 painter.end()
         except Exception as error:
-            QMessageBox.critical(self.window, "Drucken fehlgeschlagen", str(error))
+            QMessageBox.critical(self.window, t("Drucken fehlgeschlagen"), t("Druckfehler: {detail}").format(detail=str(error)))
 
     def _show_multi_wysiwyg_print_dialog(self) -> None:
         """Open the standard PagePlan-based multi-image print dialog."""
@@ -3696,7 +3728,7 @@ class ImageViewer(QObject):
             "all": multi_image_sources(all_paths, include_capture_date=True),
         }
         if not any(sources.values()):
-            QMessageBox.information(self.window, "Keine Bilder zum Drucken", "Es wurden keine gültigen Bilder gefunden.")
+            QMessageBox.information(self.window, t("Keine Bilder zum Drucken"), t("Es wurden keine gültigen Bilder gefunden."))
             return
         dialog = MultiImageWysiwygPrintDialog(
             sources, self.settings, self.window,
@@ -3727,7 +3759,7 @@ class ImageViewer(QObject):
         if page_size is not None:
             page_layout.setPageSize(QPageSize(QSizeF(page_size.width_mm, page_size.height_mm), QPageSize.Unit.Millimeter, "BildBlick"))
         printer.setPageLayout(page_layout)
-        print_dialog = QPrintDialog(printer, self.window)
+        print_dialog = QPrintDialog(printer, self.window); print_dialog.setWindowTitle(t("Bilder drucken"))
         accepted = run_without_application_stylesheet(
             print_dialog.exec
         ) == QDialog.DialogCode.Accepted
@@ -3746,13 +3778,13 @@ class ImageViewer(QObject):
             )
             page_plans = plan_multi_image_pages(document)
             if not page_plans:
-                raise ValueError("Es wurden keine gültigen Bilder zum Drucken gefunden.")
+                raise ValueError(t("Es wurden keine gültigen Bilder zum Drucken gefunden."))
         except ValueError as error:
-            QMessageBox.warning(self.window, "Drucklayout nicht möglich", str(error))
+            QMessageBox.warning(self.window, t("Drucklayout nicht möglich"), t("Druckfehler: {detail}").format(detail=str(error)))
             return
         painter = QPainter()
         if not painter.begin(printer):
-            QMessageBox.critical(self.window, "Drucken fehlgeschlagen", "Der Druckauftrag konnte nicht gestartet werden."); return
+            QMessageBox.critical(self.window, t("Drucken fehlgeschlagen"), t("Der Druckauftrag konnte nicht gestartet werden.")); return
         try:
             viewport = painter.viewport()
             target = printer_target_rect_for_painter(
@@ -3771,14 +3803,14 @@ class ImageViewer(QObject):
             for page_index, page_plan in enumerate(page_plans):
                 render_page_plan(painter, page_plan, target, image_provider)
                 if page_index < len(page_plans) - 1 and not printer.newPage():
-                    raise RuntimeError("Eine neue Druckseite konnte nicht erzeugt werden.")
+                    raise RuntimeError(t("Eine neue Druckseite konnte nicht erzeugt werden."))
         except Exception as error:
-            QMessageBox.critical(self.window, "Drucken fehlgeschlagen", str(error))
+            QMessageBox.critical(self.window, t("Drucken fehlgeschlagen"), t("Druckfehler: {detail}").format(detail=str(error)))
         finally:
             if painter.isActive():
                 painter.end()
         if failures:
-            QMessageBox.warning(self.window, "Einige Bilder konnten nicht geladen werden", "\n".join(failures))
+            QMessageBox.warning(self.window, t("Einige Bilder konnten nicht geladen werden"), t("Druckfehler: {detail}").format(detail="\n".join(failures)))
 
     def _set_file_manager_action_state(self, image_path: Path | None) -> None:
         self.show_in_file_manager_action.setEnabled(
@@ -4010,17 +4042,17 @@ class ImageViewer(QObject):
 
     def _show_thumbnail_size_dialog(self) -> None:
         dialog = QDialog(self.window)
-        dialog.setWindowTitle("Größe der Vorschaubilder")
+        dialog.setWindowTitle(t("Größe der Vorschaubilder"))
         dialog.setModal(True)
         dialog.setMinimumWidth(390)
         layout = QVBoxLayout(dialog)
-        value_label = QLabel(f"{self._thumbnail_pixels} Pixel")
+        value_label = QLabel(t("{count} Pixel").format(count=self._thumbnail_pixels))
         value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         value_label.setStyleSheet("font-weight: 600;")
         layout.addWidget(value_label)
 
         slider_row = QHBoxLayout()
-        slider_row.addWidget(QLabel("Klein"))
+        slider_row.addWidget(QLabel(t("Klein")))
         slider = QSlider(Qt.Orientation.Horizontal)
         slider.setRange(
             0, (THUMBNAIL_MAXIMUM - THUMBNAIL_MINIMUM) // THUMBNAIL_STEP
@@ -4032,17 +4064,17 @@ class ImageViewer(QObject):
         )
         slider.valueChanged.connect(
             lambda step: value_label.setText(
-                f"{THUMBNAIL_MINIMUM + step * THUMBNAIL_STEP} Pixel"
+                t("{count} Pixel").format(count=THUMBNAIL_MINIMUM + step * THUMBNAIL_STEP)
             )
         )
         slider_row.addWidget(slider, 1)
-        slider_row.addWidget(QLabel("Groß"))
+        slider_row.addWidget(QLabel(t("Groß")))
         layout.addLayout(slider_row)
 
         button_row = QHBoxLayout()
         button_row.addStretch(1)
-        apply_button = QPushButton("Übernehmen")
-        cancel_button = QPushButton("Abbrechen")
+        apply_button = QPushButton(t("Übernehmen"))
+        cancel_button = QPushButton(t("Abbrechen"))
         cancel_button.setDefault(True)
         apply_button.clicked.connect(dialog.accept)
         cancel_button.clicked.connect(dialog.reject)
@@ -4772,21 +4804,18 @@ class ImageViewer(QObject):
         selected_count = len(selected_items)
         if selected_count != 2:
             if selected_count == 0:
-                message = "Bitte markieren Sie zuerst zwei Bilder."
+                message = t("Bitte markieren Sie zuerst zwei Bilder.")
             elif selected_count == 1:
-                message = "Bitte markieren Sie noch ein zweites Bild."
+                message = t("Bitte markieren Sie noch ein zweites Bild.")
             else:
-                message = (
-                    "Bitte markieren Sie genau zwei Bilder.\n"
-                    f"Aktuell sind {selected_count} Bilder ausgewählt."
-                )
+                message = t("Bitte markieren Sie genau zwei Bilder.\nAktuell sind {count} Bilder ausgewählt.").format(count=selected_count)
             dialog = QMessageBox(self.window)
-            dialog.setWindowTitle("Bilder vergleichen")
+            dialog.setWindowTitle(t("Bilder vergleichen"))
             dialog.setIcon(QMessageBox.Icon.Information)
             dialog.setTextFormat(Qt.TextFormat.PlainText)
             dialog.setText(message)
             dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
-            dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+            dialog.button(QMessageBox.StandardButton.Ok).setText(t("OK"))
             self._style_message_box(dialog)
             dialog.exec()
             return
@@ -5102,8 +5131,8 @@ class ImageViewer(QObject):
             self._zoom_factor = 1.0
             self.image_label.clear()
             self.image_label.resize(self.image_scroll_area.viewport().size())
-            self.image_label.setText("Bild anklicken, um es anzuzeigen")
-            self._set_file_name_text("0 Bilder")
+            self.image_label.setText(t("Bild anklicken, um es anzuzeigen"))
+            self._set_file_name_text(t("{count} Bilder").format(count=0))
             self._update_view_actions()
             self._update_navigation_buttons()
         elif slideshow_was_running:
@@ -5117,71 +5146,18 @@ class ImageViewer(QObject):
 
     def _show_controls_help(self) -> None:
         help_dialog = QMessageBox(self.window)
-        help_dialog.setWindowTitle("Bedienung und Tastenkürzel")
+        help_dialog.setWindowTitle(t("Bedienung und Tastenkürzel"))
         help_dialog.setIcon(QMessageBox.Icon.Information)
         help_dialog.setTextFormat(Qt.TextFormat.RichText)
-        help_dialog.setText(
-            "<b>Maus:</b><br>"
-            "• Vorschaubild anklicken: Bild anzeigen<br>"
-            "• Mausrad über dem großen Bild: Zoomen<br>"
-            "• Linke Maustaste ziehen: Vergrößertes Bild verschieben<br>"
-            "• Klick auf das große Bild: Vollbild ein oder aus<br><br>"
-            "<b>Tastatur:</b><br>"
-            "• Alt+Links: Vorheriger Ordner<br>"
-            "• Alt+Rechts: Nächster Ordner<br>"
-            "• Alt+Oben: Übergeordneter Ordner<br>"
-            "• Strg+Links: Aktuelles Bild nach links drehen<br>"
-            "• Strg+Rechts: Aktuelles Bild nach rechts drehen<br>"
-            "• F2: Aktuelles Bild umbenennen<br>"
-            "• Beim Umbenennen bleibt die Dateiendung erhalten. Die "
-            "Bilddatei wird nicht neu gespeichert.<br>"
-            "• Ausgewählte Bilder verkleinert exportieren erstellt neue "
-            "JPEG-Kopien mit frei wählbarer Auflösung und Qualität. Die "
-            "Originalbilder bleiben unverändert.<br>"
-            "• Die Drehung verändert die Originaldatei nicht<br>"
-            "• „Gedrehte Kopie speichern …“ speichert ein neues Bild.<br>"
-            "• „Drehung im Original speichern …“ überschreibt die Originaldatei "
-            "erst nach einer Sicherheitsabfrage.<br>"
-            "• JPEG-Dateien werden beim Speichern neu komprimiert.<br>"
-            "• Im Dateimanager anzeigen öffnet den Speicherort des aktuellen "
-            "oder rechtsgeklickten Bildes.<br>"
-            "• Pfeiltasten: Durch die Vorschaubilder navigieren<br>"
-            "• Pos1: Erstes Bild<br>"
-            "• Ende: Letztes Bild<br>"
-            "• 0: Bild einpassen<br>"
-            "• 1: Originalgröße<br>"
-            "• F5: Diashow starten oder stoppen<br>"
-            "• Leertaste: Diashow pausieren oder fortsetzen<br>"
-            "• Pfeiltasten: Während der Diashow vor und zurück<br>"
-            "• Nur markierte Bilder: Diashow auf die aktuelle Auswahl begrenzen<br>"
-            "• Zufällige Reihenfolge: Alle Diashow-Bilder einmal zufällig anzeigen<br>"
-            "• Im Vollbild wird der Mauszeiger nach kurzer Inaktivität ausgeblendet<br>"
-            "• F11: Vollbild<br>"
-            "• Escape: Diashow beziehungsweise Vollbild beenden<br>"
-            "• Strg + Klick: Mehrere einzelne Bilder auswählen<br>"
-            "• Umschalt + Klick: Bildbereich auswählen<br>"
-            "• Zwei Bilder markieren und unter Werkzeuge → Bilder vergleichen öffnen.<br>"
-            "• Strg + A: Alle Bilder auswählen<br>"
-            "• Strg + C: Ausgewählte Bilder kopieren<br>"
-            "• Strg + X: Ausgewählte Bilder ausschneiden<br>"
-            "• Strg + V: Bilder in den aktuellen Ordner einfügen<br>"
-            "• Entf: Ausgewählte Bilder in den Papierkorb verschieben<br>"
-            "• Die Größe der Vorschaubilder kann unter Ansicht geändert werden.<br>"
-            "• Die Reihenfolge der Vorschaubilder kann unter Ansicht → Sortieren "
-            "nach geändert werden.<br>"
-            "• Strg + Plus: Vorschaubilder vergrößern<br>"
-            "• Strg + Minus: Vorschaubilder verkleinern<br>"
-            "• Strg + 0: Vorschaubildgröße auf 160 Pixel zurücksetzen<br>"
-            "• Alt+F4: Programm beenden"
-        )
+        help_dialog.setText(t("__help_dialog_text__"))
         help_dialog.setStandardButtons(QMessageBox.StandardButton.Close)
-        help_dialog.button(QMessageBox.StandardButton.Close).setText("Schließen")
+        help_dialog.button(QMessageBox.StandardButton.Close).setText(t("Schließen"))
         self._style_message_box(help_dialog)
         help_dialog.exec()
 
     def _show_about(self) -> None:
         about_dialog = QDialog(self.window)
-        about_dialog.setWindowTitle(f"Über {APP_NAME}")
+        about_dialog.setWindowTitle(t("Über {name}").format(name=APP_NAME))
         about_dialog.setModal(True)
         about_dialog.setMinimumWidth(390)
 
@@ -5210,26 +5186,26 @@ class ImageViewer(QObject):
         name_label.setStyleSheet("font-size: 22px; font-weight: 700;")
         layout.addWidget(name_label)
 
-        version_label = QLabel(f"Version {APP_VERSION}")
+        version_label = QLabel(t("Version {version}").format(version=APP_VERSION))
         version_label.setObjectName("aboutVersionLabel")
         version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         version_label.setStyleSheet("font-size: 14px; font-weight: 600;")
         layout.addWidget(version_label)
 
-        description_label = QLabel(APP_DESCRIPTION)
+        description_label = QLabel(t(APP_DESCRIPTION))
         description_label.setObjectName("aboutDescriptionLabel")
         description_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         description_label.setWordWrap(True)
         layout.addWidget(description_label)
 
-        technology_label = QLabel("Erstellt mit Python und PySide6")
+        technology_label = QLabel(t("Erstellt mit Python und PySide6"))
         technology_label.setObjectName("aboutTechnologyLabel")
         technology_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(technology_label)
 
         button_row = QHBoxLayout()
         button_row.addStretch(1)
-        close_button = QPushButton("Schließen")
+        close_button = QPushButton(t("Schließen"))
         close_button.setDefault(True)
         close_button.clicked.connect(about_dialog.accept)
         button_row.addWidget(close_button)
@@ -5249,15 +5225,15 @@ class ImageViewer(QObject):
             self.fullscreen_action.setChecked(False)
 
     def _create_slideshow_menu(self) -> None:
-        self.slideshow_menu = self.window.menuBar().addMenu("Diashow")
+        self.slideshow_menu = self.window.menuBar().addMenu(t("Diashow"))
 
-        self.slideshow_action = QAction("Diashow starten / beenden", self.window)
+        self.slideshow_action = QAction(t("Diashow starten / beenden"), self.window)
         self.slideshow_action.setShortcut(QKeySequence("F5"))
         self.slideshow_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.slideshow_action.triggered.connect(self._toggle_slideshow)
         self.slideshow_menu.addAction(self.slideshow_action)
 
-        self.slideshow_pause_action = QAction("Pause / fortsetzen", self.window)
+        self.slideshow_pause_action = QAction(t("Pause / fortsetzen"), self.window)
         self.slideshow_pause_action.setShortcut(QKeySequence("Space"))
         self.slideshow_pause_action.setShortcutContext(
             Qt.ShortcutContext.WindowShortcut
@@ -5296,7 +5272,7 @@ class ImageViewer(QObject):
             ),
         )
         for attribute, text, checked, settings_key in option_specs:
-            action = QAction(text, self.window)
+            action = QAction(t(text), self.window)
             action.setCheckable(True)
             action.setChecked(checked)
             action.toggled.connect(
@@ -5308,11 +5284,11 @@ class ImageViewer(QObject):
             setattr(self, attribute, action)
 
         self.slideshow_menu.addSeparator()
-        self.interval_menu = self.slideshow_menu.addMenu("Intervall")
+        self.interval_menu = self.slideshow_menu.addMenu(t("Intervall"))
         self.interval_action_group = QActionGroup(self.window)
         self.interval_action_group.setExclusive(True)
         for seconds in SLIDESHOW_INTERVALS:
-            action = QAction(f"{seconds} Sekunden", self.window)
+            action = QAction(t("{seconds} Sekunden").format(seconds=seconds), self.window)
             action.setCheckable(True)
             action.setData(seconds)
             action.setChecked(seconds == self._slideshow_interval)
@@ -5322,7 +5298,7 @@ class ImageViewer(QObject):
 
         self.slideshow_menu.addSeparator()
         self.slideshow_fullscreen_action = QAction(
-            "Im Vollbild starten", self.window
+            t("Im Vollbild starten"), self.window
         )
         self.slideshow_fullscreen_action.setCheckable(True)
         self.slideshow_fullscreen_action.setChecked(self._slideshow_fullscreen)
@@ -5331,7 +5307,7 @@ class ImageViewer(QObject):
         )
         self.slideshow_menu.addAction(self.slideshow_fullscreen_action)
 
-        self.slideshow_repeat_action = QAction("Wiederholen", self.window)
+        self.slideshow_repeat_action = QAction(t("Wiederholen"), self.window)
         self.slideshow_repeat_action.setCheckable(True)
         self.slideshow_repeat_action.setChecked(self._slideshow_repeat)
         self.slideshow_repeat_action.toggled.connect(self._set_slideshow_repeat)
@@ -5388,11 +5364,11 @@ class ImageViewer(QObject):
         ]
         if self._slideshow_selected_only and not slideshow_paths:
             dialog = QMessageBox(self.window)
-            dialog.setWindowTitle("Diashow")
+            dialog.setWindowTitle(t("Diashow"))
             dialog.setIcon(QMessageBox.Icon.Information)
-            dialog.setText("Bitte markieren Sie zuerst mindestens ein Bild.")
+            dialog.setText(t("Bitte markieren Sie zuerst mindestens ein Bild."))
             dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
-            dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+            dialog.button(QMessageBox.StandardButton.Ok).setText(t("OK"))
             self._style_message_box(dialog)
             dialog.exec()
             return
@@ -5477,10 +5453,10 @@ class ImageViewer(QObject):
         self._slideshow_paused = not self._slideshow_paused
         if self._slideshow_paused:
             self.slideshow_timer.stop()
-            self._show_slideshow_message("Diashow pausiert")
+            self._show_slideshow_message(t("Diashow pausiert"))
         else:
             self._restart_slideshow_timer()
-            self._show_slideshow_message("Diashow fortgesetzt")
+            self._show_slideshow_message(t("Diashow fortgesetzt"))
         self._update_slideshow_actions()
 
     def _restart_slideshow_timer(self) -> None:
@@ -5667,12 +5643,12 @@ class ImageViewer(QObject):
 
     def _update_slideshow_actions(self) -> None:
         action_text = (
-            "Diashow beenden" if self._slideshow_running else "Diashow starten"
+            t("Diashow beenden") if self._slideshow_running else t("Diashow starten")
         )
         self.slideshow_action.setText(action_text)
         self.slideshow_pause_action.setEnabled(self._slideshow_running)
         self.slideshow_pause_action.setText(
-            "Fortsetzen" if self._slideshow_paused else "Pause / fortsetzen"
+            t("Fortsetzen") if self._slideshow_paused else t("Pause / fortsetzen")
         )
         self.slideshow_selected_only_action.setEnabled(
             not self._slideshow_running
@@ -5839,8 +5815,8 @@ class ImageViewer(QObject):
         self._zoom_factor = 1.0
         self.image_label.clear()
         self.image_label.resize(self.image_scroll_area.viewport().size())
-        self.image_label.setText("Bild anklicken, um es anzuzeigen")
-        self._set_file_name_text("Suche nach Bildern …")
+        self.image_label.setText(t("Bild anklicken, um es anzuzeigen"))
+        self._set_file_name_text(t("Suche nach Bildern …"))
         self._clipboard_changed()
 
         self.settings.setValue(LAST_DIRECTORY_KEY, str(directory.resolve(strict=False)))
@@ -5967,9 +5943,7 @@ class ImageViewer(QObject):
             self._set_thumbnail_size_actions_enabled(True)
             return
 
-        self._set_file_name_text(
-            f"Suche nach Bildern … ({len(self._pending_images)} gefunden)"
-        )
+        self._set_file_name_text(t("Suche nach Bildern … ({count} gefunden)").format(count=len(self._pending_images)))
         QTimer.singleShot(0, lambda: self._scan_directory_batch(generation))
 
     def _prepare_thumbnail_items(self, generation: int) -> None:
@@ -6134,7 +6108,7 @@ class ImageViewer(QObject):
             return
         count = self.thumbnail_list.count()
         self._set_file_name_text(
-            f"{count} Bild" if count == 1 else f"{count} Bilder"
+            t("{count} Bild" if count == 1 else "{count} Bilder").format(count=count)
         )
 
     def _thumbnail_selected(
@@ -6171,7 +6145,7 @@ class ImageViewer(QObject):
     def _add_rotation_context_submenu(
         self, context_menu: QMenu, image_path: Path | None
     ) -> QMenu:
-        rotation_menu = context_menu.addMenu("Drehen")
+        rotation_menu = context_menu.addMenu(t("Drehen"))
         rotation_menu.addAction(self.rotate_left_action)
         rotation_menu.addAction(self.rotate_right_action)
         rotation_menu.addAction(self.reset_rotation_action)
@@ -6391,11 +6365,7 @@ class ImageViewer(QObject):
             except ValueError:
                 display_path = str(directory)
             image_count = self.thumbnail_list.count()
-            count_text = (
-                f"{image_count} Bild"
-                if image_count == 1
-                else f"{image_count} Bilder"
-            )
+            count_text = t("{count} Bild" if image_count == 1 else "{count} Bilder").format(count=image_count)
             self._directory_path_text = f"{display_path} · {count_text}"
 
         available_width = max(0, self.directory_path_label.width() - 4)
@@ -6414,7 +6384,7 @@ class ImageViewer(QObject):
             or self.original_image.isNull()
             or current_row < 0
         ):
-            self._status_full_text = "Kein Bild ausgewählt"
+            self._status_full_text = t("Kein Bild ausgewählt")
             self.status_info_label.setText(self._status_full_text)
             self.status_info_label.setToolTip("")
             self.status_zoom_label.clear()
@@ -6424,8 +6394,8 @@ class ImageViewer(QObject):
         resolved_path = self._resolved_sort_path(self.current_image)
         metadata = self._image_metadata_by_path.get(resolved_path, {})
         parts = [
-            f"Bild {current_row + 1} von {self.thumbnail_list.count()}",
-            f"{self.original_image.width()} × {self.original_image.height()} Pixel",
+            t("Bild {current} von {total}").format(current=current_row + 1, total=self.thumbnail_list.count()),
+            t("{width} × {height} Pixel").format(width=self.original_image.width(), height=self.original_image.height()),
         ]
         if self._current_file_size is not None:
             parts.append(format_file_size(self._current_file_size))
@@ -6445,32 +6415,31 @@ class ImageViewer(QObject):
 
         self._status_full_text = " | ".join(parts)
         self._refresh_status_info_text()
-        zoom_text = f"Zoom {round(self._zoom_factor * 100)} %"
+        zoom_text = t("Zoom {percent} %").format(percent=round(self._zoom_factor * 100))
         self.status_zoom_label.setText(zoom_text)
 
         tooltip_lines = [
-            f"Datei: {self.current_image.name}",
-            f"Pfad: {self.current_image}",
-            f"Position: Bild {current_row + 1} von {self.thumbnail_list.count()}",
-            f"Abmessungen: {self.original_image.width()} × "
-            f"{self.original_image.height()} Pixel",
+            t("Datei: {name}").format(name=self.current_image.name),
+            t("Pfad: {path}").format(path=self.current_image),
+            t("Position: Bild {current} von {total}").format(current=current_row + 1, total=self.thumbnail_list.count()),
+            t("Abmessungen: {width} × {height} Pixel").format(width=self.original_image.width(), height=self.original_image.height()),
         ]
         if self._current_file_size is not None:
             tooltip_lines.append(
-                f"Dateigröße: {format_file_size(self._current_file_size)}"
+                t("Dateigröße: {size}").format(size=format_file_size(self._current_file_size))
             )
         for key, label in (
-            ("recording_time", "Aufnahmezeit"),
-            ("camera", "Kamera"),
-            ("lens", "Objektiv"),
+            ("recording_time", "Aufnahmezeit: {value}"),
+            ("camera", "Kamera: {value}"),
+            ("lens", "Objektiv: {value}"),
             ("exposure", "Belichtungszeit"),
             ("aperture", "Blende"),
             ("focal_length", "Brennweite"),
-            ("iso", "ISO"),
+            ("iso", "ISO {value}"),
         ):
             value = metadata.get(key)
             if value:
-                tooltip_lines.append(f"{label}: {value}")
+                tooltip_lines.append(t(label).format(value=value) if "{value}" in label else f"{label}: {value}")
         if metadata.get("gps_detail"):
             tooltip_lines.append(metadata["gps_detail"])
         tooltip_lines.append(zoom_text)
@@ -6500,7 +6469,7 @@ class ImageViewer(QObject):
             if result.document is None:
                 self._clear_pdf_state()
                 self.original_image = QImage()
-                self.image_label.setText(result.error or "Die PDF konnte nicht geöffnet werden")
+                self.image_label.setText(result.error or t("Die PDF konnte nicht geöffnet werden."))
                 self._update_view_actions()
                 return
             self._pdf_document = result.document
@@ -6532,7 +6501,7 @@ class ImageViewer(QObject):
             self._zoom_factor = 1.0
             self.image_label.clear()
             self.image_label.resize(self.image_scroll_area.viewport().size())
-            self.image_label.setText("Bild konnte nicht geladen werden")
+            self.image_label.setText(t("Bild konnte nicht geladen werden"))
             self._update_view_actions()
             self._update_status_bar()
             return
@@ -6557,7 +6526,7 @@ class ImageViewer(QObject):
         page_count = self._pdf_document.pageCount()
         if page_count < 1:
             self._clear_pdf_state()
-            self.image_label.setText("Die PDF enthält keine Seiten.")
+            self.image_label.setText(t("Die PDF enthält keine Seiten."))
             return False
         page = self._pdf_page if requested_page is None else requested_page
         page = max(0, min(page_count - 1, page))
@@ -6572,7 +6541,7 @@ class ImageViewer(QObject):
             self.original_image = QImage()
             self.image_label.clear()
             self.image_label.resize(self.image_scroll_area.viewport().size())
-            self.image_label.setText("Die PDF-Seite konnte nicht gerendert werden")
+            self.image_label.setText(t("Die PDF-Seite konnte nicht gerendert werden"))
             self._update_pdf_page_navigation()
             return False
         self._pdf_page = page
@@ -6670,7 +6639,7 @@ class ImageViewer(QObject):
         if scheme == "mailto":
             return url.toString()[len("mailto:") :].split("?", 1)[0]
         if link.page() >= 0:
-            return f"Seite {link.page() + 1}"
+            return t("Seite {page}").format(page=link.page() + 1)
         return ""
 
     def _update_pdf_link_hover(self, global_position) -> None:
@@ -6740,7 +6709,11 @@ class ImageViewer(QObject):
             self.previous_pdf_page_button.setEnabled(False)
             self.next_pdf_page_button.setEnabled(False)
             return
-        self.pdf_page_label.setText(f"Seite {self._pdf_page + 1} von {page_count}")
+        self.pdf_page_label.setText(
+            t("Seite {page} von {pages}").format(
+                page=self._pdf_page + 1, pages=page_count
+            )
+        )
         self.previous_pdf_page_button.setEnabled(self._pdf_page > 0)
         self.next_pdf_page_button.setEnabled(self._pdf_page + 1 < page_count)
 
@@ -7150,25 +7123,24 @@ class ImageViewer(QObject):
 
     def _show_metadata_save_warning(self, warnings: list[str]) -> None:
         dialog = QMessageBox(self.window)
-        dialog.setWindowTitle("Bild mit eingeschränkten Metadaten gespeichert")
+        dialog.setWindowTitle(t("Bild mit eingeschränkten Metadaten gespeichert"))
         dialog.setIcon(QMessageBox.Icon.Warning)
         dialog.setText(
-            "Das Bild wurde gespeichert, einige Metadaten konnten jedoch nicht "
-            "vollständig erhalten werden."
+            t("Das Bild wurde gespeichert, einige Metadaten konnten jedoch nicht vollständig erhalten werden.")
         )
         dialog.setDetailedText("\n".join(warnings))
         dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
-        dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+        dialog.button(QMessageBox.StandardButton.Ok).setText(t("OK"))
         self._style_message_box(dialog)
         dialog.exec()
 
     def _show_rotation_saved_confirmation(self) -> None:
         dialog = QMessageBox(self.window)
-        dialog.setWindowTitle("Drehung gespeichert")
+        dialog.setWindowTitle(t("Drehung gespeichert"))
         dialog.setIcon(QMessageBox.Icon.Information)
-        dialog.setText("Die Drehung wurde im Original gespeichert.")
+        dialog.setText(t("Die Drehung wurde im Original gespeichert."))
         dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
-        dialog.button(QMessageBox.StandardButton.Ok).setText("OK")
+        dialog.button(QMessageBox.StandardButton.Ok).setText(t("OK"))
         self._style_message_box(dialog)
         dialog.exec()
 
@@ -7617,8 +7589,7 @@ def resolve_startup_path(
         return (
             None,
             None,
-            "Die angegebene Datei hat kein unterstütztes Bild- oder PDF-Format:\n"
-            f"{candidate}",
+            t("Die angegebene Datei hat kein unterstütztes Bild- oder PDF-Format:\n{path}").format(path=candidate),
         )
     return candidate.parent, candidate, None
 
@@ -7732,10 +7703,10 @@ def show_startup_error(viewer: ImageViewer, message: str) -> None:
     dialog = QMessageBox(viewer.window)
     dialog.setWindowTitle(f"{APP_NAME} – Startpfad")
     dialog.setIcon(QMessageBox.Icon.Warning)
-    dialog.setText("Der übergebene Pfad konnte nicht geöffnet werden.")
+    dialog.setText(t("Der übergebene Pfad konnte nicht geöffnet werden."))
     dialog.setInformativeText(message)
     dialog.setStandardButtons(QMessageBox.StandardButton.Close)
-    dialog.button(QMessageBox.StandardButton.Close).setText("Schließen")
+    dialog.button(QMessageBox.StandardButton.Close).setText(t("Schließen"))
     viewer._style_message_box(dialog)
     dialog.exec()
 
@@ -7823,7 +7794,7 @@ def main() -> int:
     startup_directory = None
     startup_image = None
     if len(arguments) > 1:
-        startup_error = "Bitte nur eine Bilddatei oder einen Ordner angeben."
+        startup_error = t("Bitte nur eine Bilddatei oder einen Ordner angeben.")
     else:
         startup_directory, startup_image, startup_error = resolve_startup_path(
             arguments[0] if arguments else None

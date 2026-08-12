@@ -21,7 +21,7 @@ from printing.wysiwyg_ui import (
     configure_wysiwyg_scroll_area, restore_wysiwyg_dialog_geometry,
     save_wysiwyg_dialog_geometry,
 )
-from i18n import LanguageManager
+from i18n import LanguageManager, t
 
 
 PAPERS = {"A4": (210.0, 297.0), "Letter": (215.9, 279.4), "10 × 15 cm": (100.0, 150.0), "13 × 18 cm": (130.0, 180.0)}
@@ -107,9 +107,9 @@ class MultiImageWysiwygPrintDialog(QDialog):
             self.show_header.setChecked(True)
 
     def _save_profile(self):
-        name, accepted = QInputDialog.getText(self, "Profil speichern", "Name:")
+        name, accepted = QInputDialog.getText(self, t("Profil speichern"), t("Name:"))
         if not accepted or not name.strip(): return
-        profile = create_user_profile(name, self.print_settings()); save_user_profile(self.settings, profile); self._populate_profiles(); self.profile.setCurrentIndex(self.profile.findData(profile))
+        profile = create_user_profile(name, self.print_settings()); save_user_profile(self.settings, profile); self._populate_profiles(); LanguageManager(self.settings).translate_widget_tree(self.profile); self.profile.setCurrentIndex(self.profile.findData(profile))
 
     def _delete_profile(self):
         profile = self.profile.currentData()
@@ -143,6 +143,10 @@ class MultiImageWysiwygPrintDialog(QDialog):
         """Keep preview, PDF and the subsequently accepted print job identical."""
         return self._print_date_text
 
+    def refresh_i18n(self) -> None:
+        """Refresh generated page and result labels after a live language switch."""
+        self._set_page(self.page_index)
+
     def selected_sources(self) -> list[ImageSourceInfo]: return list(self.active_sources)
 
     def _page_size(self) -> PageSizeMm:
@@ -152,7 +156,7 @@ class MultiImageWysiwygPrintDialog(QDialog):
             reader = QImageReader(str(source.path)); reader.setAutoTransform(True); self._cache[source.path] = reader.read()
         return self._cache[source.path]
     def _update(self, *_args):
-        self.width.setEnabled(self.paper.currentText() == "Benutzerdefiniert"); self.height.setEnabled(self.paper.currentText() == "Benutzerdefiniert"); custom = self.count.currentData() == 0; self.rows.setEnabled(custom); self.columns.setEnabled(custom)
+        self.width.setEnabled(self.paper.currentText() == t("Benutzerdefiniert")); self.height.setEnabled(self.paper.currentText() == t("Benutzerdefiniert")); custom = self.count.currentData() == 0; self.rows.setEnabled(custom); self.columns.setEnabled(custom)
         if self.print_date.isChecked() and not self._print_date_text:
             self._print_date_text = current_print_date_text()
         elif not self.print_date.isChecked():
@@ -165,13 +169,13 @@ class MultiImageWysiwygPrintDialog(QDialog):
         self._set_page(self.page_index)
     def _set_page(self, index):
         self.page_index = min(max(0, index), max(0, len(self.page_plans) - 1)); self.preview.set_pages(self.page_plans, self.page_index, self._image)
-        self.page_label.setText(f"Seite {self.page_index + 1} von {len(self.page_plans)}" if self.page_plans else "Seite 0 von 0"); self.first.setEnabled(self.page_index > 0); self.previous.setEnabled(self.page_index > 0); self.next.setEnabled(self.page_index + 1 < len(self.page_plans)); self.last.setEnabled(self.page_index + 1 < len(self.page_plans)); self.pdf_button.setEnabled(bool(self.page_plans)); self.print_button.setEnabled(bool(self.page_plans)); self.status_label.setText(f"{len(self.active_sources)} Bilder · {len(self.page_plans)} Seiten · {self.print_settings().effective_images_per_page} pro Seite")
+        self.page_label.setText(t("Seite {current} von {total}").format(current=self.page_index + 1, total=len(self.page_plans)) if self.page_plans else t("Seite {current} von {total}").format(current=0, total=0)); self.first.setEnabled(self.page_index > 0); self.previous.setEnabled(self.page_index > 0); self.next.setEnabled(self.page_index + 1 < len(self.page_plans)); self.last.setEnabled(self.page_index + 1 < len(self.page_plans)); self.pdf_button.setEnabled(bool(self.page_plans)); self.print_button.setEnabled(bool(self.page_plans)); self.status_label.setText(t("{images} Bilder · {pages} Seiten · {count} pro Seite").format(images=len(self.active_sources), pages=len(self.page_plans), count=self.print_settings().effective_images_per_page))
     def keyPressEvent(self, event):
         keys = {Qt.Key.Key_PageUp: self.page_index - 1, Qt.Key.Key_PageDown: self.page_index + 1, Qt.Key.Key_Home: 0, Qt.Key.Key_End: len(self.page_plans) - 1}
         if event.key() in keys: self._set_page(keys[event.key()]); event.accept(); return
         super().keyPressEvent(event)
     def _export_pdf(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Mehrbild-PDF speichern", "", "PDF-Datei (*.pdf)")
+        path, _ = QFileDialog.getSaveFileName(self, t("Mehrbild-PDF speichern"), "", t("PDF-Datei (*.pdf)"))
         if not path: return
         try: export_multi_page_plan_pdf(path, self.page_plans, self._image)
-        except Exception as error: QMessageBox.critical(self, "PDF-Export fehlgeschlagen", str(error))
+        except Exception as error: QMessageBox.critical(self, t("PDF-Export fehlgeschlagen"), t("Druckfehler: {detail}").format(detail=str(error)))

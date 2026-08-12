@@ -22,7 +22,7 @@ from printing.wysiwyg_ui import (
     SETTINGS_PANEL_WIDTH, configure_wysiwyg_form, configure_wysiwyg_scroll_area,
     apply_wysiwyg_theme, restore_wysiwyg_dialog_geometry, save_wysiwyg_dialog_geometry,
 )
-from i18n import LanguageManager
+from i18n import LanguageManager, t
 
 
 PROFILE_KEY = "printing/singleImageProfiles"
@@ -256,7 +256,7 @@ class SingleImageWysiwygPrintDialog(QDialog):
 
     def _update_preview(self, *_args) -> None:
         try:
-            self.width.setEnabled(self.paper.currentText() == "Benutzerdefiniert"); self.height.setEnabled(self.paper.currentText() == "Benutzerdefiniert")
+            self.width.setEnabled(self.paper.currentText() == t("Benutzerdefiniert")); self.height.setEnabled(self.paper.currentText() == t("Benutzerdefiniert"))
             enabled = self.scale.currentData() == "fixed_size"; self.image_width.setEnabled(enabled); self.image_height.setEnabled(enabled); self.lock_aspect.setEnabled(enabled)
             self.page_plan = self.build_page_plan()
             self.preview.set_lock_aspect_ratio(self.lock_aspect.isChecked())
@@ -323,10 +323,10 @@ class SingleImageWysiwygPrintDialog(QDialog):
         self._apply_state(state)
 
     def _save_profile(self) -> None:
-        name, ok = QInputDialog.getText(self, "Profil speichern", "Profilname:")
+        name, ok = QInputDialog.getText(self, t("Profil speichern"), t("Profilname:"))
         if not ok or not name.strip(): return
-        if name.strip() in BUILTIN_PROFILES: QMessageBox.warning(self, "Profil", "Eingebaute Profile können nicht überschrieben werden."); return
-        profiles = self._profiles(); profiles[name.strip()] = self._state(); self.settings.setValue(PROFILE_KEY, profiles); self.settings.sync(); self._populate_profiles(); self.profile.setCurrentIndex(self.profile.findText(name.strip()))
+        if name.strip() in BUILTIN_PROFILES: QMessageBox.warning(self, t("Profil"), t("Eingebaute Profile können nicht überschrieben werden.")); return
+        profiles = self._profiles(); profiles[name.strip()] = self._state(); self.settings.setValue(PROFILE_KEY, profiles); self.settings.sync(); self._populate_profiles(); LanguageManager(self.settings).translate_widget_tree(self.profile); self.profile.setCurrentIndex(self.profile.findText(name.strip()))
 
     def _delete_profile(self) -> None:
         data = self.profile.currentData()
@@ -334,10 +334,10 @@ class SingleImageWysiwygPrintDialog(QDialog):
         profiles = self._profiles(); profiles.pop(data[1], None); self.settings.setValue(PROFILE_KEY, profiles); self.settings.sync(); self._populate_profiles()
 
     def _export_pdf(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Als PDF speichern", self.source.path.with_suffix(".pdf").as_posix(), "PDF-Dateien (*.pdf)")
+        path, _ = QFileDialog.getSaveFileName(self, t("Als PDF speichern"), self.source.path.with_suffix(".pdf").as_posix(), t("PDF-Dateien (*.pdf)"))
         if not path: return
         try:
             target = export_page_plan_pdf(path, self.build_page_plan(), lambda _source: self.image)
-            QMessageBox.information(self, "PDF gespeichert", f"PDF wurde gespeichert:\n{target}")
+            QMessageBox.information(self, t("PDF gespeichert"), t("PDF wurde gespeichert:\n{path}").format(path=target))
         except Exception as error:
-            QMessageBox.critical(self, "PDF konnte nicht gespeichert werden", str(error))
+            QMessageBox.critical(self, t("PDF konnte nicht gespeichert werden"), t("Druckfehler: {detail}").format(detail=str(error)))

@@ -2,6 +2,28 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.18.0
+
+### Mehrsprachigkeit
+
+- Benutzeroberfläche vollständig in Deutsch, Englisch, Französisch, Spanisch und Ukrainisch verfügbar.
+- Hauptfenster, Menüs, Kontextmenüs sowie Informations- und EXIF-Bereich vollständig übersetzt.
+- Duplikatfinder 2.0, Bilder vergleichen, Export, PDF, Hilfe, Über-Dialog und Diashow vollständig übersetzt.
+- Einzelbild- und Mehrbild-Druckdialoge einschließlich dynamischer Status-, Fehler- und Ergebnismeldungen vollständig übersetzt.
+
+### Verbessert
+
+- Konsistenter Live-Sprachwechsel im Hauptfenster.
+- Dynamische Texte und Platzhalter in allen Sprachkatalogen vereinheitlicht.
+- Längere französische, spanische und ukrainische UI-Texte berücksichtigt.
+- Verbliebene benutzersichtbare deutsche Hardcodings entfernt.
+
+### Qualität
+
+- Vollständiger globaler i18n-Audit durchgeführt.
+- Keine bekannten fehlenden Übersetzungsschlüssel oder benutzersichtbaren deutschen Hardcodings in Fremdsprachen.
+- Dynamische Platzhalter in allen Sprachkatalogen konsistent.
+
 ## 1.17.0
 
 ### Neu

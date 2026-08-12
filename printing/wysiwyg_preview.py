@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from printing.layout import ImageSourceInfo, PagePlan
 from printing.renderer import MmTransform, render_page_plan
+from i18n import t
 
 
 class WysiwygPagePreview(QWidget):
@@ -174,7 +175,7 @@ class WysiwygPagePreview(QWidget):
         painter = QPainter(self)
         painter.fillRect(self.rect(), self.palette().color(QPalette.ColorRole.Window))
         if self.page_plan is None:
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Vorschau nicht verfügbar")
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, t("Vorschau nicht verfügbar"))
             return
         plan = self.page_plan
         paper = self._paper_rect()

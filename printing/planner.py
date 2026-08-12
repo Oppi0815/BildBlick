@@ -20,6 +20,7 @@ from printing.layout import (
     TextElementPlan,
     printable_rect_mm,
 )
+from i18n import t
 
 
 DEFAULT_IMAGE_DPI = 300.0
@@ -250,7 +251,7 @@ def _plan_multi_image_document(document: MultiImagePrintDocument) -> list[PagePl
             if document.show_folder_in_footer and document.folder_name.strip():
                 texts.append(TextElementPlan(document.folder_name.strip(), RectMm(footer.x_mm, footer.y_mm, max(0.0, center_x - footer.x_mm), footer.height_mm), alignment="left", font_size_pt=9.0, elide_policy="right", semantic_role="folder"))
             if document.show_page_number:
-                texts.append(TextElementPlan(f"Seite {page_index + 1} von {page_count}", RectMm(center_x, footer.y_mm, center_width, footer.height_mm), font_size_pt=9.0, alignment="center", elide_policy="right", semantic_role="page_number"))
+                texts.append(TextElementPlan(t("Seite {page} von {pages}").format(page=page_index + 1, pages=page_count), RectMm(center_x, footer.y_mm, center_width, footer.height_mm), font_size_pt=9.0, alignment="center", elide_policy="right", semantic_role="page_number"))
             if document.show_print_date and document.print_date_text:
                 texts.append(TextElementPlan(document.print_date_text, RectMm(center_x + center_width, footer.y_mm, max(0.0, footer.right_mm - (center_x + center_width)), footer.height_mm), alignment="right", font_size_pt=9.0, elide_policy="right", semantic_role="print_date"))
         pages.append(PagePlan(document.page_size, paint, tuple(images), tuple(texts), page_index + 1))

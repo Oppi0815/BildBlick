@@ -6,9 +6,9 @@
 
 ![BildBlick Screenshot](docs/bildblick-screenshot.png)
 
-*BildBlick 1.17.0 unter Linux Mint und macOS*
+*BildBlick 1.18.0 unter Linux Mint und macOS*
 
-**Version 1.17.0**
+**Version 1.18.0**
 
 BildBlick ist ein schneller und komfortabler Bildbetrachter für Linux. Die Anwendung wurde unter Linux Mint entwickelt und getestet und verbindet eine übersichtliche Verzeichnisnavigation mit schnellen Vorschaubildern und praktischen Werkzeugen für die Bildverwaltung.
 
@@ -49,7 +49,9 @@ BildBlick ist ein schneller und komfortabler Bildbetrachter für Linux. Die Anwe
 - Spanisch
 - Ukrainisch
 
-Die Sprachwahl wird dauerhaft gespeichert.
+Die gesamte BildBlick-Oberfläche einschließlich Duplikatfinder, Druck, Export,
+PDF und Hilfe ist in diesen Sprachen verfügbar. Die Sprachwahl wird dauerhaft
+gespeichert.
 
 ## Duplikatfinder 2.0
 
