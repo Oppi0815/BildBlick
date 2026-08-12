@@ -15,7 +15,7 @@ from functools import cmp_to_key
 from pathlib import Path
 from typing import Callable, TypeVar
 
-from PIL import Image as PillowImage, ImageOps
+from PIL import ExifTags, Image as PillowImage, ImageOps, IptcImagePlugin
 from send2trash import send2trash
 from PySide6.QtCore import (
     QDir,
@@ -138,7 +138,7 @@ from pdf_support import (
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.15.1"
+APP_VERSION = "1.16.0"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 LOGGER = logging.getLogger(__name__)
 
@@ -179,7 +179,7 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".
 SUPPORTED_FILE_EXTENSIONS = IMAGE_EXTENSIONS | PDF_EXTENSIONS
 THUMBNAIL_SIZE = QSize(160, 120)
 THUMBNAIL_GRID_SIZE = QSize(190, 175)
-THUMBNAIL_SPACING = 8
+THUMBNAIL_SPACING = 14
 THUMBNAIL_MINIMUM = 80
 THUMBNAIL_MAXIMUM = 256
 THUMBNAIL_STEP = 16
@@ -463,19 +463,19 @@ QWidget#centralwidget QWidget#directoryPanel {
 }
 QWidget#centralwidget QLabel#computerLabel {
     font-size: 13px; font-weight: 650;
-    padding: 11px 12px 3px 12px;
+    padding: 11px 8px 5px 8px;
 }
 QWidget#centralwidget QLabel#directoryPathLabel {
-    padding: 0 12px 7px 12px;
+    padding: 0 8px 8px 8px;
 }
 QWidget#centralwidget QTreeView {
-    border: none; padding: 4px 6px;
+    border: none; padding: 6px 8px;
 }
 QWidget#centralwidget QTreeView::item {
-    min-height: 24px; border-radius: 5px; padding: 1px 5px;
+    min-height: 29px; border-radius: 5px; padding: 1px 5px;
 }
 QWidget#centralwidget QListWidget {
-    border: none; padding: 8px;
+    border: none; padding: 10px;
 }
 QWidget#centralwidget QListWidget::item {
     border-radius: 9px; margin: 2px; padding: 4px;
@@ -498,6 +498,22 @@ QWidget#centralwidget QWidget#thumbnailSizeControls QPushButton {
 }
 QWidget#centralwidget QWidget#thumbnailSizeControls QLabel#fileNameLabel {
     font-size: 12px; padding: 0 5px;
+}
+QWidget#centralwidget QToolButton#informationToggleButton {
+    min-height: 22px; max-height: 22px;
+    min-width: 22px; max-width: 22px;
+    border-radius: 11px; padding: 0;
+    background-color: #d9efff; color: #176a9e;
+    border: 1px solid #91c9ec; font-weight: 700;
+}
+QWidget#centralwidget QToolButton#informationToggleButton:hover {
+    background-color: #c5e7fb;
+}
+QWidget#centralwidget QWidget#informationPanel {
+    border-left: 1px solid palette(mid);
+}
+QWidget#centralwidget QLabel#informationEmptyLabel {
+    color: palette(mid); padding: 8px 2px;
 }
 QWidget#centralwidget QWidget#pdfPageNavigation QPushButton {
     min-height: 20px; max-height: 20px;
@@ -563,6 +579,15 @@ QToolButton:pressed {{
     background-color: {colors['selection']}; color: {colors['selection_text']};
 }}
 QToolButton:disabled {{ color: {colors['muted']}; }}
+QWidget#informationPanel {{ background-color: {colors['panel']}; color: {colors['text']}; }}
+QWidget#informationPanel QScrollArea {{ background-color: {colors['panel']}; border: none; }}
+QWidget#informationPanel QGroupBox {{
+    border: 1px solid {colors['border']}; border-radius: 6px; margin-top: 10px;
+    padding: 8px 6px 5px 6px; font-weight: 600;
+}}
+QWidget#informationPanel QGroupBox::title {{ subcontrol-origin: margin; left: 8px; padding: 0 3px; }}
+QWidget#informationPanel QLabel#informationFieldLabel {{ color: {colors['muted']}; font-weight: 400; }}
+QWidget#informationPanel QLabel#informationValueLabel {{ color: {colors['text']}; font-weight: 400; }}
 QSplitter::handle {{ background-color: {colors['border']}; }}
 QSplitter::handle:horizontal {{ width: 1px; }}
 QSplitter::handle:vertical {{ height: 1px; }}
@@ -1052,6 +1077,237 @@ def build_image_metadata(path: Path) -> tuple[str, dict[str, str]]:
 
 def build_image_tooltip(path: Path) -> str:
     return build_image_metadata(path)[0]
+
+
+def _information_value(value: object) -> str | None:
+    text = exif_text(value)
+    if text is not None:
+        return text
+    number = rational_float(value)
+    return format_decimal(number, 2) if number is not None else None
+
+
+def _exif_value(exif, exif_ifd: dict, tag: int) -> object:
+    try:
+        value = exif_ifd.get(tag)
+        return exif.get(tag) if value is None else value
+    except Exception:
+        return None
+
+
+def build_information_metadata(path: Path) -> dict[str, dict[str, str]]:
+    """Return present file and EXIF fields, grouped for the information panel."""
+    groups: dict[str, dict[str, str]] = {"BILD": {"Dateiname": path.name}}
+    try:
+        file_info = path.stat()
+        groups["BILD"]["Dateipfad"] = str(path)
+        groups["BILD"]["Dateigröße"] = format_file_size(file_info.st_size)
+    except OSError:
+        pass
+    suffix = path.suffix.lstrip(".").upper()
+    if suffix:
+        groups["BILD"]["Dateiformat"] = suffix
+    if path.suffix.lower() in PDF_EXTENSIONS:
+        return groups
+
+    exif_found = False
+    try:
+        with PillowImage.open(path) as image:
+            width, height = image.size
+            groups["BILD"]["Abmessungen"] = f"{width} × {height} Pixel"
+            groups["BILD"]["Megapixel"] = f"{format_decimal(width * height / 1_000_000, 1)} MP"
+            if image.format:
+                groups["BILD"]["Dateiformat"] = image.format
+            dpi = image.info.get("dpi")
+            if isinstance(dpi, (tuple, list)) and len(dpi) >= 2:
+                x_dpi, y_dpi = rational_float(dpi[0]), rational_float(dpi[1])
+                if x_dpi is not None and y_dpi is not None:
+                    groups["BILD"]["Auflösung"] = f"{format_decimal(x_dpi)} × {format_decimal(y_dpi)} DPI"
+            exif = image.getexif()
+            exif_found = bool(exif)
+            try:
+                exif_ifd = exif.get_ifd(0x8769)
+            except Exception:
+                exif_ifd = {}
+
+            camera: dict[str, str] = {}
+            for label, tag in (("Hersteller", 271), ("Kameramodell", 272), ("Objektiv", 42036), ("Objektivhersteller", 42035), ("Firmware", 305)):
+                value = _information_value(_exif_value(exif, exif_ifd, tag))
+                if value:
+                    camera[label] = value
+            lens_spec = format_lens_specification(_exif_value(exif, exif_ifd, 42034))
+            if lens_spec and "Objektiv" not in camera:
+                camera["Objektiv"] = lens_spec
+            if camera:
+                groups["KAMERA"] = camera
+
+            recording: dict[str, str] = {}
+            for tag in (36867, 36868, 306):
+                date = format_date(_exif_value(exif, exif_ifd, tag))
+                if date:
+                    recording["Aufnahmedatum"] = date
+                    break
+            values = (
+                ("Belichtungszeit", format_exposure(_exif_value(exif, exif_ifd, 33434))),
+                ("Blende", (lambda value: f"f/{format_decimal(value)}" if value and value > 0 else None)(rational_float(_exif_value(exif, exif_ifd, 33437)))),
+                ("ISO", extract_iso_value(exif)),
+                ("Brennweite", (lambda value: f"{format_decimal(value)} mm" if value and value > 0 else None)(rational_float(_exif_value(exif, exif_ifd, 37386)))),
+                ("Brennweite (KB)", (lambda value: f"{format_decimal(value)} mm" if value and value > 0 else None)(rational_float(_exif_value(exif, exif_ifd, 41989)))),
+                ("Belichtungskorrektur", (lambda value: f"{format_decimal(value)} EV" if value is not None else None)(rational_float(_exif_value(exif, exif_ifd, 37380)))),
+                ("Belichtungsprogramm", _information_value(_exif_value(exif, exif_ifd, 34850))),
+                ("Messmethode", _information_value(_exif_value(exif, exif_ifd, 37383))),
+                ("Blitz", _information_value(_exif_value(exif, exif_ifd, 37385))),
+                ("Weißabgleich", _information_value(_exif_value(exif, exif_ifd, 41987))),
+            )
+            recording.update({label: value for label, value in values if value})
+            if recording:
+                groups["AUFNAHME"] = recording
+
+            orientation = _information_value(exif.get(274))
+            color_space = _information_value(_exif_value(exif, exif_ifd, 40961))
+            if orientation:
+                groups["BILD"]["Ausrichtung"] = orientation
+            if color_space:
+                groups["BILD"]["Farbraum"] = color_space
+            try:
+                gps = exif.get_ifd(0x8825)
+            except Exception:
+                gps = {}
+            latitude = gps_coordinate(gps.get(2), gps.get(1))
+            longitude = gps_coordinate(gps.get(4), gps.get(3))
+            if latitude is not None and longitude is not None:
+                gps_group = {"Breitengrad": f"{latitude:.6f}".replace(".", ","), "Längengrad": f"{longitude:.6f}".replace(".", ",")}
+                altitude = rational_float(gps.get(6))
+                if altitude is not None:
+                    gps_group["Höhe"] = f"{format_decimal(altitude)} m"
+                groups["GPS"] = gps_group
+    except Exception:
+        pass
+    if not exif_found:
+        groups["WEITERE EXIF-DATEN"] = {"Hinweis": "Keine EXIF-Daten vorhanden"}
+    return groups
+
+
+def _metadata_value_present(value: object) -> bool:
+    """Return whether a raw metadata value carries information (0 and False do)."""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned or cleaned.casefold() in {
+            "none", "null", "n/a", "not available",
+        }:
+            return False
+        return bool(re.sub(r"[\s,;|/\\()[\]{}<>…—–-]", "", cleaned))
+    if isinstance(value, (bytes, bytearray)):
+        return bool(value)
+    if isinstance(value, (tuple, list, set)):
+        return any(_metadata_value_present(item) for item in value)
+    if isinstance(value, dict):
+        return any(_metadata_value_present(item) for item in value.values())
+    return True
+
+
+def _raw_metadata_text(value: object, limit: int = 500) -> str | None:
+    """Safely present raw metadata without exposing huge binary blocks."""
+    if not _metadata_value_present(value):
+        return None
+    if isinstance(value, bytes):
+        return f"{len(value)} Bytes (binär)"
+    if isinstance(value, (tuple, list)):
+        parts = [_raw_metadata_text(item, 100) for item in value[:20]]
+        text = ", ".join(part for part in parts if part is not None)
+        if not text:
+            return None
+        if len(value) > 20:
+            text += ", …"
+    elif isinstance(value, set):
+        parts = [_raw_metadata_text(item, 100) for item in sorted(value, key=str)[:20]]
+        text = ", ".join(part for part in parts if part is not None)
+        if not text:
+            return None
+    elif isinstance(value, dict):
+        parts = [
+            f"{key}: {text}"
+            for key, item in value.items()
+            if (text := _raw_metadata_text(item, 100)) is not None
+        ]
+        text = ", ".join(parts)
+        if not text:
+            return None
+    else:
+        text = exif_text(value) or str(value)
+    return text if len(text) <= limit else f"{text[:limit - 1]}…"
+
+
+def _metadata_tag_name(tags: dict[int, str], tag: int) -> str:
+    return tags.get(tag, f"Unbekanntes Tag 0x{tag:04X}")
+
+
+def build_all_image_metadata(path: Path) -> dict[str, dict[str, str]]:
+    """Read the complete, optional metadata view on demand."""
+    if path.suffix.lower() in PDF_EXTENSIONS:
+        return {}
+    groups: dict[str, dict[str, str]] = {}
+    try:
+        with PillowImage.open(path) as image:
+            exif = image.getexif()
+            try:
+                exif_ifd = exif.get_ifd(0x8769)
+            except Exception:
+                exif_ifd = {}
+            exif_fields: dict[str, str] = {}
+            for tag, value in exif.items():
+                if tag == 34853:
+                    continue
+                text = (
+                    "vorhanden (nicht dekodiert)" if tag == 37500 else _raw_metadata_text(value)
+                )
+                if text is not None:
+                    exif_fields[_metadata_tag_name(ExifTags.TAGS, tag)] = text
+            for tag, value in exif_ifd.items():
+                text = "vorhanden (nicht dekodiert)" if tag == 37500 else _raw_metadata_text(value)
+                if text is not None:
+                    exif_fields.setdefault(_metadata_tag_name(ExifTags.TAGS, tag), text)
+            if exif_fields:
+                groups["EXIF"] = dict(sorted(exif_fields.items(), key=lambda item: item[0].casefold()))
+            try:
+                gps_ifd = exif.get_ifd(0x8825)
+            except Exception:
+                gps_ifd = {}
+            if gps_ifd:
+                gps_fields = ((
+                    _metadata_tag_name(ExifTags.GPSTAGS, tag), _raw_metadata_text(value)
+                ) for tag, value in gps_ifd.items())
+                groups["GPS"] = dict(sorted(
+                    ((name, text) for name, text in gps_fields if text is not None),
+                    key=lambda item: item[0].casefold(),
+                ))
+                if not groups["GPS"]:
+                    del groups["GPS"]
+            try:
+                iptc = IptcImagePlugin.getiptcinfo(image) or {}
+            except Exception:
+                iptc = {}
+            if iptc:
+                groups["IPTC"] = dict(sorted(
+                    ((f"{tag[0]}:{tag[1]}", text) for tag, value in iptc.items() if (text := _raw_metadata_text(value)) is not None),
+                    key=lambda item: item[0],
+                ))
+                if not groups["IPTC"]:
+                    del groups["IPTC"]
+            other_fields = {
+                str(key): text
+                for key, value in image.info.items()
+                if key != "exif"
+                and "xmp" not in str(key).casefold()
+                and (text := _raw_metadata_text(value)) is not None
+            }
+            if other_fields:
+                groups["Datei / Sonstige"] = dict(sorted(other_fields.items(), key=lambda item: item[0].casefold()))
+    except Exception:
+        return {}
+    return groups
 
 
 class ThumbnailSignals(QObject):
@@ -2335,6 +2591,7 @@ class ImageViewer(QObject):
         self.preview_panel = self.image_scroll_area.parentWidget()
         self._install_pdf_page_navigation()
         self._install_thumbnail_size_controls()
+        self._install_information_panel()
         self.current_directory: Path | None = None
         self.current_image: Path | None = None
         self._pdf_document = None
@@ -2397,6 +2654,8 @@ class ImageViewer(QObject):
             tuple[str, int, int, int], dict[str, str]
         ] = {}
         self._image_metadata_by_path: dict[str, dict[str, str]] = {}
+        self._all_metadata_cache: dict[tuple[str, int, int], dict[str, dict[str, str]]] = {}
+        self._all_metadata_expanded = False
         self._file_sort_metadata: dict[str, tuple[int, int]] = {}
         self._recording_date_cache: dict[str, datetime | None] = {}
         self._resolved_sort_path_cache: dict[str, str] = {}
@@ -2537,6 +2796,15 @@ class ImageViewer(QObject):
         self.escape_shortcut = QShortcut(QKeySequence("Escape"), self.window)
         self.escape_shortcut.activated.connect(self._handle_escape)
         self._create_application_menus()
+        self.information_toggle_action = QAction(self.window)
+        self.information_toggle_action.setShortcut(QKeySequence("I"))
+        self.information_toggle_action.setShortcutContext(
+            Qt.ShortcutContext.WindowShortcut
+        )
+        self.information_toggle_action.triggered.connect(
+            self._toggle_information_panel
+        )
+        self.window.addAction(self.information_toggle_action)
         self._create_directory_navigation_buttons()
         self.clipboard.dataChanged.connect(self._clipboard_changed)
         self._clipboard_changed()
@@ -2643,6 +2911,15 @@ class ImageViewer(QObject):
         controls_layout.addWidget(self.previous_button)
         controls_layout.addWidget(self.file_name_label, 1)
         controls_layout.addWidget(self.next_button)
+        self.information_toggle_button = QToolButton(controls)
+        self.information_toggle_button.setObjectName("informationToggleButton")
+        self.information_toggle_button.setText("i")
+        self.information_toggle_button.setToolTip("Bildinformationen (I)")
+        self.information_toggle_button.setAccessibleName("Bildinformationen")
+        self.information_toggle_button.setCheckable(True)
+        self.information_toggle_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.information_toggle_button.clicked.connect(self._toggle_information_panel)
+        controls_layout.addWidget(self.information_toggle_button)
         thumbnail_layout.addWidget(controls)
         self.right_splitter.insertWidget(thumbnail_index, thumbnail_panel)
 
@@ -2662,6 +2939,180 @@ class ImageViewer(QObject):
                 thumbnail_pixels_from_slider_value(value)
             )
         )
+
+    def _install_information_panel(self) -> None:
+        """Add a hidden, fixed-width details pane beside the image viewport."""
+        preview_layout = self.preview_panel.layout()
+        if not isinstance(preview_layout, QVBoxLayout):
+            return
+        preview_layout.removeWidget(self.image_scroll_area)
+        self.preview_content = QWidget(self.preview_panel)
+        preview_content_layout = QHBoxLayout(self.preview_content)
+        preview_content_layout.setContentsMargins(0, 0, 0, 0)
+        preview_content_layout.setSpacing(0)
+        preview_content_layout.addWidget(self.image_scroll_area, 1)
+
+        self.information_panel = QWidget(self.preview_content)
+        self.information_panel.setObjectName("informationPanel")
+        self.information_panel.setFixedWidth(360)
+        panel_layout = QVBoxLayout(self.information_panel)
+        panel_layout.setContentsMargins(10, 8, 10, 10)
+        panel_layout.setSpacing(6)
+        header = QHBoxLayout()
+        title = QLabel("Bildinformationen", self.information_panel)
+        title.setStyleSheet("font-weight: 650;")
+        close_button = QToolButton(self.information_panel)
+        close_button.setText("×")
+        close_button.setToolTip("Bildinformationen schließen (I)")
+        close_button.setAccessibleName("Bildinformationen schließen")
+        close_button.setAutoRaise(True)
+        close_button.setFixedSize(24, 24)
+        close_button.clicked.connect(self._hide_information_panel)
+        header.addWidget(title)
+        header.addStretch(1)
+        header.addWidget(close_button)
+        panel_layout.addLayout(header)
+
+        self.information_scroll_area = QScrollArea(self.information_panel)
+        self.information_scroll_area.setWidgetResizable(True)
+        self.information_scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.information_content = QWidget(self.information_scroll_area)
+        self.information_content_layout = QVBoxLayout(self.information_content)
+        self.information_content_layout.setContentsMargins(2, 0, 2, 2)
+        self.information_content_layout.setSpacing(8)
+        self.information_content_layout.addStretch(1)
+        self.information_scroll_area.setWidget(self.information_content)
+        panel_layout.addWidget(self.information_scroll_area, 1)
+        preview_content_layout.addWidget(self.information_panel)
+        preview_layout.insertWidget(0, self.preview_content, 1)
+        self.information_panel.hide()
+
+    def _clear_information_content(self) -> None:
+        while self.information_content_layout.count() > 1:
+            item = self.information_content_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+    def _update_information_panel(self) -> None:
+        if not self.information_panel.isVisible():
+            return
+        self._clear_information_content()
+        path = self.current_image
+        if path is None or not path.is_file():
+            empty = QLabel("Kein Bild ausgewählt", self.information_content)
+            empty.setObjectName("informationEmptyLabel")
+            self.information_content_layout.insertWidget(0, empty)
+            return
+        for title, fields in build_information_metadata(path).items():
+            group = QGroupBox(title, self.information_content)
+            form = QFormLayout(group)
+            form.setContentsMargins(8, 8, 8, 6)
+            form.setSpacing(5)
+            for label_text, value_text in fields.items():
+                label = QLabel(f"{label_text}:", group)
+                label.setObjectName("informationFieldLabel")
+                value = QLabel(value_text, group)
+                value.setObjectName("informationValueLabel")
+                value.setWordWrap(True)
+                value.setTextInteractionFlags(
+                    Qt.TextInteractionFlag.TextSelectableByMouse
+                )
+                form.addRow(label, value)
+            self.information_content_layout.insertWidget(
+                self.information_content_layout.count() - 1, group
+            )
+        self.all_metadata_toggle = QToolButton(self.information_content)
+        self.all_metadata_toggle.setObjectName("allMetadataToggle")
+        self.all_metadata_toggle.setCheckable(True)
+        self.all_metadata_toggle.setChecked(self._all_metadata_expanded)
+        self.all_metadata_toggle.toggled.connect(self._toggle_all_metadata)
+        self.information_content_layout.insertWidget(
+            self.information_content_layout.count() - 1, self.all_metadata_toggle
+        )
+        self.all_metadata_content = QWidget(self.information_content)
+        self.all_metadata_layout = QVBoxLayout(self.all_metadata_content)
+        self.all_metadata_layout.setContentsMargins(0, 0, 0, 0)
+        self.all_metadata_layout.setSpacing(8)
+        self.information_content_layout.insertWidget(
+            self.information_content_layout.count() - 1, self.all_metadata_content
+        )
+        self._refresh_all_metadata_toggle()
+        if self._all_metadata_expanded:
+            self._populate_all_metadata()
+        self.information_scroll_area.verticalScrollBar().setValue(0)
+
+    def _refresh_all_metadata_toggle(self) -> None:
+        self.all_metadata_toggle.setText(
+            "▼ Alle Metadaten" if self._all_metadata_expanded else "▶ Alle Metadaten"
+        )
+        self.all_metadata_content.setVisible(self._all_metadata_expanded)
+
+    def _toggle_all_metadata(self, expanded: bool) -> None:
+        self._all_metadata_expanded = expanded
+        self._refresh_all_metadata_toggle()
+        if expanded:
+            self._populate_all_metadata()
+
+    def _populate_all_metadata(self) -> None:
+        while self.all_metadata_layout.count():
+            item = self.all_metadata_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        path = self.current_image
+        fields_by_group: dict[str, dict[str, str]] = {}
+        if path is not None and path.is_file() and path.suffix.lower() not in PDF_EXTENSIONS:
+            try:
+                info = path.stat()
+                key = (str(path.resolve(strict=False)), info.st_mtime_ns, info.st_size)
+                fields_by_group = self._all_metadata_cache.get(key, {})
+                if not fields_by_group:
+                    fields_by_group = build_all_image_metadata(path)
+                    self._all_metadata_cache[key] = fields_by_group
+            except OSError:
+                pass
+        if not fields_by_group:
+            empty = QLabel("Keine weiteren Metadaten vorhanden", self.all_metadata_content)
+            empty.setObjectName("informationEmptyLabel")
+            empty.setWordWrap(True)
+            self.all_metadata_layout.addWidget(empty)
+            return
+        for title, fields in fields_by_group.items():
+            group = QGroupBox(title, self.all_metadata_content)
+            form = QFormLayout(group)
+            form.setContentsMargins(8, 8, 8, 6)
+            form.setSpacing(5)
+            for tag, value_text in fields.items():
+                label = QLabel(f"{tag}:", group)
+                label.setObjectName("informationFieldLabel")
+                value = QLabel(value_text, group)
+                value.setObjectName("informationValueLabel")
+                value.setWordWrap(True)
+                value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                form.addRow(label, value)
+            self.all_metadata_layout.addWidget(group)
+
+    def _show_information_panel(self) -> None:
+        self.information_panel.show()
+        self._update_information_panel()
+        self.information_toggle_button.setChecked(True)
+        self._schedule_image_render()
+
+    def _hide_information_panel(self) -> None:
+        self.information_panel.hide()
+        self.information_toggle_button.setChecked(False)
+        self._schedule_image_render()
+
+    def _toggle_information_panel(self) -> None:
+        if self.information_panel.isVisible():
+            self._hide_information_panel()
+        else:
+            self._show_information_panel()
 
     def _migrate_legacy_settings(self) -> None:
         legacy_settings = QSettings(
@@ -5207,6 +5658,9 @@ class ImageViewer(QObject):
         self.slideshow_fullscreen_action.setEnabled(not self._slideshow_running)
 
     def _handle_escape(self) -> None:
+        if self.information_panel.isVisible():
+            self._hide_information_panel()
+            return
         if self._slideshow_running:
             self._stop_slideshow()
         if self._fullscreen_mode:
@@ -5672,6 +6126,7 @@ class ImageViewer(QObject):
         self.current_image = Path(item.data(Qt.ItemDataRole.UserRole))
         self._set_file_name_text(self.current_image.name)
         self._load_current_image()
+        self._update_information_panel()
         self._update_navigation_buttons()
         if self._slideshow_running:
             current_key = self._resolved_sort_path(self.current_image)
@@ -5882,29 +6337,9 @@ class ImageViewer(QObject):
         self.directory_path_label.setToolTip("")
         self.directory_path_label.installEventFilter(self)
 
-        navigation_row = QHBoxLayout()
-        navigation_row.setContentsMargins(0, 0, 0, 0)
-        navigation_row.setSpacing(4)
-        button_specs = (
-            ("previous_folder_button", "←", self.previous_folder_action),
-            ("next_folder_button", "→", self.next_folder_action),
-            ("parent_folder_button", "↑", self.parent_folder_action),
-        )
-        for attribute_name, text, action in button_specs:
-            button = QToolButton(self.directory_panel)
-            button.setDefaultAction(action)
-            button.setText(text)
-            button.setToolTip(action.toolTip())
-            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            button.setFixedSize(30, 26)
-            navigation_row.addWidget(button)
-            setattr(self, attribute_name, button)
-        navigation_row.addStretch(1)
         directory_layout = self.directory_panel.layout()
         if isinstance(directory_layout, QVBoxLayout):
             directory_layout.insertWidget(1, self.directory_path_label)
-            directory_layout.insertLayout(2, navigation_row)
         self._update_directory_heading()
         self._update_folder_navigation_actions()
 
@@ -5918,14 +6353,6 @@ class ImageViewer(QObject):
             and self.current_directory.parent != self.current_directory
         )
         self.parent_folder_action.setEnabled(has_parent)
-        for attribute_name, text in (
-            ("previous_folder_button", "←"),
-            ("next_folder_button", "→"),
-            ("parent_folder_button", "↑"),
-        ):
-            button = getattr(self, attribute_name, None)
-            if button is not None:
-                button.setText(text)
 
     def _update_directory_heading(self) -> None:
         if self.current_directory is None:
@@ -7357,6 +7784,12 @@ class BildBlickApplication(QApplication):
 
 
 def main() -> int:
+    # A release binary must be able to report its version in headless shells.
+    # QCommandLineParser normally handles this only after QApplication has
+    # selected a platform plugin.
+    if "--version" in sys.argv[1:]:
+        print(f"{APP_NAME} {APP_VERSION}")
+        return 0
     app = BildBlickApplication(sys.argv)
     install_selection_accent_style(app)
     app.setWindowIcon(QIcon(str(resource_path("assets/bildblick.png"))))

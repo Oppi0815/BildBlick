@@ -2,6 +2,21 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.16.0
+
+### Neu
+
+- Einblendbares Bildinformationen-/EXIF-Panel direkt neben der Bildansicht.
+- Kompakte Datei-, Kamera- und Aufnahmeinformationen sowie aufklappbare
+  Ansicht „Alle Metadaten“ für EXIF, GPS, IPTC und weitere unterstützte Daten.
+
+### Verbessert
+
+- Leere Metadatenfelder und -gruppen werden ausgeblendet; XMP bleibt von der
+  Oberfläche ausgeschlossen und MakerNotes werden sicher dargestellt.
+- Linke Seitenleiste aufgeräumt; die drei Navigationspfeile über dem
+  Verzeichnisbaum entfallen.
+
 ## 1.15.1
 
 ### Behoben

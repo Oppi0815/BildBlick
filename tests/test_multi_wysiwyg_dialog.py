@@ -249,6 +249,7 @@ def test_multi_wysiwyg_preview_shows_header_and_footer_from_the_real_dialog_page
     dialog.page_number.setChecked(True)
     dialog.print_date.setChecked(True)
     dialog._print_date_text = "11.08.2026"
+    dialog._update()
     dialog.paper.setCurrentText("A4")
     dialog.count.setCurrentIndex(dialog.count.findData(1))
     QApplication.processEvents()
