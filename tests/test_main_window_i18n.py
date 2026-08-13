@@ -5,7 +5,7 @@ from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication, QLabel, QGroupBox, QListView, QListWidgetItem, QMenu
 from PySide6.QtTest import QTest
 
-from bildbetrachter import ImageViewer
+from bildbetrachter import COLOR_SCHEMES, ImageViewer, color_scheme_stylesheet
 
 
 def _viewer(tmp_path):
@@ -83,10 +83,48 @@ def test_thumbnail_position_switching_persists_and_keeps_the_same_list(tmp_path)
         try:
             assert restored._thumbnail_position == "left"
             assert restored.thumbnail_list.flow() == QListView.Flow.TopToBottom
+            assert restored.thumbnail_list.isWrapping() is False
         finally:
             restored.settings.setValue("view/thumbnail_position", "top")
             restored.settings.sync()
             restored.window.close()
+    finally:
+        viewer.settings.setValue("view/thumbnail_position", "top")
+        viewer.settings.sync()
+        viewer.window.close()
+        application.processEvents()
+
+
+def test_top_thumbnail_position_wraps_into_rows_and_side_positions_stay_vertical(tmp_path):
+    application, viewer = _viewer(tmp_path)
+    try:
+        viewer.window.resize(900, 700)
+        for page in range(12):
+            item = QListWidgetItem(f"image-{page}")
+            item.setSizeHint(viewer._thumbnail_grid_size)
+            item.setData(Qt.ItemDataRole.UserRole, str(tmp_path / f"image-{page}.jpg"))
+            viewer.thumbnail_list.addItem(item)
+        viewer._set_thumbnail_position("top")
+        application.processEvents()
+        assert viewer.thumbnail_list.flow() == QListView.Flow.LeftToRight
+        assert viewer.thumbnail_list.isWrapping() is True
+        first_row_y = viewer.thumbnail_list.visualItemRect(
+            viewer.thumbnail_list.item(0)
+        ).y()
+        assert any(
+            viewer.thumbnail_list.visualItemRect(viewer.thumbnail_list.item(page)).y()
+            > first_row_y
+            for page in range(1, viewer.thumbnail_list.count())
+        )
+
+        for position in ("left", "right"):
+            viewer._set_thumbnail_position(position)
+            assert viewer.thumbnail_list.flow() == QListView.Flow.TopToBottom
+            assert viewer.thumbnail_list.isWrapping() is False
+
+        viewer._set_thumbnail_position("top")
+        assert viewer.thumbnail_list.flow() == QListView.Flow.LeftToRight
+        assert viewer.thumbnail_list.isWrapping() is True
     finally:
         viewer.settings.setValue("view/thumbnail_position", "top")
         viewer.settings.sync()
@@ -141,6 +179,22 @@ def test_directory_header_count_and_splitter_remain_live_and_translated(tmp_path
         viewer._set_language("de")
         viewer.window.close()
         application.processEvents()
+
+
+def test_system_directory_tree_selection_uses_palette_for_active_and_inactive_rows():
+    stylesheet = color_scheme_stylesheet(None)
+    selector = "QWidget#centralwidget QTreeView::item"
+
+    assert f"{selector}:selected," in stylesheet
+    assert f"{selector}:selected:active," in stylesheet
+    assert f"{selector}:selected:!active" in stylesheet
+    assert "background-color: palette(highlight); color: palette(highlighted-text);" in stylesheet
+
+
+def test_explicit_color_schemes_keep_their_existing_directory_tree_selection_colors():
+    for scheme in ("Hell", "Dunkel"):
+        stylesheet = color_scheme_stylesheet(COLOR_SCHEMES[scheme])
+        assert "background-color: palette(highlight); color: palette(highlighted-text);" not in stylesheet
 
 
 def test_default_main_proportions_prioritize_the_image_without_fixing_panels(tmp_path):

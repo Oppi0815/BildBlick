@@ -42,6 +42,26 @@ for _code, _words in {
 }.items():
     CATALOGUE[_code].update(_words)
 
+for _code, _words in {
+    "en": {
+        "Wird geladen …": "Loading …",
+        "↑ / ↓ – vorherige/nächste Seite": "↑ / ↓ – previous/next page",
+    },
+    "fr": {
+        "Wird geladen …": "Chargement…",
+        "↑ / ↓ – vorherige/nächste Seite": "↑ / ↓ – page précédente/suivante",
+    },
+    "es": {
+        "Wird geladen …": "Cargando…",
+        "↑ / ↓ – vorherige/nächste Seite": "↑ / ↓ – página anterior/siguiente",
+    },
+    "uk": {
+        "Wird geladen …": "Завантаження…",
+        "↑ / ↓ – vorherige/nächste Seite": "↑ / ↓ – попередня/наступна сторінка",
+    },
+}.items():
+    CATALOGUE[_code].update(_words)
+
 _language = "de"
 
 # Shared print/dialog wording.  Keeping this separate makes extending all

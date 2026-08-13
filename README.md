@@ -6,9 +6,9 @@
 
 ![BildBlick Screenshot](docs/bildblick-screenshot.png)
 
-*BildBlick 1.19.2 unter Linux Mint und macOS*
+*BildBlick 1.19.3 unter Linux Mint und macOS*
 
-**Version 1.19.2**
+**Version 1.19.3**
 
 BildBlick ist ein schneller und komfortabler Bildbetrachter für Linux. Die Anwendung wurde unter Linux Mint entwickelt und getestet und verbindet eine übersichtliche Verzeichnisnavigation mit schnellen Vorschaubildern und praktischen Werkzeugen für die Bildverwaltung.
 
@@ -74,6 +74,9 @@ gespeichert.
   „Vorherige PDF-Seite“, „Seite X von Y“ und „Nächste PDF-Seite“.
 - Die PDF-Seitenleiste erscheint nur bei mehrseitigen PDFs, benötigt bei
   Bildern und einseitigen PDFs keinen Platz und bleibt im Vollbild sichtbar.
+- Im PDF-Vollbild bietet eine scrollbar angeordnete Seitenvorschau links
+  Klicknavigation; `↑` und `↓` wechseln Seiten und ein kurzer Hinweis erklärt
+  die Navigation beim Eintritt in den Vollbildmodus.
 - `PageUp` und `PageDown` wechseln weiterhin PDF-Seiten.
 - PDF-Dokumente funktionieren auch im Vollbild und können per Drag-and-drop
   geöffnet oder als lokale Datei-URL herausgezogen werden.

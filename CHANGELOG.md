@@ -2,6 +2,25 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.19.3
+
+### PDF-Vollbild
+
+- Mehrseitige PDFs erhalten im Vollbild eine scrollbar angeordnete linke
+  Seitenvorschau mit Klicknavigation, Busy-Anzeige sowie `↑`/`↓`-Navigation.
+- Der Navigationshinweis bleibt beim Eintritt in das PDF-Vollbild etwa acht
+  Sekunden sichtbar. Ein störender allgemeiner MouseMove-Tooltip wird dort
+  nicht mehr angezeigt; normale Bild-Vollbild-Tooltips bleiben erhalten.
+- Die Geometrie der PDF-Vorschaubilder und die reguläre mehrreihige
+  Thumbnailansicht wurden korrigiert.
+
+### Oberfläche
+
+- Der Regler für die Vorschaubildgröße bleibt auch im System-Farbschema klar
+  sichtbar.
+- Die Auswahl im Verzeichnisbaum verwendet im System-Farbschema konsequent
+  Highlight- und HighlightedText-Farben der Desktop-Palette.
+
 ## 1.19.2
 
 ### Verbessert

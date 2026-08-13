@@ -138,7 +138,7 @@ from i18n import LANGUAGES, LanguageManager, t
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.19.2"
+APP_VERSION = "1.19.3"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 LOGGER = logging.getLogger(__name__)
 
@@ -235,6 +235,7 @@ ZOOM_STEP = 1.15
 MIN_ZOOM = 0.10
 MAX_ZOOM = 8.0
 FULLSCREEN_TOOLTIP_DURATION = 3000
+PDF_FULLSCREEN_NAVIGATION_HINT_DURATION = 8000
 ZOOM_INDICATOR_DURATION = 1500
 CHECK_ACCENT_COLOR = "#D32F2F"
 CLIPBOARD_OPERATION_MIME_TYPE = "application/x-bildblick-file-operation"
@@ -544,6 +545,24 @@ QWidget#centralwidget QWidget#pdfPageNavigation QPushButton {
     padding: 0; border-radius: 5px;
 }
 QWidget#centralwidget QLabel#pdfPageLabel { padding: 0 4px; }
+QWidget#fullscreenPdfThumbnailBar {
+    border: none; border-right: 1px solid palette(mid); padding: 5px;
+    background: palette(window);
+}
+QWidget#fullscreenPdfThumbnailBar::item {
+    border-radius: 5px; padding: 4px; margin: 1px;
+}
+QWidget#fullscreenPdfThumbnailBar::item:selected {
+    background: palette(alternate-base); border: 1px solid palette(highlight);
+}
+QWidget#fullscreenPdfThumbnailBusy {
+    border-top: 1px solid palette(mid); padding: 4px 6px;
+    background: palette(window);
+}
+QWidget#fullscreenPdfThumbnailBusy QLabel { color: palette(text); }
+QLabel#pdfFullscreenNavigationHint {
+    border-radius: 7px; padding: 7px 11px; font-size: 14px; font-weight: 600;
+}
 QMainWindow#MainWindow QStatusBar {
     min-height: 46px; max-height: 46px; padding: 2px 12px;
 }
@@ -584,17 +603,18 @@ QWidget#bottomControlBar QSlider {
 }
 QWidget#bottomControlBar QSlider:focus { outline: none; }
 QWidget#bottomControlBar QSlider::groove:horizontal {
-    height: 5px; border-radius: 2px; background: palette(mid);
+    height: 5px; border: 1px solid palette(dark); border-radius: 3px;
+    background: palette(midlight);
 }
 QWidget#bottomControlBar QSlider::sub-page:horizontal {
-    border-radius: 2px; background: palette(mid);
+    border-radius: 2px; background: palette(highlight);
 }
 QWidget#bottomControlBar QSlider::add-page:horizontal {
-    border-radius: 2px; background: palette(mid);
+    border-radius: 2px; background: palette(midlight);
 }
 QWidget#bottomControlBar QSlider::handle:horizontal {
-    width: 10px; margin: -4px 0; border-radius: 5px;
-    background: palette(highlight);
+    width: 10px; margin: -4px 0; border: 1px solid palette(dark);
+    border-radius: 5px; background: palette(highlight);
 }
 QWidget#quickSwitches QToolButton {
     min-height: 22px; padding: 1px 6px; border-radius: 5px;
@@ -614,7 +634,16 @@ QWidget#centralwidget QSplitter::handle:vertical { height: 1px; }
 
 def color_scheme_stylesheet(colors: dict[str, str] | None) -> str:
     if colors is None:
-        return selection_menu_stylesheet() + interface_polish_stylesheet()
+        # Keep the directory tree selection tied to the desktop palette.  In
+        # particular, do not let an inherited item text color turn a selected
+        # system-theme row into white text on a light highlight background.
+        return selection_menu_stylesheet() + interface_polish_stylesheet() + """
+QWidget#centralwidget QTreeView::item:selected,
+QWidget#centralwidget QTreeView::item:selected:active,
+QWidget#centralwidget QTreeView::item:selected:!active {
+    background-color: palette(highlight); color: palette(highlighted-text);
+}
+"""
     branch_variant = "dark" if QColor(colors["text"]).lightness() < 128 else "light"
     closed_branch_icon = resource_path(
         f"assets/tree-branch-{branch_variant}-closed.svg"
@@ -742,8 +771,8 @@ QWidget#thumbnailSizeControls QSlider::handle:horizontal:disabled {{
     background: {colors['slider_disabled_active']};
 }}
 QToolTip {{
-    background-color: {colors['tooltip']}; color: {colors['tooltip_text']};
-    border: 1px solid {colors['border']}; padding: 4px;
+    background-color: palette(toolTipBase); color: palette(toolTipText);
+    border: 1px solid palette(mid); padding: 4px;
 }}
 """
 
@@ -2710,6 +2739,7 @@ class ImageViewer(QObject):
         self._name_collator.setNumericMode(True)
         self.window = self._load_ui()
         self.window.setWindowTitle(APP_NAME)
+        self._system_tooltip_palette = QPalette(QToolTip.palette())
         self.status_bar = self.window.statusBar()
         self.status_bar.setSizeGripEnabled(False)
         self.status_bar.setContentsMargins(4, 0, 4, 0)
@@ -2754,6 +2784,7 @@ class ImageViewer(QObject):
         self._install_pdf_page_navigation()
         self._install_thumbnail_size_controls()
         self._install_information_panel()
+        self._install_fullscreen_pdf_thumbnail_bar()
         self._apply_thumbnail_position(save=False)
         self.current_directory: Path | None = None
         self.current_image: Path | None = None
@@ -2855,7 +2886,7 @@ class ImageViewer(QObject):
             QAbstractItemView.SelectionMode.ExtendedSelection
         )
         self.thumbnail_list.setResizeMode(QListView.ResizeMode.Adjust)
-        self.thumbnail_list.setWrapping(True)
+        self.thumbnail_list.setWrapping(self._thumbnail_position == "top")
         self.thumbnail_list.setWordWrap(True)
         self.thumbnail_list.setIconSize(self._thumbnail_size)
         self.thumbnail_list.setGridSize(self._thumbnail_grid_size)
@@ -2900,6 +2931,30 @@ class ImageViewer(QObject):
         )
         self.zoom_indicator.setStyleSheet(ZOOM_INDICATOR_STYLESHEET)
         self.zoom_indicator.hide()
+
+        self.pdf_fullscreen_navigation_hint = QLabel(
+            self.image_scroll_area.viewport()
+        )
+        self.pdf_fullscreen_navigation_hint.setObjectName(
+            "pdfFullscreenNavigationHint"
+        )
+        self.pdf_fullscreen_navigation_hint.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+        # This overlay sits on arbitrary PDF content.  Its contrast must not
+        # depend on a desktop theme or on the fullscreen window stylesheet.
+        self.pdf_fullscreen_navigation_hint.setStyleSheet(
+            "QLabel#pdfFullscreenNavigationHint {"
+            " background-color: rgba(20, 20, 20, 220); color: #ffffff;"
+            " border: 1px solid rgba(255, 255, 255, 90); border-radius: 6px;"
+            " padding: 7px 12px; font-size: 12pt; font-weight: normal; }"
+        )
+        self.pdf_fullscreen_navigation_hint.hide()
+        self.pdf_fullscreen_navigation_hint_timer = QTimer(self)
+        self.pdf_fullscreen_navigation_hint_timer.setSingleShot(True)
+        self.pdf_fullscreen_navigation_hint_timer.timeout.connect(
+            self.pdf_fullscreen_navigation_hint.hide
+        )
 
         self.drop_hint_label = QLabel(self.image_scroll_area.viewport())
         self.drop_hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -2963,6 +3018,20 @@ class ImageViewer(QObject):
         self.window.installEventFilter(self)
         self.escape_shortcut = QShortcut(QKeySequence("Escape"), self.window)
         self.escape_shortcut.activated.connect(self._handle_escape)
+        self.pdf_previous_page_shortcut = QShortcut(
+            QKeySequence(Qt.Key.Key_Up), self.window
+        )
+        self.pdf_next_page_shortcut = QShortcut(
+            QKeySequence(Qt.Key.Key_Down), self.window
+        )
+        for shortcut, offset in (
+            (self.pdf_previous_page_shortcut, -1),
+            (self.pdf_next_page_shortcut, 1),
+        ):
+            shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+            shortcut.activated.connect(
+                lambda value=offset: self._navigate_fullscreen_pdf_page(value)
+            )
         self._create_application_menus()
         self.language_manager.translate_widget_tree(self.window)
         self.information_toggle_action = QAction(self.window)
@@ -3018,6 +3087,247 @@ class ImageViewer(QObject):
         layout.addWidget(self.next_pdf_page_button)
         layout.addStretch(1)
         self.pdf_page_navigation.hide()
+
+    def _install_fullscreen_pdf_thumbnail_bar(self) -> None:
+        """Create the PDF-only page navigator shown beside a fullscreen page."""
+        self.pdf_thumbnail_panel = QWidget(self.preview_content)
+        self.pdf_thumbnail_panel.setObjectName("fullscreenPdfThumbnailPanel")
+        self.pdf_thumbnail_panel.setFixedWidth(174)
+        thumbnail_layout = QVBoxLayout(self.pdf_thumbnail_panel)
+        thumbnail_layout.setContentsMargins(0, 0, 0, 0)
+        thumbnail_layout.setSpacing(0)
+        self.pdf_thumbnail_bar = QListWidget(self.pdf_thumbnail_panel)
+        self.pdf_thumbnail_bar.setObjectName("fullscreenPdfThumbnailBar")
+        self.pdf_thumbnail_bar.setViewMode(QListView.ViewMode.IconMode)
+        self.pdf_thumbnail_bar.setFlow(QListView.Flow.TopToBottom)
+        self.pdf_thumbnail_bar.setWrapping(False)
+        self.pdf_thumbnail_bar.setResizeMode(QListView.ResizeMode.Adjust)
+        self.pdf_thumbnail_bar.setIconSize(QSize(132, 176))
+        self.pdf_thumbnail_bar.setGridSize(QSize(140, 212))
+        self.pdf_thumbnail_bar.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.pdf_thumbnail_bar.setVerticalScrollMode(
+            QAbstractItemView.ScrollMode.ScrollPerPixel
+        )
+        self.pdf_thumbnail_bar.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.pdf_thumbnail_bar.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        # Navigate on press, not release: the first click must never be only a
+        # selection when the bar is still receiving its lazy-render updates.
+        self.pdf_thumbnail_bar.itemPressed.connect(self._select_pdf_thumbnail_page)
+        self.pdf_thumbnail_bar.verticalScrollBar().valueChanged.connect(
+            lambda _value: self._schedule_visible_pdf_thumbnails()
+        )
+        thumbnail_layout.addWidget(self.pdf_thumbnail_bar, 1)
+        self.pdf_thumbnail_busy = QWidget(self.pdf_thumbnail_panel)
+        self.pdf_thumbnail_busy.setObjectName("fullscreenPdfThumbnailBusy")
+        busy_layout = QHBoxLayout(self.pdf_thumbnail_busy)
+        busy_layout.setContentsMargins(6, 3, 6, 3)
+        busy_layout.setSpacing(5)
+        self.pdf_thumbnail_spinner = QLabel("◷", self.pdf_thumbnail_busy)
+        self.pdf_thumbnail_spinner.setFixedWidth(16)
+        self.pdf_thumbnail_busy_label = QLabel(t("Wird geladen …"), self.pdf_thumbnail_busy)
+        busy_layout.addWidget(self.pdf_thumbnail_spinner)
+        busy_layout.addWidget(self.pdf_thumbnail_busy_label, 1)
+        thumbnail_layout.addWidget(self.pdf_thumbnail_busy)
+        self.pdf_thumbnail_busy.hide()
+        self._pdf_busy_frames = ("◷", "◴", "◶", "◵")
+        self._pdf_busy_frame = 0
+        self._pdf_busy_timer = QTimer(self.pdf_thumbnail_panel)
+        self._pdf_busy_timer.setInterval(120)
+        self._pdf_busy_timer.timeout.connect(self._advance_pdf_busy_indicator)
+        self.preview_content_layout.insertWidget(0, self.pdf_thumbnail_panel)
+        self.pdf_thumbnail_bar.hide()
+        self.pdf_thumbnail_panel.hide()
+        self._pdf_thumbnail_cache: dict[int, QPixmap] = {}
+        self._pdf_thumbnail_pending: set[int] = set()
+        self._pdf_thumbnail_render_scheduled = False
+        self._pdf_thumbnail_document = None
+        self._pdf_thumbnail_suspended = False
+
+    def _reset_pdf_thumbnails(self) -> None:
+        self._pdf_thumbnail_cache.clear()
+        self._pdf_thumbnail_pending.clear()
+        self._pdf_thumbnail_render_scheduled = False
+        self._pdf_thumbnail_document = None
+        self._pdf_thumbnail_suspended = False
+        self.pdf_thumbnail_bar.clear()
+
+    def _show_fullscreen_pdf_thumbnails(self) -> None:
+        document = self._pdf_document
+        if not self._fullscreen_mode or document is None or document.pageCount() < 1:
+            self._hide_fullscreen_pdf_thumbnails()
+            return
+        page_count = document.pageCount()
+        if self.pdf_thumbnail_bar.count() != page_count:
+            self._reset_pdf_thumbnails()
+            for page in range(page_count):
+                item = QListWidgetItem(
+                    t("Seite {page}").format(page=page + 1)
+                )
+                item.setData(Qt.ItemDataRole.UserRole, page)
+                # A missing icon must occupy exactly the same space as a
+                # rendered page.  Otherwise QListView recalculates rows while
+                # the lazy queue is running and a click can land in a moving
+                # item rectangle.
+                item.setSizeHint(QSize(140, 212))
+                item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter)
+                self.pdf_thumbnail_bar.addItem(item)
+        if self._pdf_thumbnail_document is None and self.current_image is not None:
+            thumbnail_result = load_pdf(self.current_image)
+            self._pdf_thumbnail_document = thumbnail_result.document
+        self.pdf_thumbnail_bar.show()
+        self.pdf_thumbnail_panel.show()
+        self._sync_pdf_thumbnail_selection()
+        self._refresh_pdf_thumbnail_text()
+        self._schedule_visible_pdf_thumbnails()
+
+    def _hide_fullscreen_pdf_thumbnails(self) -> None:
+        self._set_pdf_thumbnail_busy(False)
+        self.pdf_thumbnail_bar.hide()
+        self.pdf_thumbnail_panel.hide()
+
+    def _navigate_fullscreen_pdf_page(self, offset: int) -> None:
+        if self._fullscreen_mode and self._pdf_document is not None:
+            self._change_pdf_page(offset)
+
+    def _advance_pdf_busy_indicator(self) -> None:
+        self._pdf_busy_frame = (self._pdf_busy_frame + 1) % len(self._pdf_busy_frames)
+        self.pdf_thumbnail_spinner.setText(self._pdf_busy_frames[self._pdf_busy_frame])
+
+    def _set_pdf_thumbnail_busy(self, busy: bool) -> None:
+        visible = bool(busy and self._fullscreen_mode and self._pdf_document is not None)
+        self.pdf_thumbnail_busy.setVisible(visible)
+        if visible:
+            if not self._pdf_busy_timer.isActive():
+                self._pdf_busy_frame = 0
+                self.pdf_thumbnail_spinner.setText(self._pdf_busy_frames[0])
+                self._pdf_busy_timer.start()
+        else:
+            self._pdf_busy_timer.stop()
+
+    def _select_pdf_thumbnail_page(self, item: QListWidgetItem) -> None:
+        page = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(page, int):
+            self._pause_pdf_thumbnail_rendering()
+            self._render_pdf_page(page)
+
+    def _pause_pdf_thumbnail_rendering(self) -> None:
+        """Give an explicit page selection priority over background previews."""
+        self._pdf_thumbnail_suspended = True
+        self._pdf_thumbnail_render_scheduled = False
+        QTimer.singleShot(75, self._resume_pdf_thumbnail_rendering)
+
+    def _resume_pdf_thumbnail_rendering(self) -> None:
+        self._pdf_thumbnail_suspended = False
+        self._schedule_visible_pdf_thumbnails()
+
+    def _sync_pdf_thumbnail_selection(self) -> None:
+        if not self.pdf_thumbnail_bar.isVisible() or self._pdf_document is None:
+            return
+        if not 0 <= self._pdf_page < self.pdf_thumbnail_bar.count():
+            return
+        item = self.pdf_thumbnail_bar.item(self._pdf_page)
+        with QSignalBlocker(self.pdf_thumbnail_bar):
+            self.pdf_thumbnail_bar.setCurrentItem(item)
+        self.pdf_thumbnail_bar.scrollToItem(
+            item, QAbstractItemView.ScrollHint.EnsureVisible
+        )
+
+    def _refresh_pdf_thumbnail_text(self) -> None:
+        document = self._pdf_document
+        if document is None:
+            return
+        page_count = document.pageCount()
+        for page in range(min(page_count, self.pdf_thumbnail_bar.count())):
+            item = self.pdf_thumbnail_bar.item(page)
+            item.setText(t("Seite {page}").format(page=page + 1))
+        self.pdf_thumbnail_busy_label.setText(t("Wird geladen …"))
+
+    def _position_pdf_fullscreen_navigation_hint(self) -> None:
+        if not self.pdf_fullscreen_navigation_hint.isVisible():
+            return
+        viewport = self.image_scroll_area.viewport()
+        margin = 20
+        self.pdf_fullscreen_navigation_hint.move(
+            max(margin, (viewport.width() - self.pdf_fullscreen_navigation_hint.width()) // 2),
+            max(margin, viewport.height() - self.pdf_fullscreen_navigation_hint.height() - margin),
+        )
+
+    def _show_pdf_fullscreen_navigation_hint(self) -> None:
+        if not self._fullscreen_mode or self._pdf_document is None:
+            return
+        self.pdf_fullscreen_navigation_hint.setText(
+            t("↑ / ↓ – vorherige/nächste Seite")
+        )
+        self.pdf_fullscreen_navigation_hint.adjustSize()
+        self.pdf_fullscreen_navigation_hint.show()
+        self.pdf_fullscreen_navigation_hint.raise_()
+        self._position_pdf_fullscreen_navigation_hint()
+        self.pdf_fullscreen_navigation_hint_timer.start(
+            PDF_FULLSCREEN_NAVIGATION_HINT_DURATION
+        )
+
+    def _hide_pdf_fullscreen_navigation_hint(self) -> None:
+        self.pdf_fullscreen_navigation_hint_timer.stop()
+        self.pdf_fullscreen_navigation_hint.hide()
+
+    def _schedule_visible_pdf_thumbnails(self) -> None:
+        if (
+            not self.pdf_thumbnail_bar.isVisible()
+            or self._pdf_document is None
+            or self._pdf_thumbnail_render_scheduled
+            or self._pdf_thumbnail_suspended
+        ):
+            return
+        for index in range(self.pdf_thumbnail_bar.count()):
+            item = self.pdf_thumbnail_bar.item(index)
+            if self.pdf_thumbnail_bar.visualItemRect(item).intersects(
+                self.pdf_thumbnail_bar.viewport().rect()
+            ):
+                self._pdf_thumbnail_pending.add(index)
+        for index in range(max(0, self._pdf_page - 2), min(
+            self.pdf_thumbnail_bar.count(), self._pdf_page + 3
+        )):
+            self._pdf_thumbnail_pending.add(index)
+        # Continue lazily after visible pages and neighbours; scrolling must
+        # not be required before later pages receive a real thumbnail.
+        self._pdf_thumbnail_pending.update(
+            range(self.pdf_thumbnail_bar.count())
+        )
+        self._pdf_thumbnail_render_scheduled = True
+        QTimer.singleShot(0, self._render_next_pdf_thumbnail)
+
+    def _render_next_pdf_thumbnail(self) -> None:
+        self._pdf_thumbnail_render_scheduled = False
+        document = self._pdf_thumbnail_document
+        if (
+            document is None
+            or not self.pdf_thumbnail_bar.isVisible()
+            or self._pdf_thumbnail_suspended
+        ):
+            return
+        candidates = sorted(
+            page for page in self._pdf_thumbnail_pending
+            if page not in self._pdf_thumbnail_cache
+        )
+        self._pdf_thumbnail_pending.clear()
+        if not candidates:
+            return
+        page = min(candidates, key=lambda value: abs(value - self._pdf_page))
+        self._pdf_thumbnail_pending.update(candidate for candidate in candidates if candidate != page)
+        image = render_pdf_page(document, page, QSize(132, 176))
+        if not image.isNull():
+            pixmap = QPixmap.fromImage(image)
+            self._pdf_thumbnail_cache[page] = pixmap
+            item = self.pdf_thumbnail_bar.item(page)
+            if item is not None:
+                item.setIcon(QIcon(pixmap))
+        if self._pdf_thumbnail_pending:
+            self._pdf_thumbnail_render_scheduled = True
+            QTimer.singleShot(8, self._render_next_pdf_thumbnail)
 
     def _install_thumbnail_size_controls(self) -> None:
         thumbnail_index = self.right_splitter.indexOf(self.thumbnail_list)
@@ -3307,7 +3617,9 @@ class ImageViewer(QObject):
         self.thumbnail_list.setFlow(
             QListView.Flow.TopToBottom if vertical else QListView.Flow.LeftToRight
         )
-        self.thumbnail_list.setWrapping(False)
+        # A top thumbnail strip uses the available width for a regular grid;
+        # side strips stay a single vertical column.
+        self.thumbnail_list.setWrapping(not vertical)
         if vertical:
             self.thumbnail_panel.setFixedWidth(
                 max(220, self._thumbnail_grid_size.width() + 30)
@@ -3391,6 +3703,7 @@ class ImageViewer(QObject):
         preview_layout.removeWidget(self.image_scroll_area)
         self.preview_content = QWidget(self.preview_panel)
         preview_content_layout = QHBoxLayout(self.preview_content)
+        self.preview_content_layout = preview_content_layout
         preview_content_layout.setContentsMargins(0, 0, 0, 0)
         preview_content_layout.setSpacing(0)
         preview_content_layout.addWidget(self.image_scroll_area, 1)
@@ -4166,6 +4479,7 @@ class ImageViewer(QObject):
         self.next_pdf_page_button.setAccessibleName(t("Nächste PDF-Seite"))
         self.previous_pdf_page_button.setToolTip(t("Vorherige PDF-Seite"))
         self.next_pdf_page_button.setToolTip(t("Nächste PDF-Seite"))
+        self._refresh_pdf_thumbnail_text()
         self._update_pdf_page_navigation()
         self._refresh_status_text()
         self._update_status_bar()
@@ -4554,6 +4868,24 @@ class ImageViewer(QObject):
         application = QApplication.instance()
         if application is not None:
             colors = COLOR_SCHEMES[self._color_scheme]
+            tooltip_palette = QPalette(self._system_tooltip_palette)
+            if colors is not None:
+                for color_group in (
+                    QPalette.ColorGroup.Active,
+                    QPalette.ColorGroup.Inactive,
+                    QPalette.ColorGroup.Disabled,
+                ):
+                    tooltip_palette.setColor(
+                        color_group,
+                        QPalette.ColorRole.ToolTipBase,
+                        QColor(colors["tooltip"]),
+                    )
+                    tooltip_palette.setColor(
+                        color_group,
+                        QPalette.ColorRole.ToolTipText,
+                        QColor(colors["tooltip_text"]),
+                    )
+            QToolTip.setPalette(tooltip_palette)
             application.setStyleSheet(
                 color_scheme_stylesheet(colors)
             )
@@ -7044,6 +7376,7 @@ class ImageViewer(QObject):
             self._pdf_link_model.setPage(0)
             self._pdf_page = 0
             self._pdf_render_size = QSize()
+            self._reset_pdf_thumbnails()
             self._zoom_mode = "fit"
             self._render_pdf_page()
             return
@@ -7053,7 +7386,10 @@ class ImageViewer(QObject):
         self._pdf_document = None
         self._pdf_page = 0
         self._pdf_render_size = QSize()
+        self._reset_pdf_thumbnails()
         self._update_pdf_page_navigation()
+        self._sync_pdf_thumbnail_selection()
+        self._schedule_visible_pdf_thumbnails()
         try:
             self._current_file_size = self.current_image.stat().st_size
         except OSError:
@@ -7105,7 +7441,11 @@ class ImageViewer(QObject):
             viewport,
             render_scale,
         )
-        image = render_pdf_page_with_fallback(self._pdf_document, page, target)
+        self._set_pdf_thumbnail_busy(True)
+        try:
+            image = render_pdf_page_with_fallback(self._pdf_document, page, target)
+        finally:
+            self._set_pdf_thumbnail_busy(False)
         if image.isNull() or image.width() <= 0 or image.height() <= 0:
             self.original_image = QImage()
             self.image_label.clear()
@@ -7139,11 +7479,14 @@ class ImageViewer(QObject):
         self._render_pdf_page(requested_page)
 
     def _clear_pdf_state(self) -> None:
+        self._hide_pdf_fullscreen_navigation_hint()
         self._pdf_link_model.setDocument(None)
         self._pdf_document = None
         self._pdf_page = 0
         self._pdf_render_size = QSize()
         self._pdf_quality_refresh_pending = False
+        self._reset_pdf_thumbnails()
+        self._hide_fullscreen_pdf_thumbnails()
         self._update_pdf_page_navigation()
 
     def _diagnose_pdf_links(self) -> None:
@@ -7286,6 +7629,7 @@ class ImageViewer(QObject):
         )
         self.previous_pdf_page_button.setEnabled(self._pdf_page > 0)
         self.next_pdf_page_button.setEnabled(self._pdf_page + 1 < page_count)
+        self._sync_pdf_thumbnail_selection()
 
     def _activate_rotation_target(self, image_path: Path | None = None) -> bool:
         target_path = image_path or self.current_image
@@ -7884,6 +8228,7 @@ class ImageViewer(QObject):
 
         self.directory_panel.hide()
         self.thumbnail_panel.hide()
+        self._show_fullscreen_pdf_thumbnails()
         self._bottom_control_bar_active = False
         self.status_bar.hide()
         self.window.menuBar().hide()
@@ -7894,8 +8239,15 @@ class ImageViewer(QObject):
         self.window.setStyleSheet("background-color: black;")
         self.image_label.setStyleSheet("background-color: black;")
         self.window.showFullScreen()
+        # The list can be temporarily not visible while the window changes
+        # state.  Start the lazy queue again once Qt has processed that change.
+        QTimer.singleShot(0, self._schedule_visible_pdf_thumbnails)
         self._schedule_image_render()
-        self._show_fullscreen_tooltip(QCursor.pos())
+        if self._pdf_document is not None:
+            self._show_pdf_fullscreen_navigation_hint()
+            QTimer.singleShot(0, self._position_pdf_fullscreen_navigation_hint)
+        else:
+            self._show_fullscreen_tooltip(QCursor.pos())
         self._position_slideshow_overlays()
         self._restart_slideshow_cursor_timer()
 
@@ -7904,6 +8256,8 @@ class ImageViewer(QObject):
             return
 
         self._fullscreen_mode = False
+        self._hide_pdf_fullscreen_navigation_hint()
+        self._hide_fullscreen_pdf_thumbnails()
         self._restore_slideshow_cursor()
         self.fullscreen_tooltip_timer.stop()
         self._hide_fullscreen_tooltip()
@@ -8060,7 +8414,11 @@ class ImageViewer(QObject):
             and event.type() == QEvent.Type.Resize
         ):
             self._update_directory_heading()
-        if getattr(self, "_fullscreen_mode", False) and watched in image_widgets:
+        if (
+            getattr(self, "_fullscreen_mode", False)
+            and self._pdf_document is None
+            and watched in image_widgets
+        ):
             if event.type() == QEvent.Type.ToolTip:
                 return True
             if event.type() in (QEvent.Type.Enter, QEvent.Type.MouseMove):
@@ -8072,6 +8430,15 @@ class ImageViewer(QObject):
                     else QCursor.pos()
                 )
                 self._show_fullscreen_tooltip(global_position)
+        if (
+            getattr(self, "_fullscreen_mode", False)
+            and self._pdf_document is not None
+            and watched in image_widgets
+            and event.type() == QEvent.Type.ToolTip
+        ):
+            # The PDF navigation hint is a dedicated overlay.  Do not let the
+            # normal image widget's tooltip create a second empty/native box.
+            return True
         if watched in image_widgets and event.type() == QEvent.Type.ContextMenu:
             self._restore_slideshow_cursor()
             self._show_image_context_menu(event.globalPos())
@@ -8091,6 +8458,7 @@ class ImageViewer(QObject):
                     self.image_scroll_area.viewport().rect()
                 )
             self._position_zoom_indicator()
+            self._position_pdf_fullscreen_navigation_hint()
             self._position_slideshow_overlays()
             self._update_slideshow_metadata_overlay()
             if self.original_image.isNull():
