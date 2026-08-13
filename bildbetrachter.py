@@ -139,7 +139,7 @@ from i18n import LANGUAGES, LanguageManager, t
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.18.0"
+APP_VERSION = "1.18.1"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 LOGGER = logging.getLogger(__name__)
 
@@ -533,6 +533,13 @@ QWidget#centralwidget QSplitter::handle:vertical { height: 1px; }
 def color_scheme_stylesheet(colors: dict[str, str] | None) -> str:
     if colors is None:
         return selection_menu_stylesheet() + interface_polish_stylesheet()
+    branch_variant = "dark" if QColor(colors["text"]).lightness() < 128 else "light"
+    closed_branch_icon = resource_path(
+        f"assets/tree-branch-{branch_variant}-closed.svg"
+    ).as_posix()
+    open_branch_icon = resource_path(
+        f"assets/tree-branch-{branch_variant}-open.svg"
+    ).as_posix()
     return selection_menu_stylesheet() + interface_polish_stylesheet() + f"""
 QMainWindow, QWidget#centralwidget {{
     background-color: {colors['window']}; color: {colors['text']};
@@ -547,6 +554,16 @@ QTreeView, QListWidget {{
 }}
 QListWidget#thumbnailList {{ background-color: {colors['preview']}; }}
 QTreeView::item:hover, QListWidget::item:hover {{ background-color: {colors['hover']}; }}
+QTreeView::branch:has-children:closed,
+QTreeView::branch:has-children:closed:hover,
+QTreeView::branch:has-children:closed:disabled {{
+    image: url("{closed_branch_icon}");
+}}
+QTreeView::branch:has-children:open,
+QTreeView::branch:has-children:open:hover,
+QTreeView::branch:has-children:open:disabled {{
+    image: url("{open_branch_icon}");
+}}
 QTreeView::item:selected, QListWidget::item:selected,
 QTreeView::item:selected:active, QListWidget::item:selected:active,
 QTreeView::item:selected:!active, QListWidget::item:selected:!active {{
@@ -4025,8 +4042,9 @@ class ImageViewer(QObject):
     def _apply_color_scheme(self) -> None:
         application = QApplication.instance()
         if application is not None:
+            colors = COLOR_SCHEMES[self._color_scheme]
             application.setStyleSheet(
-                color_scheme_stylesheet(COLOR_SCHEMES[self._color_scheme])
+                color_scheme_stylesheet(colors)
             )
 
     def _style_message_box(self, dialog: QMessageBox) -> None:
@@ -6472,6 +6490,10 @@ class ImageViewer(QObject):
                 self.image_label.setText(result.error or t("Die PDF konnte nicht geöffnet werden."))
                 self._update_view_actions()
                 return
+            # QPdfLinkModel retains a reference to its document.  Detach it
+            # before releasing the previous document; otherwise QtPdf can
+            # access a deleted document while switching files.
+            self._pdf_link_model.setDocument(None)
             self._pdf_document = result.document
             self._pdf_link_model.setDocument(result.document)
             self._pdf_link_model.setPage(0)
@@ -6482,8 +6504,8 @@ class ImageViewer(QObject):
             return
         if self._pdf_preview_mode:
             self._leave_pdf_preview()
-        self._pdf_document = None
         self._pdf_link_model.setDocument(None)
+        self._pdf_document = None
         self._pdf_page = 0
         self._pdf_render_size = QSize()
         self._update_pdf_page_navigation()
@@ -6569,8 +6591,8 @@ class ImageViewer(QObject):
         self._render_pdf_page(requested_page)
 
     def _clear_pdf_state(self) -> None:
-        self._pdf_document = None
         self._pdf_link_model.setDocument(None)
+        self._pdf_document = None
         self._pdf_page = 0
         self._pdf_render_size = QSize()
         self._pdf_quality_refresh_pending = False

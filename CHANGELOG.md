@@ -2,6 +2,15 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.18.1
+
+### Behoben
+
+- Absturz beim Wechsel von einer PDF zu einer weiteren PDF oder zu einem Bild
+  verhindert, indem das Linkmodell vor dem Freigeben des PDF-Dokuments getrennt wird.
+- Kontrastreiche Auf-/Zuklapp-Pfeile im Verzeichnisbaum für helle und dunkle
+  Farbschemata, einschließlich Hover- und deaktiviertem Zustand.
+
 ## 1.18.0
 
 ### Mehrsprachigkeit

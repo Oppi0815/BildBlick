@@ -6,7 +6,7 @@
 
 ![BildBlick Screenshot](docs/bildblick-screenshot.png)
 
-*BildBlick 1.18.0 unter Linux Mint und macOS*
+*BildBlick 1.18.1 unter Linux Mint und macOS*
 
 **Version 1.18.0**
 

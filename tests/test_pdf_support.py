@@ -272,7 +272,7 @@ def test_pdf_page_buttons_follow_current_page(tmp_path: Path):
     application.processEvents()
 
 
-def test_pdf_page_index_is_clamped_and_another_pdf_starts_at_page_one(tmp_path: Path):
+def test_pdf_to_pdf_transition_detaches_link_model_before_replacing_document(tmp_path: Path):
     application, viewer = _viewer(tmp_path)
     first_pdf = tmp_path / "first.pdf"
     second_pdf = tmp_path / "second.pdf"
@@ -280,11 +280,14 @@ def test_pdf_page_index_is_clamped_and_another_pdf_starts_at_page_one(tmp_path: 
     _write_pdf(second_pdf, [QSizeF(400, 200)] * 2)
 
     _open_pdf(viewer, first_pdf)
+    first_document = viewer._pdf_document
     viewer._pdf_page = 99
     viewer._render_pdf_page()
     assert viewer.pdf_page_label.text() == "Seite 3 von 3"
 
     _open_pdf(viewer, second_pdf)
+    assert viewer._pdf_document is not first_document
+    assert viewer._pdf_link_model.document() is viewer._pdf_document
     assert viewer.pdf_page_label.text() == "Seite 1 von 2"
     viewer.window.close()
     application.processEvents()
@@ -338,10 +341,10 @@ def test_pdf_quality_refresh_rerenders_only_when_the_current_render_is_too_small
     application.processEvents()
 
 
-def test_normal_image_hides_pdf_navigation(tmp_path: Path):
+def test_pdf_to_jpg_transition_detaches_link_model(tmp_path: Path):
     application, viewer = _viewer(tmp_path)
     pdf_path = tmp_path / "document.pdf"
-    image_path = tmp_path / "photo.png"
+    image_path = tmp_path / "photo.jpg"
     _write_pdf(pdf_path, [QSizeF(200, 400)])
     image = QImage(120, 80, QImage.Format.Format_RGB32)
     image.fill(Qt.GlobalColor.red)
@@ -350,6 +353,8 @@ def test_normal_image_hides_pdf_navigation(tmp_path: Path):
     _open_pdf(viewer, pdf_path)
     _open_pdf(viewer, image_path)
 
+    assert viewer._pdf_document is None
+    assert viewer._pdf_link_model.document() is None
     assert viewer.pdf_page_navigation.isHidden()
     assert viewer.pdf_page_label.text() == ""
     viewer.window.close()
