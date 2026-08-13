@@ -2,6 +2,15 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.18.2
+
+### Behoben
+
+- Kopieren und Ausschneiden mit anschließendem Einfügen in einen im
+  Verzeichnisbaum ausgewählten anderen Ordner funktionieren wieder zuverlässig.
+- Die Einfügen-Aktion verwendet den tatsächlich ausgewählten Zielordner und
+  bewahrt die Ausschneiden-Information im Zwischenablageformat von BildBlick.
+
 ## 1.18.1
 
 ### Behoben

@@ -139,7 +139,7 @@ from i18n import LANGUAGES, LanguageManager, t
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.18.1"
+APP_VERSION = "1.18.2"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 LOGGER = logging.getLogger(__name__)
 
@@ -227,6 +227,7 @@ MAX_ZOOM = 8.0
 FULLSCREEN_TOOLTIP_DURATION = 3000
 ZOOM_INDICATOR_DURATION = 1500
 CHECK_ACCENT_COLOR = "#D32F2F"
+CLIPBOARD_OPERATION_MIME_TYPE = "application/x-bildblick-file-operation"
 ZOOM_INDICATOR_STYLESHEET = (
     "QLabel { background-color: rgba(24, 24, 24, 210);"
     " color: #f7f7f7; border: 1px solid rgba(255, 255, 255, 45);"
@@ -4231,12 +4232,20 @@ class ImageViewer(QObject):
         urls = []
         if mime_data is None:
             return [], operation
+        if mime_data.hasFormat(CLIPBOARD_OPERATION_MIME_TYPE):
+            clipboard_data = bytes(
+                mime_data.data(CLIPBOARD_OPERATION_MIME_TYPE)
+            ).decode("utf-8", errors="replace")
+            lines = [line.strip() for line in clipboard_data.splitlines() if line.strip()]
+            if lines and lines[0] in ("copy", "cut"):
+                operation = lines[0]
+                urls = [QUrl(line) for line in lines[1:]]
         if mime_data.hasFormat("x-special/gnome-copied-files"):
             clipboard_data = bytes(
                 mime_data.data("x-special/gnome-copied-files")
             ).decode("utf-8", errors="replace")
             lines = [line.strip() for line in clipboard_data.splitlines() if line.strip()]
-            if lines and lines[0] in ("copy", "cut"):
+            if not urls and lines and lines[0] in ("copy", "cut"):
                 operation = lines[0]
                 urls = [QUrl(line) for line in lines[1:]]
         if not urls and mime_data.hasUrls():
@@ -4245,6 +4254,15 @@ class ImageViewer(QObject):
         for url in urls:
             if url.isLocalFile():
                 paths.append(Path(url.toLocalFile()))
+        internal_paths = [
+            path.resolve(strict=False) for path in self._clipboard_source_paths
+        ]
+        if (
+            paths
+            and self._clipboard_operation in ("copy", "cut")
+            and [path.resolve(strict=False) for path in paths] == internal_paths
+        ):
+            operation = self._clipboard_operation
         return paths, operation
 
     @staticmethod
@@ -4272,13 +4290,13 @@ class ImageViewer(QObject):
                 or operation != self._clipboard_operation
             ):
                 self._clear_internal_clipboard_state()
+            target_directory = self._paste_target_directory()
             self.paste_image_action.setEnabled(
                 any(
                     self._is_suitable_clipboard_image(path)
                     for path in clipboard_paths
                 )
-                and self.current_directory is not None
-                and self.current_directory.is_dir()
+                and target_directory is not None
             )
         finally:
             self._handling_clipboard_change = False
@@ -4873,6 +4891,12 @@ class ImageViewer(QObject):
             + b"\n"
             + b"\n".join(bytes(url.toEncoded()) for url in source_urls),
         )
+        mime_data.setData(
+            CLIPBOARD_OPERATION_MIME_TYPE,
+            operation.encode("utf-8")
+            + b"\n"
+            + b"\n".join(bytes(url.toEncoded()) for url in source_urls),
+        )
         self._clipboard_operation = operation
         self._clipboard_source_paths = source_paths
         self.clipboard.setMimeData(mime_data)
@@ -4908,9 +4932,10 @@ class ImageViewer(QObject):
     def _resolve_destination_path(
         self,
         source_path: Path,
+        target_directory: Path,
         conflict_policy: str | None,
     ) -> tuple[Path | None, str, str | None]:
-        destination = self.current_directory / source_path.name
+        destination = target_directory / source_path.name
         if not destination.exists():
             return destination, "proceed", conflict_policy
         if conflict_policy == "keep":
@@ -4977,12 +5002,22 @@ class ImageViewer(QObject):
         policy = "replace" if apply_to_all.isChecked() else None
         return destination, "proceed", policy
 
+    def _paste_target_directory(self) -> Path | None:
+        index = self.directory_tree.currentIndex()
+        if index.isValid():
+            selected_directory = Path(self.directory_model.filePath(index))
+            if selected_directory.is_dir():
+                return selected_directory
+        if self.current_directory is not None and self.current_directory.is_dir():
+            return self.current_directory
+        return None
+
     def _paste_image_from_clipboard(self) -> None:
         source_paths, operation = self._clipboard_files()
-        if not source_paths or self.current_directory is None:
+        target_directory = self._paste_target_directory()
+        if not source_paths or target_directory is None:
             self.paste_image_action.setEnabled(False)
             return
-        target_directory = self.current_directory
         inserted_paths = []
         successful_source_paths = set()
         failures = []
@@ -4992,7 +5027,7 @@ class ImageViewer(QObject):
                 failures.append(t("{name}: nicht verfügbar oder nicht unterstützt").format(name=source_path.name))
                 continue
             destination, decision, conflict_policy = self._resolve_destination_path(
-                source_path, conflict_policy
+                source_path, target_directory, conflict_policy
             )
             if decision == "cancel":
                 break
