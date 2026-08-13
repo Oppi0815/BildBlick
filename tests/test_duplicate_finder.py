@@ -5,7 +5,14 @@ from PIL import Image
 from PySide6.QtWidgets import QApplication
 
 import i18n
-from duplicate_finder import DuplicateFinderDialog, VISUAL_THRESHOLDS, dhash, find_duplicates, hamming_distance
+from duplicate_finder import (
+    RESULT_CONTROL_COLUMN_PADDING,
+    DuplicateFinderDialog,
+    VISUAL_THRESHOLDS,
+    dhash,
+    find_duplicates,
+    hamming_distance,
+)
 from i18n import t
 
 
@@ -131,8 +138,8 @@ def test_duplicate_finder_result_controls_and_columns_are_wide_enough(tmp_path):
     try:
         dialog._show_results(result)
         controls = dialog._group_controls[0]
-        assert dialog.results.columnWidth(6) >= controls["mark_button"].sizeHint().width()
-        assert dialog.results.columnWidth(7) >= controls["clear_button"].sizeHint().width()
+        assert dialog.results.columnWidth(6) >= controls["mark_button"].sizeHint().width() + RESULT_CONTROL_COLUMN_PADDING
+        assert dialog.results.columnWidth(7) >= controls["clear_button"].sizeHint().width() + RESULT_CONTROL_COLUMN_PADDING
         assert dialog.results.columnWidth(6) >= dialog.results.headerItem().text(6).__len__()
     finally:
         dialog.close()

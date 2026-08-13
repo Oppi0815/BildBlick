@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import QRectF
-from PySide6.QtGui import QPageLayout
+from PySide6.QtCore import QRectF, QSizeF
+from PySide6.QtGui import QPageLayout, QPageSize
 
 from printing.layout import Orientation, PageSizeMm, RectMm
 
@@ -33,6 +33,32 @@ class PrinterGeometryMm:
 # every edge is therefore an intentionally explicit, conservative preview
 # default -- it is not a widget-relative visual margin.
 DEFAULT_PREVIEW_HARDWARE_MARGIN_MM = 5.0
+
+
+def configure_printer_page_layout(
+    printer,
+    page_size: PageSizeMm | None,
+    orientation: QPageLayout.Orientation,
+) -> None:
+    """Apply BildBlick's page setup to ``printer`` before its native dialog.
+
+    ``QPrinter.pageLayout()`` returns a value object in Qt 6.  Change that
+    copy and install it again so the platform print dialog receives both the
+    selected paper format and orientation.  Existing layout settings, such as
+    printer-provided margins, are deliberately retained.
+    """
+
+    page_layout = printer.pageLayout()
+    if page_size is not None:
+        page_layout.setPageSize(
+            QPageSize(
+                QSizeF(page_size.width_mm, page_size.height_mm),
+                QPageSize.Unit.Millimeter,
+                "BildBlick",
+            )
+        )
+    page_layout.setOrientation(orientation)
+    printer.setPageLayout(page_layout)
 
 
 def preview_printer_geometry_mm(

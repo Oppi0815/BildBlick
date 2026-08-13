@@ -32,7 +32,6 @@ from PySide6.QtCore import (
     QRunnable,
     QSettings,
     QSize,
-    QSizeF,
     QPointF,
     QRectF,
     QStandardPaths,
@@ -60,7 +59,6 @@ from PySide6.QtGui import (
     QImageReader,
     QKeySequence,
     QPageLayout,
-    QPageSize,
     QPainter,
     QPainterPath,
     QPalette,
@@ -121,6 +119,7 @@ from printing.multi_image_print import (
 from printing.layout import ImageSourceInfo, PageSizeMm
 from printing.planner import plan_multi_image_pages
 from printing.printer_geometry import (
+    configure_printer_page_layout,
     printer_geometry_mm,
     printer_target_rect_for_painter,
 )
@@ -139,7 +138,7 @@ from i18n import LANGUAGES, LanguageManager, t
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.18.3"
+APP_VERSION = "1.18.4"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 LOGGER = logging.getLogger(__name__)
 
@@ -3716,10 +3715,12 @@ class ImageViewer(QObject):
             selected_plan = dialog.build_page_plan()
             # Seed the native dialog from the planned paper/orientation. A user
             # change there is honoured below through final printer geometry.
-            layout = printer.pageLayout()
-            layout.setPageSize(QPageSize(QSizeF(selected_plan.page_size.width_mm, selected_plan.page_size.height_mm), QPageSize.Unit.Millimeter, "BildBlick"))
-            layout.setOrientation(QPageLayout.Orientation.Portrait)
-            printer.setPageLayout(layout)
+            orientation = (
+                QPageLayout.Orientation.Landscape
+                if selected_plan.page_size.width_mm > selected_plan.page_size.height_mm
+                else QPageLayout.Orientation.Portrait
+            )
+            configure_printer_page_layout(printer, dialog._page_size(), orientation)
             print_dialog = QPrintDialog(printer, self.window); print_dialog.setWindowTitle(t("Bild drucken"))
             if run_without_application_stylesheet(print_dialog.exec) != QDialog.DialogCode.Accepted: return
             geometry = printer_geometry_mm(printer)
@@ -3773,10 +3774,11 @@ class ImageViewer(QObject):
         first = QImageReader(str(paths[0])); first.setAutoTransform(True); first_image = first.read()
         orientation = QPageLayout.Orientation.Landscape if print_settings.orientation == "landscape" or (print_settings.orientation == "automatic" and images_per_page == 1 and first_image.width() > first_image.height()) else QPageLayout.Orientation.Portrait
         printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-        page_layout = printer.pageLayout(); page_layout.setOrientation(orientation)
-        if page_size is not None:
-            page_layout.setPageSize(QPageSize(QSizeF(page_size.width_mm, page_size.height_mm), QPageSize.Unit.Millimeter, "BildBlick"))
-        printer.setPageLayout(page_layout)
+        configure_printer_page_layout(
+            printer,
+            page_size,
+            orientation,
+        )
         print_dialog = QPrintDialog(printer, self.window); print_dialog.setWindowTitle(t("Bilder drucken"))
         accepted = run_without_application_stylesheet(
             print_dialog.exec

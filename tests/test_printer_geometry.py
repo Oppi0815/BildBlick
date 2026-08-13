@@ -3,9 +3,11 @@ from PySide6.QtCore import QMarginsF, QRectF, QSizeF
 from PySide6.QtGui import QPageLayout, QPageSize
 
 from printing.printer_geometry import (
+    configure_printer_page_layout,
     printer_geometry_mm,
     printer_target_rect_for_painter,
 )
+from printing.layout import PageSizeMm
 
 
 class FakePrinter:
@@ -14,6 +16,9 @@ class FakePrinter:
 
     def pageLayout(self) -> QPageLayout:
         return self._page_layout
+
+    def setPageLayout(self, page_layout: QPageLayout) -> None:
+        self._page_layout = page_layout
 
 
 def layout(width: float, height: float, orientation, margins: QMarginsF) -> QPageLayout:
@@ -47,6 +52,39 @@ def test_printer_geometry_honours_final_landscape_and_custom_paper_layouts():
     )
     assert (landscape.page_size.width_mm, landscape.page_size.height_mm) == pytest.approx((297, 210))
     assert (custom.page_size.width_mm, custom.page_size.height_mm) == pytest.approx((100, 150))
+
+
+@pytest.mark.parametrize(
+    ("orientation", "expected_size"),
+    (
+        (QPageLayout.Orientation.Portrait, (210, 297)),
+        (QPageLayout.Orientation.Landscape, (297, 210)),
+    ),
+)
+def test_single_image_printer_setup_sets_orientation_before_native_dialog(orientation, expected_size):
+    printer = FakePrinter(layout(100, 150, QPageLayout.Orientation.Portrait, QMarginsF(5, 6, 7, 8)))
+
+    configure_printer_page_layout(printer, PageSizeMm.a4(), orientation)
+
+    configured = printer.pageLayout()
+    assert configured.orientation() == orientation
+    geometry = printer_geometry_mm(printer)
+    assert (geometry.page_size.width_mm, geometry.page_size.height_mm) == pytest.approx(expected_size)
+    assert configured.margins(QPageLayout.Unit.Millimeter) == QMarginsF(5, 6, 7, 8)
+
+
+def test_multi_image_printer_setup_keeps_the_native_dialog_choice_for_printing():
+    printer = FakePrinter(layout(210, 297, QPageLayout.Orientation.Portrait, QMarginsF()))
+    configure_printer_page_layout(printer, PageSizeMm.a4(), QPageLayout.Orientation.Landscape)
+
+    # This mirrors a deliberate change in QPrintDialog after it was seeded.
+    changed = printer.pageLayout()
+    changed.setOrientation(QPageLayout.Orientation.Portrait)
+    printer.setPageLayout(changed)
+
+    assert printer.pageLayout().orientation() == QPageLayout.Orientation.Portrait
+    geometry = printer_geometry_mm(printer)
+    assert (geometry.page_size.width_mm, geometry.page_size.height_mm) == pytest.approx((210, 297))
 
 
 def test_printer_target_maps_physical_page_around_the_painter_paint_viewport():

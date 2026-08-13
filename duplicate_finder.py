@@ -42,6 +42,8 @@ TRASH_DEBUG = False
 DUPLICATE_COLUMN_WIDTHS_KEY = "duplicateFinder/columnWidths"
 DEFAULT_COLUMN_WIDTHS = (260, 360, 105, 150, 130, 180, 170, 170)
 MINIMUM_COLUMN_WIDTHS = (150, 180, 90, 120, 120, 150, 145, 145)
+RESULT_CONTROL_COLUMN_BUTTONS = {6: "mark_button", 7: "clear_button"}
+RESULT_CONTROL_COLUMN_PADDING = 12
 VISUAL_THRESHOLDS = {"strict": 2, "normal": 5, "generous": 8}
 
 
@@ -434,7 +436,28 @@ class DuplicateFinderDialog(QDialog):
                 widths = DEFAULT_COLUMN_WIDTHS
         for column, width in enumerate(widths):
             self.results.setColumnWidth(
-                column, max(MINIMUM_COLUMN_WIDTHS[column], width)
+                column, max(self._minimum_column_width(column), width)
+            )
+
+    def _minimum_column_width(self, column: int) -> int:
+        """Return a content-aware lower bound for a result column."""
+
+        minimum = MINIMUM_COLUMN_WIDTHS[column]
+        button_key = RESULT_CONTROL_COLUMN_BUTTONS.get(column)
+        if button_key is None:
+            return minimum
+        control_widths = [
+            controls[button_key].sizeHint().width() + RESULT_CONTROL_COLUMN_PADDING
+            for controls in self._group_controls
+            if button_key in controls
+        ]
+        return max([minimum, *control_widths])
+
+    def _ensure_result_control_column_widths(self) -> None:
+        for column in RESULT_CONTROL_COLUMN_BUTTONS:
+            self.results.setColumnWidth(
+                column,
+                max(self.results.columnWidth(column), self._minimum_column_width(column)),
             )
 
     def _update_threshold_label(self) -> None:
@@ -464,7 +487,7 @@ class DuplicateFinderDialog(QDialog):
     def _column_resized(self, column: int, _old_size: int, new_size: int) -> None:
         if self._column_resize_guard:
             return
-        minimum = MINIMUM_COLUMN_WIDTHS[column]
+        minimum = self._minimum_column_width(column)
         if new_size < minimum:
             self._column_resize_guard = True
             try:
@@ -472,15 +495,15 @@ class DuplicateFinderDialog(QDialog):
             finally:
                 self._column_resize_guard = False
         widths = [
-            max(MINIMUM_COLUMN_WIDTHS[index], self.results.columnWidth(index))
+            max(self._minimum_column_width(index), self.results.columnWidth(index))
             for index in range(len(DEFAULT_COLUMN_WIDTHS))
         ]
         self._settings.setValue(DUPLICATE_COLUMN_WIDTHS_KEY, widths)
 
     def _resize_column_to_contents(self, column: int) -> None:
         self.results.resizeColumnToContents(column)
-        if self.results.columnWidth(column) < MINIMUM_COLUMN_WIDTHS[column]:
-            self.results.setColumnWidth(column, MINIMUM_COLUMN_WIDTHS[column])
+        if self.results.columnWidth(column) < self._minimum_column_width(column):
+            self.results.setColumnWidth(column, self._minimum_column_width(column))
 
     def _select_directory(self) -> None:
         selected = QFileDialog.getExistingDirectory(
@@ -649,6 +672,7 @@ class DuplicateFinderDialog(QDialog):
             controls["clear_button"] = clear_group
             self._group_controls.append(controls)
             parent.setExpanded(True)
+        self._ensure_result_control_column_widths()
         overview = t("Ergebnisse: {groups} Gruppen ({files} Dateien) – {size} freigebbar (theoretisch)").format(groups=len(result["groups"]), files=result["duplicate_files"], size=_format_size(result["reclaimable"]))
         self.result_overview.setText(overview)
         self.summary.setText(t("{groups} Gruppen · {files} Dateien · Theoretisch freigebbar: {size}").format(groups=len(result["groups"]), files=result["duplicate_files"], size=_format_size(result["reclaimable"])))

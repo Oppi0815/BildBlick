@@ -2,6 +2,25 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.18.4
+
+### Drucken
+
+- Die Seitenausrichtung aus BildBlick wird jetzt korrekt an den nativen
+  Druckdialog übergeben.
+- Querformat öffnet den System-/Druckertreiberdialog bereits in Querformat,
+  Hochformat entsprechend in Hochformat.
+- Änderungen des Benutzers im nativen Druckdialog werden für den Druckauftrag
+  respektiert.
+- Einzelbild- und Mehrbilddruck verwenden dieselbe zentrale
+  Seitenausrichtungslogik.
+
+### Duplikatfinder
+
+- Ergebnis-Spalten passen sich an die tatsächliche Breite der Gruppenbuttons
+  an.
+- Längere Texte und unterschiedliche Schriftmetriken werden berücksichtigt.
+
 ## 1.18.3
 
 ### Behoben
