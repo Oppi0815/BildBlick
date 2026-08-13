@@ -2,6 +2,14 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.19.1
+
+### Behoben
+
+- Der Regler für die Vorschaubildgröße hat nun eine kontrastreiche sichtbare
+  Spur sowie einen klar abgegrenzten aktiven Bereich in hellen und dunklen
+  Farbschemata. Auch der deaktivierte Zustand bleibt gut unterscheidbar.
+
 ## 1.19.0
 
 ### Oberfläche

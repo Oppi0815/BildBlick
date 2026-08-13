@@ -138,7 +138,7 @@ from i18n import LANGUAGES, LanguageManager, t
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.19.0"
+APP_VERSION = "1.19.1"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 LOGGER = logging.getLogger(__name__)
 
@@ -258,6 +258,8 @@ COLOR_SCHEMES = {
         "border": "#c8cdd3", "button": "#ffffff", "hover": "#e7edf4",
         "selection": "#2878c8", "selection_text": "#ffffff",
         "tooltip": "#fffbdc", "tooltip_text": "#20242a",
+        "slider_groove": "#8794a3", "slider_active": "#1769aa",
+        "slider_disabled_groove": "#cbd2da", "slider_disabled_active": "#8fb9dd",
     },
     "Dunkel": {
         "window": "#20242a", "panel": "#292e35", "preview": "#252a30",
@@ -265,6 +267,8 @@ COLOR_SCHEMES = {
         "border": "#444b54", "button": "#343a42", "hover": "#424a54",
         "selection": "#3b8edb", "selection_text": "#ffffff",
         "tooltip": "#353b43", "tooltip_text": "#ffffff",
+        "slider_groove": "#8d98a5", "slider_active": "#66b5ff",
+        "slider_disabled_groove": "#515a65", "slider_disabled_active": "#637f99",
     },
     "Anthrazit": {
         "window": "#1b1d20", "panel": "#272a2f", "preview": "#22252a",
@@ -272,6 +276,8 @@ COLOR_SCHEMES = {
         "border": "#3b4047", "button": "#30343a", "hover": "#3d424a",
         "selection": "#d88932", "selection_text": "#ffffff",
         "tooltip": "#30343a", "tooltip_text": "#ffffff",
+        "slider_groove": "#89919b", "slider_active": "#eea34d",
+        "slider_disabled_groove": "#4d535b", "slider_disabled_active": "#856b50",
     },
     "Warm": {
         "window": "#e8e2d9", "panel": "#f3eee7", "preview": "#ddd5ca",
@@ -279,6 +285,8 @@ COLOR_SCHEMES = {
         "border": "#b9aea0", "button": "#f5f0e9", "hover": "#ded3c5",
         "selection": "#9a6136", "selection_text": "#ffffff",
         "tooltip": "#fff4d8", "tooltip_text": "#322e29",
+        "slider_groove": "#908579", "slider_active": "#9a6136",
+        "slider_disabled_groove": "#c7bdb1", "slider_disabled_active": "#bf9d82",
     },
 }
 
@@ -565,7 +573,13 @@ QWidget#bottomControlBar QWidget#bottomBarSeparator {
     background: palette(mid); max-width: 1px;
 }
 QWidget#bottomControlBar QSlider::groove:horizontal {
-    height: 4px; border-radius: 2px; background: palette(midlight);
+    height: 5px; border-radius: 2px; background: palette(mid);
+}
+QWidget#bottomControlBar QSlider::sub-page:horizontal {
+    border-radius: 2px; background: palette(highlight);
+}
+QWidget#bottomControlBar QSlider::add-page:horizontal {
+    border-radius: 2px; background: palette(mid);
 }
 QWidget#bottomControlBar QSlider::handle:horizontal {
     width: 10px; margin: -4px 0; border-radius: 5px;
@@ -691,6 +705,27 @@ QStatusBar {{
     border-top: 1px solid {colors['border']};
 }}
 QStatusBar::item {{ border: none; }}
+QWidget#thumbnailSizeControls QSlider::groove:horizontal {{
+    height: 5px; border-radius: 2px; background: {colors['slider_groove']};
+}}
+QWidget#thumbnailSizeControls QSlider::sub-page:horizontal {{
+    border-radius: 2px; background: {colors['slider_active']};
+}}
+QWidget#thumbnailSizeControls QSlider::add-page:horizontal {{
+    border-radius: 2px; background: {colors['slider_groove']};
+}}
+QWidget#thumbnailSizeControls QSlider::handle:horizontal {{
+    width: 10px; margin: -4px 0; border: 1px solid {colors['panel']};
+    border-radius: 5px; background: {colors['slider_active']};
+}}
+QWidget#thumbnailSizeControls QSlider:disabled::groove:horizontal,
+QWidget#thumbnailSizeControls QSlider:disabled::add-page:horizontal {{
+    background: {colors['slider_disabled_groove']};
+}}
+QWidget#thumbnailSizeControls QSlider:disabled::sub-page:horizontal,
+QWidget#thumbnailSizeControls QSlider:disabled::handle:horizontal {{
+    background: {colors['slider_disabled_active']};
+}}
 QToolTip {{
     background-color: {colors['tooltip']}; color: {colors['tooltip_text']};
     border: 1px solid {colors['border']}; padding: 4px;
