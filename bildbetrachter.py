@@ -139,7 +139,7 @@ from i18n import LANGUAGES, LanguageManager, t
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.18.2"
+APP_VERSION = "1.18.3"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 LOGGER = logging.getLogger(__name__)
 
@@ -4900,6 +4900,9 @@ class ImageViewer(QObject):
         self._clipboard_operation = operation
         self._clipboard_source_paths = source_paths
         self.clipboard.setMimeData(mime_data)
+        # Some platform clipboard backends notify dataChanged asynchronously.
+        # Refresh explicitly so Paste is available immediately after Ctrl+C/X.
+        self._clipboard_changed()
         if operation == "cut":
             for source_path in source_paths:
                 item = self._thumbnail_item_for_path(source_path)

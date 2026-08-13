@@ -2,6 +2,19 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.18.3
+
+### Behoben
+
+- Copy/Cut/Paste weiter stabilisiert: „Einfügen“ wird unmittelbar nach
+  Kopieren oder Ausschneiden aktiviert, auch wenn das Clipboard-Backend sein
+  Änderungssignal verzögert liefert.
+
+### Oberfläche
+
+- Auf-/Zuklapp-Pfeile im Verzeichnisbaum kleiner und dezenter dargestellt.
+- Klickfläche, Ordner-Icons, Zeilenhöhe und Einrückung bleiben unverändert.
+
 ## 1.18.2
 
 ### Behoben
