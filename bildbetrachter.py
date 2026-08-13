@@ -138,7 +138,7 @@ from i18n import LANGUAGES, LanguageManager, t
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.19.1"
+APP_VERSION = "1.19.2"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 LOGGER = logging.getLogger(__name__)
 
@@ -258,8 +258,8 @@ COLOR_SCHEMES = {
         "border": "#c8cdd3", "button": "#ffffff", "hover": "#e7edf4",
         "selection": "#2878c8", "selection_text": "#ffffff",
         "tooltip": "#fffbdc", "tooltip_text": "#20242a",
-        "slider_groove": "#8794a3", "slider_active": "#1769aa",
-        "slider_disabled_groove": "#cbd2da", "slider_disabled_active": "#8fb9dd",
+        "slider_groove": "#737a82", "slider_active": "#1769aa",
+        "slider_disabled_groove": "#c5c9ce", "slider_disabled_active": "#8fb9dd",
     },
     "Dunkel": {
         "window": "#20242a", "panel": "#292e35", "preview": "#252a30",
@@ -267,8 +267,8 @@ COLOR_SCHEMES = {
         "border": "#444b54", "button": "#343a42", "hover": "#424a54",
         "selection": "#3b8edb", "selection_text": "#ffffff",
         "tooltip": "#353b43", "tooltip_text": "#ffffff",
-        "slider_groove": "#8d98a5", "slider_active": "#66b5ff",
-        "slider_disabled_groove": "#515a65", "slider_disabled_active": "#637f99",
+        "slider_groove": "#6d747d", "slider_active": "#66b5ff",
+        "slider_disabled_groove": "#50565d", "slider_disabled_active": "#637f99",
     },
     "Anthrazit": {
         "window": "#1b1d20", "panel": "#272a2f", "preview": "#22252a",
@@ -276,8 +276,8 @@ COLOR_SCHEMES = {
         "border": "#3b4047", "button": "#30343a", "hover": "#3d424a",
         "selection": "#d88932", "selection_text": "#ffffff",
         "tooltip": "#30343a", "tooltip_text": "#ffffff",
-        "slider_groove": "#89919b", "slider_active": "#eea34d",
-        "slider_disabled_groove": "#4d535b", "slider_disabled_active": "#856b50",
+        "slider_groove": "#656b72", "slider_active": "#eea34d",
+        "slider_disabled_groove": "#4a4f55", "slider_disabled_active": "#856b50",
     },
     "Warm": {
         "window": "#e8e2d9", "panel": "#f3eee7", "preview": "#ddd5ca",
@@ -285,8 +285,8 @@ COLOR_SCHEMES = {
         "border": "#b9aea0", "button": "#f5f0e9", "hover": "#ded3c5",
         "selection": "#9a6136", "selection_text": "#ffffff",
         "tooltip": "#fff4d8", "tooltip_text": "#322e29",
-        "slider_groove": "#908579", "slider_active": "#9a6136",
-        "slider_disabled_groove": "#c7bdb1", "slider_disabled_active": "#bf9d82",
+        "slider_groove": "#81776c", "slider_active": "#9a6136",
+        "slider_disabled_groove": "#c4b9ad", "slider_disabled_active": "#bf9d82",
     },
 }
 
@@ -549,10 +549,16 @@ QMainWindow#MainWindow QStatusBar {
 }
 QWidget#bottomControlBar QWidget#thumbnailSizeControls QToolButton,
 QWidget#bottomControlBar QPushButton {
-    min-height: 24px; max-height: 24px;
-    min-width: 32px; max-width: 32px;
+    min-height: 28px; max-height: 28px;
+    min-width: 36px; max-width: 36px;
     padding: 0; border-radius: 6px;
     border: 1px solid palette(mid); background: palette(button);
+}
+QWidget#bottomControlBar QWidget#thumbnailSizeControls QToolButton {
+    min-width: 30px; max-width: 30px; font-size: 20px; font-weight: 600;
+}
+QWidget#bottomControlBar QPushButton {
+    font-size: 24px; font-weight: 500;
 }
 QWidget#bottomControlBar QWidget#thumbnailSizeControls QToolButton:hover,
 QWidget#bottomControlBar QPushButton:hover {
@@ -562,9 +568,10 @@ QWidget#bottomControlBar QLabel#fileNameLabel {
     font-size: 14px; padding: 0 12px;
 }
 QWidget#bottomControlBar QToolButton#informationToggleButton {
-    min-height: 26px; max-height: 26px;
-    min-width: 26px; max-width: 26px;
+    min-height: 30px; max-height: 30px;
+    min-width: 30px; max-width: 30px;
     border-radius: 6px;
+    font-size: 17px; font-weight: 700;
 }
 QWidget#bottomControlBar QToolButton#informationToggleButton:checked {
     background: palette(alternate-base); border-color: palette(highlight);
@@ -572,11 +579,15 @@ QWidget#bottomControlBar QToolButton#informationToggleButton:checked {
 QWidget#bottomControlBar QWidget#bottomBarSeparator {
     background: palette(mid); max-width: 1px;
 }
+QWidget#bottomControlBar QSlider {
+    background: transparent; border: none; outline: none;
+}
+QWidget#bottomControlBar QSlider:focus { outline: none; }
 QWidget#bottomControlBar QSlider::groove:horizontal {
     height: 5px; border-radius: 2px; background: palette(mid);
 }
 QWidget#bottomControlBar QSlider::sub-page:horizontal {
-    border-radius: 2px; background: palette(highlight);
+    border-radius: 2px; background: palette(mid);
 }
 QWidget#bottomControlBar QSlider::add-page:horizontal {
     border-radius: 2px; background: palette(mid);
@@ -705,11 +716,15 @@ QStatusBar {{
     border-top: 1px solid {colors['border']};
 }}
 QStatusBar::item {{ border: none; }}
+QWidget#thumbnailSizeControls QSlider {{
+    background: transparent; border: none; outline: none;
+}}
+QWidget#thumbnailSizeControls QSlider:focus {{ outline: none; }}
 QWidget#thumbnailSizeControls QSlider::groove:horizontal {{
     height: 5px; border-radius: 2px; background: {colors['slider_groove']};
 }}
 QWidget#thumbnailSizeControls QSlider::sub-page:horizontal {{
-    border-radius: 2px; background: {colors['slider_active']};
+    border-radius: 2px; background: {colors['slider_groove']};
 }}
 QWidget#thumbnailSizeControls QSlider::add-page:horizontal {{
     border-radius: 2px; background: {colors['slider_groove']};
@@ -718,12 +733,12 @@ QWidget#thumbnailSizeControls QSlider::handle:horizontal {{
     width: 10px; margin: -4px 0; border: 1px solid {colors['panel']};
     border-radius: 5px; background: {colors['slider_active']};
 }}
-QWidget#thumbnailSizeControls QSlider:disabled::groove:horizontal,
-QWidget#thumbnailSizeControls QSlider:disabled::add-page:horizontal {{
+QWidget#thumbnailSizeControls QSlider::groove:horizontal:disabled,
+QWidget#thumbnailSizeControls QSlider::add-page:horizontal:disabled,
+QWidget#thumbnailSizeControls QSlider::sub-page:horizontal:disabled {{
     background: {colors['slider_disabled_groove']};
 }}
-QWidget#thumbnailSizeControls QSlider:disabled::sub-page:horizontal,
-QWidget#thumbnailSizeControls QSlider:disabled::handle:horizontal {{
+QWidget#thumbnailSizeControls QSlider::handle:horizontal:disabled {{
     background: {colors['slider_disabled_active']};
 }}
 QToolTip {{
@@ -3049,6 +3064,7 @@ class ImageViewer(QObject):
         self.thumbnail_size_slider.setPageStep(1)
         self.thumbnail_size_slider.setFixedWidth(132)
         self.thumbnail_size_slider.setFixedHeight(14)
+        self.thumbnail_size_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.thumbnail_size_slider.setValue(
             thumbnail_size_slider_value(self._thumbnail_pixels)
         )
@@ -3131,8 +3147,8 @@ class ImageViewer(QObject):
         separator.setFixedWidth(1)
         layout.addWidget(separator)
         layout.addStretch(1)
-        self.previous_button.setFixedSize(32, 24)
-        self.next_button.setFixedSize(32, 24)
+        self.previous_button.setFixedSize(36, 28)
+        self.next_button.setFixedSize(36, 28)
         layout.addWidget(self.previous_button)
         layout.addWidget(self.file_name_label, 1)
         layout.addWidget(self.next_button)
@@ -3141,7 +3157,7 @@ class ImageViewer(QObject):
         separator.setObjectName("bottomBarSeparator")
         separator.setFixedWidth(1)
         layout.addWidget(separator)
-        self.information_toggle_button.setFixedSize(26, 26)
+        self.information_toggle_button.setFixedSize(30, 30)
         layout.addWidget(self.information_toggle_button)
         self.status_bar.addWidget(bottom_bar, 1)
         self._bottom_control_bar_active = False

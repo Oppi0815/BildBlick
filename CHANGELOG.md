@@ -2,6 +2,15 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.19.2
+
+### Verbessert
+
+- Vorschaubild-Größenregler mit klar sichtbarer neutraler Spur ohne störende
+  blaue Linien oberhalb oder unterhalb.
+- Größere Bedienelemente und Symbole für Größenregler, Bildnavigation und
+  Informationsschalter.
+
 ## 1.19.1
 
 ### Behoben
