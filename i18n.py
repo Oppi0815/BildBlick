@@ -20,11 +20,27 @@ LANGUAGES = {
 # Source strings deliberately remain German: technical EXIF tag names are not
 # catalogue keys and therefore stay untouched.
 CATALOGUE = {
-    "en": {"Datei": "File", "Bearbeiten": "Edit", "Bild": "Image", "Ansicht": "View", "Navigation": "Navigation", "Werkzeuge": "Tools", "Hilfe": "Help", "Diashow": "Slideshow", "Sprache": "Language", "Bildinformationen": "Image Information", "Bildinformationen schließen (I)": "Close image information (I)", "Bildinformationen (I)": "Image information (I)", "Alle Metadaten": "All Metadata", "Keine EXIF-Daten vorhanden": "No EXIF data available", "BILD": "IMAGE", "KAMERA": "CAMERA", "AUFNAHME": "CAPTURE", "WEITERE EXIF-DATEN": "ADDITIONAL EXIF DATA", "Dateiname": "File name", "Dateipfad": "File path", "Dateigröße": "File size", "Dateiformat": "File format", "Abmessungen": "Dimensions", "Megapixel": "Megapixels", "Auflösung": "Resolution", "Ausrichtung": "Orientation", "Farbraum": "Color space", "Hersteller": "Manufacturer", "Kameramodell": "Camera model", "Objektiv": "Lens", "Aufnahmedatum": "Capture date", "Belichtungszeit": "Exposure time", "Blende": "Aperture", "Brennweite": "Focal length", "Vorheriges Bild": "Previous image", "Nächstes Bild": "Next image", "Vorherige PDF-Seite": "Previous PDF page", "Nächste PDF-Seite": "Next PDF page", "Drucken": "Print", "Mehrere Bilder drucken": "Print multiple images", "Kontaktabzug": "Contact sheet", "Dateiname anzeigen": "Show file name", "Aufnahmedatum anzeigen": "Show capture date", "Seitenzahl": "Page number", "Druckdatum": "Print date", "Schließen": "Close", "Abbrechen": "Cancel", "OK": "OK", "Kein Bild ausgewählt": "No image selected"},
+    "en": {"Datei": "File", "Bearbeiten": "Edit", "Bild": "Image", "Ansicht": "View", "Navigation": "Navigation", "Gehe zu": "Go", "Werkzeuge": "Tools", "Hilfe": "Help", "Diashow": "Slideshow", "Sprache": "Language", "Bildinformationen": "Image Information", "Bildinformationen schließen (I)": "Close image information (I)", "Bildinformationen (I)": "Image information (I)", "Alle Metadaten": "All Metadata", "Keine EXIF-Daten vorhanden": "No EXIF data available", "BILD": "IMAGE", "KAMERA": "CAMERA", "AUFNAHME": "CAPTURE", "WEITERE EXIF-DATEN": "ADDITIONAL EXIF DATA", "Dateiname": "File name", "Dateipfad": "File path", "Dateigröße": "File size", "Dateiformat": "File format", "Abmessungen": "Dimensions", "Megapixel": "Megapixels", "Auflösung": "Resolution", "Ausrichtung": "Orientation", "Farbraum": "Color space", "Hersteller": "Manufacturer", "Kameramodell": "Camera model", "Objektiv": "Lens", "Aufnahmedatum": "Capture date", "Belichtungszeit": "Exposure time", "Blende": "Aperture", "Brennweite": "Focal length", "Vorheriges Bild": "Previous image", "Nächstes Bild": "Next image", "Vorherige PDF-Seite": "Previous PDF page", "Nächste PDF-Seite": "Next PDF page", "Drucken": "Print", "Mehrere Bilder drucken": "Print multiple images", "Kontaktabzug": "Contact sheet", "Dateiname anzeigen": "Show file name", "Aufnahmedatum anzeigen": "Show capture date", "Seitenzahl": "Page number", "Druckdatum": "Print date", "Schließen": "Close", "Abbrechen": "Cancel", "OK": "OK", "Kein Bild ausgewählt": "No image selected"},
     "fr": {"Datei": "Fichier", "Bearbeiten": "Édition", "Bild": "Image", "Ansicht": "Affichage", "Navigation": "Navigation", "Werkzeuge": "Outils", "Hilfe": "Aide", "Diashow": "Diaporama", "Sprache": "Langue", "Bildinformationen": "Informations sur l’image", "Bildinformationen schließen (I)": "Fermer les informations sur l’image (I)", "Bildinformationen (I)": "Informations sur l’image (I)", "Alle Metadaten": "Toutes les métadonnées", "Keine EXIF-Daten vorhanden": "Aucune donnée EXIF disponible", "BILD": "IMAGE", "KAMERA": "APPAREIL PHOTO", "AUFNAHME": "PRISE DE VUE", "WEITERE EXIF-DATEN": "DONNÉES EXIF SUPPLÉMENTAIRES", "Dateiname": "Nom du fichier", "Dateipfad": "Chemin du fichier", "Dateigröße": "Taille du fichier", "Dateiformat": "Format de fichier", "Abmessungen": "Dimensions", "Megapixel": "Mégapixels", "Auflösung": "Résolution", "Ausrichtung": "Orientation", "Farbraum": "Espace colorimétrique", "Hersteller": "Fabricant", "Kameramodell": "Modèle d’appareil", "Objektiv": "Objectif", "Aufnahmedatum": "Date de prise de vue", "Vorheriges Bild": "Image précédente", "Nächstes Bild": "Image suivante", "Vorherige PDF-Seite": "Page PDF précédente", "Nächste PDF-Seite": "Page PDF suivante", "Drucken": "Imprimer", "Mehrere Bilder drucken": "Imprimer plusieurs images", "Kontaktabzug": "Planche-contact", "Schließen": "Fermer", "Abbrechen": "Annuler", "Kein Bild ausgewählt": "Aucune image sélectionnée"},
     "es": {"Datei": "Archivo", "Bearbeiten": "Editar", "Bild": "Imagen", "Ansicht": "Ver", "Navigation": "Navegación", "Werkzeuge": "Herramientas", "Hilfe": "Ayuda", "Diashow": "Presentación", "Sprache": "Idioma", "Bildinformationen": "Información de la imagen", "Bildinformationen schließen (I)": "Cerrar información de la imagen (I)", "Bildinformationen (I)": "Información de la imagen (I)", "Alle Metadaten": "Todos los metadatos", "Keine EXIF-Daten vorhanden": "No hay datos EXIF disponibles", "BILD": "IMAGEN", "KAMERA": "CÁMARA", "AUFNAHME": "CAPTURA", "WEITERE EXIF-DATEN": "DATOS EXIF ADICIONALES", "Dateiname": "Nombre de archivo", "Dateipfad": "Ruta del archivo", "Dateigröße": "Tamaño del archivo", "Dateiformat": "Formato de archivo", "Abmessungen": "Dimensiones", "Megapixel": "Megapíxeles", "Auflösung": "Resolución", "Ausrichtung": "Orientación", "Farbraum": "Espacio de color", "Hersteller": "Fabricante", "Kameramodell": "Modelo de cámara", "Objektiv": "Objetivo", "Aufnahmedatum": "Fecha de captura", "Vorheriges Bild": "Imagen anterior", "Nächstes Bild": "Imagen siguiente", "Vorherige PDF-Seite": "Página PDF anterior", "Nächste PDF-Seite": "Página PDF siguiente", "Drucken": "Imprimir", "Mehrere Bilder drucken": "Imprimir varias imágenes", "Kontaktabzug": "Hoja de contactos", "Schließen": "Cerrar", "Abbrechen": "Cancelar", "Kein Bild ausgewählt": "Ninguna imagen seleccionada"},
     "uk": {"Datei": "Файл", "Bearbeiten": "Редагування", "Bild": "Зображення", "Ansicht": "Вигляд", "Navigation": "Навігація", "Werkzeuge": "Інструменти", "Hilfe": "Довідка", "Diashow": "Слайд-шоу", "Sprache": "Мова", "Bildinformationen": "Інформація про зображення", "Bildinformationen schließen (I)": "Закрити інформацію про зображення (I)", "Bildinformationen (I)": "Інформація про зображення (I)", "Alle Metadaten": "Усі метадані", "Keine EXIF-Daten vorhanden": "Дані EXIF відсутні", "BILD": "ЗОБРАЖЕННЯ", "KAMERA": "КАМЕРА", "AUFNAHME": "ЗЙОМКА", "WEITERE EXIF-DATEN": "ДОДАТКОВІ ДАНІ EXIF", "Dateiname": "Назва файлу", "Dateipfad": "Шлях до файлу", "Dateigröße": "Розмір файлу", "Dateiformat": "Формат файлу", "Abmessungen": "Розміри", "Megapixel": "Мегапікселі", "Auflösung": "Роздільність", "Ausrichtung": "Орієнтація", "Farbraum": "Колірний простір", "Hersteller": "Виробник", "Kameramodell": "Модель камери", "Objektiv": "Об’єктив", "Aufnahmedatum": "Дата зйомки", "Vorheriges Bild": "Попереднє зображення", "Nächstes Bild": "Наступне зображення", "Vorherige PDF-Seite": "Попередня сторінка PDF", "Nächste PDF-Seite": "Наступна сторінка PDF", "Drucken": "Друк", "Mehrere Bilder drucken": "Друк кількох зображень", "Kontaktabzug": "Контактний аркуш", "Schließen": "Закрити", "Abbrechen": "Скасувати", "Kein Bild ausgewählt": "Зображення не вибрано"},
 }
+
+for _code, _label in {
+    "en": "Go",
+    "fr": "Aller à",
+    "es": "Ir a",
+    "uk": "Перейти",
+}.items():
+    CATALOGUE[_code]["Gehe zu"] = _label
+
+for _code, _words in {
+    "en": {"Vorschaubilder": "Thumbnails", "Oben": "Top", "Links": "Left", "Rechts": "Right", "Ausblenden": "Hide"},
+    "fr": {"Vorschaubilder": "Vignettes", "Oben": "En haut", "Links": "À gauche", "Rechts": "À droite", "Ausblenden": "Masquer"},
+    "es": {"Vorschaubilder": "Miniaturas", "Oben": "Arriba", "Links": "Izquierda", "Rechts": "Derecha", "Ausblenden": "Ocultar"},
+    "uk": {"Vorschaubilder": "Мініатюри", "Oben": "Вгорі", "Links": "Ліворуч", "Rechts": "Праворуч", "Ausblenden": "Приховати"},
+}.items():
+    CATALOGUE[_code].update(_words)
 
 _language = "de"
 
@@ -334,6 +350,31 @@ for _code, _words in {
     "fr": {"Ein schneller und komfortabler Bildbetrachter": "Une visionneuse d’images rapide et pratique"},
     "es": {"Ein schneller und komfortabler Bildbetrachter": "Un visor de imágenes rápido y cómodo"},
     "uk": {"Ein schneller und komfortabler Bildbetrachter": "Швидкий і зручний переглядач зображень"},
+}.items():
+    CATALOGUE[_code].update(_words)
+
+for _code, _words in {
+    "en": {"Bereit": "Ready", "Bitte warten …": "Please wait …", "Bild wird geladen …": "Loading image …", "Suche nach Bildern …": "Searching for images …", "Ordner konnte nicht vollständig gelesen werden": "Folder could not be read completely", "Bild konnte nicht geladen werden": "Image could not be loaded", "Datei konnte nicht geöffnet werden": "File could not be opened", "Fehler": "Error"},
+    "fr": {"Bereit": "Prêt", "Bitte warten …": "Veuillez patienter …", "Bild wird geladen …": "Chargement de l’image …", "Suche nach Bildern …": "Recherche d’images …", "Ordner konnte nicht vollständig gelesen werden": "Le dossier n’a pas pu être lu entièrement", "Bild konnte nicht geladen werden": "L’image n’a pas pu être chargée", "Datei konnte nicht geöffnet werden": "Le fichier n’a pas pu être ouvert", "Fehler": "Erreur"},
+    "es": {"Bereit": "Listo", "Bitte warten …": "Espere …", "Bild wird geladen …": "Cargando imagen …", "Suche nach Bildern …": "Buscando imágenes …", "Ordner konnte nicht vollständig gelesen werden": "No se pudo leer la carpeta por completo", "Bild konnte nicht geladen werden": "No se pudo cargar la imagen", "Datei konnte nicht geöffnet werden": "No se pudo abrir el archivo", "Fehler": "Error"},
+    "uk": {"Bereit": "Готово", "Bitte warten …": "Будь ласка, зачекайте …", "Bild wird geladen …": "Завантаження зображення …", "Suche nach Bildern …": "Пошук зображень …", "Ordner konnte nicht vollständig gelesen werden": "Не вдалося повністю прочитати теку", "Bild konnte nicht geladen werden": "Не вдалося завантажити зображення", "Datei konnte nicht geöffnet werden": "Не вдалося відкрити файл", "Fehler": "Помилка"},
+}.items():
+    CATALOGUE[_code].update(_words)
+
+# These menu labels intentionally override directional wording used elsewhere.
+for _code, _words in {
+    "en": {"Vorschaubilder": "Thumbnails", "Oben": "Top", "Links": "Left", "Rechts": "Right", "Ausblenden": "Hide"},
+    "fr": {"Vorschaubilder": "Vignettes", "Oben": "En haut", "Links": "À gauche", "Rechts": "À droite", "Ausblenden": "Masquer"},
+    "es": {"Vorschaubilder": "Miniaturas", "Oben": "Arriba", "Links": "Izquierda", "Rechts": "Derecha", "Ausblenden": "Ocultar"},
+    "uk": {"Vorschaubilder": "Мініатюри", "Oben": "Вгорі", "Links": "Ліворуч", "Rechts": "Праворуч", "Ausblenden": "Приховати"},
+}.items():
+    CATALOGUE[_code].update(_words)
+
+for _code, _words in {
+    "en": {"Details": "Details"},
+    "fr": {"Details": "Détails"},
+    "es": {"Details": "Detalles"},
+    "uk": {"Details": "Деталі", "Vollbild": "Повний екран"},
 }.items():
     CATALOGUE[_code].update(_words)
 

@@ -140,14 +140,15 @@ def test_compact_navigation_replaces_the_old_preview_layout(tmp_path: Path):
 
     controls = viewer.thumbnail_size_slider.parentWidget()
     assert controls.objectName() == "thumbnailSizeControls"
-    assert viewer.previous_button.parentWidget() is controls
-    assert viewer.next_button.parentWidget() is controls
-    assert viewer.file_name_label.parentWidget() is controls
+    assert viewer.bottom_control_bar.isAncestorOf(viewer.previous_button)
+    assert viewer.bottom_control_bar.isAncestorOf(viewer.next_button)
+    assert viewer.bottom_control_bar.isAncestorOf(viewer.file_name_label)
     viewer._set_file_name_text(image_path.name)
     assert viewer.file_name_label.toolTip() == image_path.name
     assert viewer.thumbnail_size_slider.width() == 132
     assert viewer.thumbnail_size_slider.height() == 14
     assert viewer.window.findChild(QHBoxLayout, "navigationLayout") is None
+    assert viewer.bottom_control_bar.isAncestorOf(viewer.thumbnail_size_slider)
     viewer.window.close()
     application.processEvents()
 

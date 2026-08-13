@@ -2,6 +2,27 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.19.0
+
+### Oberfläche
+
+- Hauptmenüs klar gegliedert in Datei, Bearbeiten, Ansicht, Gehe zu, Werkzeuge
+  und Hilfe.
+- Vorschaubilder flexibel oben, links, rechts oder ausgeblendet; die zuletzt
+  sichtbare Position wird beim Wiedereinblenden wiederhergestellt.
+- Kompakte Schnellschalter für Vorschaubilder, Details und Vollbild bleiben mit
+  Menüs und Tastenkürzeln synchron.
+- Gemeinsame untere Steuerleiste mit Auto-Hide sowie READY/BUSY/ERROR-
+  Statusanzeige.
+- Informations-/EXIF-Panel und Verzeichnisbereich ruhiger und kompakter
+  gestaltet; lange Metadatenwerte umbrechen vollständig.
+- Standardproportionen geben dem Hauptbild mehr Raum.
+
+### Mehrsprachigkeit
+
+- Die Oberflächenverbesserungen bleiben vollständig in Deutsch, Englisch,
+  Französisch, Spanisch und Ukrainisch verfügbar.
+
 ## 1.18.4
 
 ### Drucken

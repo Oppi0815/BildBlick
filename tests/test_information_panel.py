@@ -3,7 +3,7 @@ from pathlib import Path
 from PIL import Image
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication, QFormLayout, QGroupBox, QLabel, QSizePolicy
 
 from bildbetrachter import (
     ImageViewer,
@@ -61,6 +61,57 @@ def test_i_shortcut_and_escape_toggle_the_information_panel(tmp_path):
     application.processEvents()
     assert viewer.information_panel.isHidden()
     viewer.window.close()
+
+
+def test_information_panel_uses_wrapping_values_and_keeps_close_button_working(tmp_path):
+    nested = tmp_path / "a" / "very-long-folder-name-for-information-panel"
+    nested.mkdir(parents=True)
+    path = _image(nested / "long-file-name-for-the-information-panel.jpg")
+    application, viewer = _viewer(tmp_path)
+    try:
+        viewer.current_image = path
+        viewer._show_information_panel()
+        application.processEvents()
+
+        groups = viewer.information_content.findChildren(QGroupBox, "informationSection")
+        assert groups
+        assert all(not group.styleSheet() for group in groups)
+        path_value = next(
+            value
+            for value in viewer.information_content.findChildren(QLabel, "informationValueLabel")
+            if value.text() == str(path)
+        )
+        assert path_value.wordWrap()
+        assert path_value.toolTip() == str(path)
+        forms = [group.layout() for group in groups]
+        assert all(isinstance(form, QFormLayout) for form in forms)
+        assert all(
+            form.rowWrapPolicy() == QFormLayout.RowWrapPolicy.WrapLongRows
+            for form in forms
+        )
+        assert path_value.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+        labels = viewer.information_content.findChildren(
+            QLabel, "informationFieldLabel"
+        )
+        assert labels and all(label.wordWrap() for label in labels)
+        values = viewer.information_content.findChildren(
+            QLabel, "informationValueLabel"
+        )
+        assert values
+        assert all(
+            label.isVisible() and label.width() > 0 and label.height() > 0
+            and bool(label.text())
+            for label in [*labels, *values]
+        )
+        assert viewer.information_scroll_area.horizontalScrollBarPolicy() == (
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+
+        QTest.mouseClick(viewer.information_close_button, Qt.MouseButton.LeftButton)
+        application.processEvents()
+        assert viewer.information_panel.isHidden()
+    finally:
+        viewer.window.close()
 
 
 def test_information_panel_shows_exif_and_updates_for_image_change(tmp_path):
@@ -151,8 +202,8 @@ def test_pdf_information_is_file_only_and_does_not_read_exif(tmp_path):
 def test_image_navigation_controls_remain_available(tmp_path):
     application, viewer = _viewer(tmp_path)
 
-    assert viewer.thumbnail_panel.isAncestorOf(viewer.previous_button)
-    assert viewer.thumbnail_panel.isAncestorOf(viewer.next_button)
+    assert viewer.bottom_control_bar.isAncestorOf(viewer.previous_button)
+    assert viewer.bottom_control_bar.isAncestorOf(viewer.next_button)
     assert viewer.previous_image_action is not None
     assert viewer.next_image_action is not None
     viewer.window.close()

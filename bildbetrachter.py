@@ -138,7 +138,7 @@ from i18n import LANGUAGES, LanguageManager, t
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.18.4"
+APP_VERSION = "1.19.0"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 LOGGER = logging.getLogger(__name__)
 
@@ -206,6 +206,17 @@ SLIDESHOW_METADATA_KEY = "slideshow/showMetadata"
 SLIDESHOW_FADE_KEY = "slideshow/softFade"
 COLOR_SCHEME_KEY = "colorScheme"
 THUMBNAIL_SIZE_KEY = "thumbnailSize"
+THUMBNAIL_POSITION_KEY = "view/thumbnail_position"
+LAST_VISIBLE_THUMBNAIL_POSITION_KEY = "view/last_visible_thumbnail_position"
+THUMBNAIL_POSITIONS = ("top", "left", "right", "hidden")
+BOTTOM_CONTROL_BAR_HEIGHT = 46
+BOTTOM_CONTROL_BAR_START_DELAY_MS = 3000
+BOTTOM_CONTROL_BAR_HIDE_DELAY_MS = 1000
+BOTTOM_CONTROL_BAR_ACTIVATION_ZONE_PX = 72
+STATUS_READY = "ready"
+STATUS_BUSY = "busy"
+STATUS_ERROR = "error"
+STATUS_STATES = (STATUS_READY, STATUS_BUSY, STATUS_ERROR)
 SHOW_HIDDEN_FILES_KEY = "view/showHiddenFiles"
 SORT_CRITERION_KEY = "sortCriterion"
 SORT_ASCENDING_KEY = "sortAscending"
@@ -463,17 +474,17 @@ QWidget#centralwidget QWidget#directoryPanel {
     border-right: 1px solid palette(mid);
 }
 QWidget#centralwidget QLabel#computerLabel {
-    font-size: 13px; font-weight: 650;
-    padding: 11px 8px 5px 8px;
+    font-size: 13px; font-weight: 600;
+    padding: 8px 8px 2px 8px;
 }
 QWidget#centralwidget QLabel#directoryPathLabel {
-    padding: 0 8px 8px 8px;
+    font-size: 11px; padding: 0 8px 5px 8px;
 }
 QWidget#centralwidget QTreeView {
-    border: none; padding: 6px 8px;
+    border: none; padding: 4px 7px;
 }
 QWidget#centralwidget QTreeView::item {
-    min-height: 29px; border-radius: 5px; padding: 1px 5px;
+    min-height: 28px; border-radius: 5px; padding: 1px 5px;
 }
 QWidget#centralwidget QListWidget {
     border: none; padding: 10px;
@@ -503,12 +514,15 @@ QWidget#centralwidget QWidget#thumbnailSizeControls QLabel#fileNameLabel {
 QWidget#centralwidget QToolButton#informationToggleButton {
     min-height: 22px; max-height: 22px;
     min-width: 22px; max-width: 22px;
-    border-radius: 11px; padding: 0;
-    background-color: #d9efff; color: #176a9e;
-    border: 1px solid #91c9ec; font-weight: 700;
+    border-radius: 6px; padding: 0;
+    background: palette(button); color: palette(button-text);
+    border: 1px solid palette(mid); font-weight: 600;
 }
 QWidget#centralwidget QToolButton#informationToggleButton:hover {
-    background-color: #c5e7fb;
+    background: palette(alternate-base);
+}
+QWidget#centralwidget QToolButton#informationToggleButton:checked {
+    background: palette(alternate-base); border-color: palette(highlight);
 }
 QWidget#centralwidget QWidget#informationPanel {
     border-left: 1px solid palette(mid);
@@ -523,7 +537,50 @@ QWidget#centralwidget QWidget#pdfPageNavigation QPushButton {
 }
 QWidget#centralwidget QLabel#pdfPageLabel { padding: 0 4px; }
 QMainWindow#MainWindow QStatusBar {
-    min-height: 24px; padding: 0 7px;
+    min-height: 46px; max-height: 46px; padding: 2px 12px;
+}
+QWidget#bottomControlBar QWidget#thumbnailSizeControls QToolButton,
+QWidget#bottomControlBar QPushButton {
+    min-height: 24px; max-height: 24px;
+    min-width: 32px; max-width: 32px;
+    padding: 0; border-radius: 6px;
+    border: 1px solid palette(mid); background: palette(button);
+}
+QWidget#bottomControlBar QWidget#thumbnailSizeControls QToolButton:hover,
+QWidget#bottomControlBar QPushButton:hover {
+    background: palette(alternate-base);
+}
+QWidget#bottomControlBar QLabel#fileNameLabel {
+    font-size: 14px; padding: 0 12px;
+}
+QWidget#bottomControlBar QToolButton#informationToggleButton {
+    min-height: 26px; max-height: 26px;
+    min-width: 26px; max-width: 26px;
+    border-radius: 6px;
+}
+QWidget#bottomControlBar QToolButton#informationToggleButton:checked {
+    background: palette(alternate-base); border-color: palette(highlight);
+}
+QWidget#bottomControlBar QWidget#bottomBarSeparator {
+    background: palette(mid); max-width: 1px;
+}
+QWidget#bottomControlBar QSlider::groove:horizontal {
+    height: 4px; border-radius: 2px; background: palette(midlight);
+}
+QWidget#bottomControlBar QSlider::handle:horizontal {
+    width: 10px; margin: -4px 0; border-radius: 5px;
+    background: palette(highlight);
+}
+QWidget#quickSwitches QToolButton {
+    min-height: 22px; padding: 1px 6px; border-radius: 5px;
+    border: 1px solid palette(mid); background: palette(button);
+}
+QWidget#quickSwitches QToolButton:hover {
+    background: palette(alternate-base);
+}
+QWidget#quickSwitches QToolButton:checked {
+    background: palette(alternate-base); border-color: palette(highlight);
+    color: palette(text); font-weight: 600;
 }
 QWidget#centralwidget QSplitter::handle:horizontal { width: 1px; }
 QWidget#centralwidget QSplitter::handle:vertical { height: 1px; }
@@ -569,6 +626,11 @@ QTreeView::item:selected:active, QListWidget::item:selected:active,
 QTreeView::item:selected:!active, QListWidget::item:selected:!active {{
     background-color: {colors['selection']}; color: {colors['selection_text']};
 }}
+QTreeView::item:selected, QTreeView::item:selected:active,
+QTreeView::item:selected:!active {{
+    background-color: {colors['hover']}; color: {colors['text']};
+    border: 1px solid {colors['border']};
+}}
 QScrollArea#imageScrollArea, QLabel#imageLabel {{
     background-color: {colors['image']}; color: {colors['muted']}; border: none;
 }}
@@ -599,13 +661,27 @@ QToolButton:pressed {{
 QToolButton:disabled {{ color: {colors['muted']}; }}
 QWidget#informationPanel {{ background-color: {colors['panel']}; color: {colors['text']}; }}
 QWidget#informationPanel QScrollArea {{ background-color: {colors['panel']}; border: none; }}
-QWidget#informationPanel QGroupBox {{
-    border: 1px solid {colors['border']}; border-radius: 6px; margin-top: 10px;
-    padding: 8px 6px 5px 6px; font-weight: 600;
+QWidget#informationPanel QLabel#informationPanelTitle {{ font-weight: 600; }}
+QWidget#informationPanel QToolButton#informationCloseButton {{
+    min-width: 20px; max-width: 20px; min-height: 20px; max-height: 20px;
+    padding: 0; border-radius: 5px; border-color: transparent; background: transparent;
 }}
-QWidget#informationPanel QGroupBox::title {{ subcontrol-origin: margin; left: 8px; padding: 0 3px; }}
+QWidget#informationPanel QToolButton#informationCloseButton:hover {{ background-color: {colors['hover']}; }}
+QWidget#informationPanel QGroupBox#informationSection {{
+    border: none; margin-top: 7px; padding: 5px 0 0 0; font-weight: 600;
+}}
+QWidget#informationPanel QGroupBox#informationSection::title {{
+    subcontrol-origin: margin; left: 0; padding: 0; color: {colors['text']};
+}}
 QWidget#informationPanel QLabel#informationFieldLabel {{ color: {colors['muted']}; font-weight: 400; }}
-QWidget#informationPanel QLabel#informationValueLabel {{ color: {colors['text']}; font-weight: 400; }}
+QWidget#informationPanel QLabel#informationValueLabel {{ color: {colors['text']}; font-weight: 500; }}
+QWidget#informationPanel QToolButton#allMetadataToggle {{
+    padding: 2px 0; border: none; border-radius: 4px; background: transparent;
+    text-align: left; font-weight: 600;
+}}
+QWidget#informationPanel QToolButton#allMetadataToggle:hover {{ background-color: {colors['hover']}; }}
+QWidget#informationPanel QScrollBar:vertical {{ width: 8px; margin: 2px 0; }}
+QWidget#informationPanel QScrollBar::handle:vertical {{ background: {colors['border']}; min-height: 24px; border-radius: 4px; }}
 QSplitter::handle {{ background-color: {colors['border']}; }}
 QSplitter::handle:horizontal {{ width: 1px; }}
 QSplitter::handle:vertical {{ height: 1px; }}
@@ -2543,6 +2619,26 @@ class ImageViewer(QObject):
         self._thumbnail_grid_size = thumbnail_grid_size_for_pixels(
             self._thumbnail_pixels
         )
+        saved_thumbnail_position = self.settings.value(
+            THUMBNAIL_POSITION_KEY, "top", type=str
+        )
+        self._thumbnail_position = (
+            saved_thumbnail_position
+            if saved_thumbnail_position in THUMBNAIL_POSITIONS
+            else "top"
+        )
+        saved_last_visible_position = self.settings.value(
+            LAST_VISIBLE_THUMBNAIL_POSITION_KEY, "top", type=str
+        )
+        self._last_visible_thumbnail_position = (
+            self._thumbnail_position
+            if self._thumbnail_position != "hidden"
+            else (
+                saved_last_visible_position
+                if saved_last_visible_position in {"top", "left", "right"}
+                else "top"
+            )
+        )
         self._show_hidden_files = show_hidden_files_value(
             self.settings.value(SHOW_HIDDEN_FILES_KEY, False)
         )
@@ -2608,6 +2704,7 @@ class ImageViewer(QObject):
         self._install_pdf_page_navigation()
         self._install_thumbnail_size_controls()
         self._install_information_panel()
+        self._apply_thumbnail_position(save=False)
         self.current_directory: Path | None = None
         self.current_image: Path | None = None
         self._pdf_document = None
@@ -2712,6 +2809,10 @@ class ImageViewer(QObject):
         self.thumbnail_list.setWordWrap(True)
         self.thumbnail_list.setIconSize(self._thumbnail_size)
         self.thumbnail_list.setGridSize(self._thumbnail_grid_size)
+        if self._thumbnail_position in {"left", "right"}:
+            self.thumbnail_panel.setFixedWidth(
+                max(220, self._thumbnail_grid_size.width() + 30)
+            )
         self.thumbnail_list.setSpacing(THUMBNAIL_SPACING)
         self.thumbnail_list.setTextElideMode(Qt.TextElideMode.ElideMiddle)
         self.thumbnail_list.setContextMenuPolicy(
@@ -2792,8 +2893,9 @@ class ImageViewer(QObject):
         for column in range(1, self.directory_model.columnCount()):
             self.directory_tree.hideColumn(column)
 
-        self.splitter.setSizes([300, 900])
-        self.right_splitter.setSizes([210, 490])
+        # Initial proportions only; the splitters remain fully user-adjustable.
+        self.splitter.setSizes([250, 950])
+        self.right_splitter.setSizes([185, 515])
         self.directory_tree.clicked.connect(self._directory_selected)
         self.thumbnail_list.currentItemChanged.connect(self._thumbnail_selected)
         self.thumbnail_list.itemSelectionChanged.connect(self._selection_changed)
@@ -2822,6 +2924,9 @@ class ImageViewer(QObject):
             self._toggle_information_panel
         )
         self.window.addAction(self.information_toggle_action)
+        self.view_menu.addSeparator()
+        self.view_menu.addAction(self.information_toggle_action)
+        self._install_quick_switches()
         self._create_directory_navigation_buttons()
         self.refresh_i18n()
         self.clipboard.dataChanged.connect(self._clipboard_changed)
@@ -2876,10 +2981,10 @@ class ImageViewer(QObject):
         self.thumbnail_list.setParent(thumbnail_panel)
         thumbnail_layout.addWidget(self.thumbnail_list, 1)
 
-        controls = QWidget(thumbnail_panel)
+        controls = QWidget(self.status_bar)
         controls.setObjectName("thumbnailSizeControls")
         controls_layout = QHBoxLayout(controls)
-        controls_layout.setContentsMargins(6, 1, 6, 2)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
         controls_layout.setSpacing(6)
 
         navigation_layout = self.window.findChild(QHBoxLayout, "navigationLayout")
@@ -2938,8 +3043,9 @@ class ImageViewer(QObject):
         self.information_toggle_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.information_toggle_button.clicked.connect(self._toggle_information_panel)
         controls_layout.addWidget(self.information_toggle_button)
-        thumbnail_layout.addWidget(controls)
         self.right_splitter.insertWidget(thumbnail_index, thumbnail_panel)
+
+        self._install_bottom_control_bar(controls)
 
         preview_layout = self.preview_panel.layout()
         if isinstance(preview_layout, QVBoxLayout):
@@ -2958,6 +3064,274 @@ class ImageViewer(QObject):
             )
         )
 
+    def _install_bottom_control_bar(self, thumbnail_controls: QWidget) -> None:
+        """Compose the persistent bottom bar from the existing controls."""
+
+        self.status_bar.removeWidget(self.status_info_label)
+        self.status_bar.removeWidget(self.status_zoom_label)
+        self.status_bar.setFixedHeight(BOTTOM_CONTROL_BAR_HEIGHT)
+        bottom_bar = QWidget(self.status_bar)
+        bottom_bar.setObjectName("bottomControlBar")
+        self.bottom_control_bar = bottom_bar
+        layout = QHBoxLayout(bottom_bar)
+        layout.setContentsMargins(10, 0, 10, 0)
+        layout.setSpacing(10)
+
+        status_dot = QLabel("●", bottom_bar)
+        status_dot.setObjectName("bottomStatusDot")
+        self.bottom_status_dot = status_dot
+        layout.addWidget(status_dot)
+        self.status_info_label.setParent(bottom_bar)
+        self.status_info_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        self.status_info_label.setMaximumWidth(260)
+        layout.addWidget(self.status_info_label)
+        layout.addWidget(thumbnail_controls)
+        self.status_zoom_label.setParent(bottom_bar)
+        layout.addWidget(self.status_zoom_label)
+
+        separator = QWidget(bottom_bar)
+        separator.setObjectName("bottomBarSeparator")
+        separator.setFixedWidth(1)
+        layout.addWidget(separator)
+        layout.addStretch(1)
+        self.previous_button.setFixedSize(32, 24)
+        self.next_button.setFixedSize(32, 24)
+        layout.addWidget(self.previous_button)
+        layout.addWidget(self.file_name_label, 1)
+        layout.addWidget(self.next_button)
+        layout.addStretch(1)
+        separator = QWidget(bottom_bar)
+        separator.setObjectName("bottomBarSeparator")
+        separator.setFixedWidth(1)
+        layout.addWidget(separator)
+        self.information_toggle_button.setFixedSize(26, 26)
+        layout.addWidget(self.information_toggle_button)
+        self.status_bar.addWidget(bottom_bar, 1)
+        self._bottom_control_bar_active = False
+        self.bottom_control_bar_hide_timer = QTimer(self)
+        self.bottom_control_bar_hide_timer.setSingleShot(True)
+        self.bottom_control_bar_hide_timer.timeout.connect(self._hide_bottom_control_bar)
+        self.bottom_control_bar_start_timer = QTimer(self)
+        self.bottom_control_bar_start_timer.setSingleShot(True)
+        self.bottom_control_bar_start_timer.timeout.connect(
+            self._schedule_bottom_control_bar_hide
+        )
+        self.bottom_control_bar_start_timer.start(BOTTOM_CONTROL_BAR_START_DELAY_MS)
+        self.set_status(STATUS_READY)
+        self._bottom_control_bar_watch_widgets = (
+            self.window,
+            self.window.centralWidget(),
+            self.directory_tree.viewport(),
+            self.thumbnail_list.viewport(),
+            self.image_scroll_area.viewport(),
+            bottom_bar,
+            *bottom_bar.findChildren(QWidget),
+        )
+        for widget in self._bottom_control_bar_watch_widgets:
+            widget.setMouseTracking(True)
+            widget.installEventFilter(self)
+
+    def _show_bottom_control_bar(self) -> None:
+        self.bottom_control_bar_hide_timer.stop()
+        self.status_bar.show()
+        self.bottom_control_bar.show()
+
+    def _hide_bottom_control_bar(self) -> None:
+        if (
+            getattr(self, "_status_state", STATUS_READY) != STATUS_READY
+            or self._bottom_control_bar_active
+            or self.bottom_control_bar.underMouse()
+        ):
+            return
+        self.status_bar.hide()
+
+    def _schedule_bottom_control_bar_hide(self) -> None:
+        if (
+            getattr(self, "_status_state", STATUS_READY) == STATUS_READY
+            and self.status_bar.isVisible()
+            and not self._bottom_control_bar_active
+        ):
+            self.bottom_control_bar_hide_timer.start(BOTTOM_CONTROL_BAR_HIDE_DELAY_MS)
+
+    def set_status(self, state: str, text: str | None = None) -> None:
+        """Set the shared bottom-bar status and its auto-hide behaviour."""
+
+        if state not in STATUS_STATES:
+            raise ValueError(f"Unbekannter Status: {state!r}")
+        defaults = {
+            STATUS_READY: "Bereit",
+            STATUS_BUSY: "Bitte warten …",
+            STATUS_ERROR: "Fehler",
+        }
+        colors = {
+            STATUS_READY: "#20c977",
+            STATUS_BUSY: "#f59e0b",
+            STATUS_ERROR: "#ef4444",
+        }
+        self._status_state = state
+        self._status_text_source = text or defaults[state]
+        self._refresh_status_text()
+        self.bottom_status_dot.setStyleSheet(
+            f"color: {colors[state]}; font-size: 18px;"
+        )
+        self._update_bottom_control_bar_layout()
+        self.bottom_control_bar_hide_timer.stop()
+        if getattr(self, "_fullscreen_mode", False):
+            self.bottom_control_bar_start_timer.stop()
+            self.status_bar.hide()
+            return
+        if state == STATUS_READY:
+            self._show_bottom_control_bar()
+            self.bottom_control_bar_start_timer.start(BOTTOM_CONTROL_BAR_START_DELAY_MS)
+        else:
+            self.bottom_control_bar_start_timer.stop()
+            self._show_bottom_control_bar()
+
+    def _refresh_status_text(self) -> None:
+        """Translate the current shared status without changing its state."""
+        status_text = t(getattr(self, "_status_text_source", "Bereit"))
+        self.status_info_label.setText(status_text)
+        self.status_info_label.setToolTip(status_text)
+        self._update_bottom_control_bar_layout()
+
+    def _update_bottom_control_bar_layout(self) -> None:
+        if not hasattr(self, "bottom_control_bar"):
+            return
+        status_width = self.status_info_label.fontMetrics().horizontalAdvance(
+            self.status_info_label.text()
+        )
+        self.status_info_label.setMaximumWidth(
+            max(140, min(320, self.window.width() // 3))
+        )
+        self.thumbnail_size_slider.setVisible(
+            self.window.width() >= 680 and status_width < 190
+        )
+
+    def _update_bottom_control_bar_visibility(self, global_position=None) -> None:
+        if global_position is None:
+            global_position = QCursor.pos()
+        local_position = self.window.mapFromGlobal(global_position)
+        in_zone = (
+            self.window.rect().contains(local_position)
+            and local_position.y() >= self.window.height() - BOTTOM_CONTROL_BAR_ACTIVATION_ZONE_PX
+        )
+        self._bottom_control_bar_active = in_zone or self.bottom_control_bar.underMouse()
+        if self._bottom_control_bar_active:
+            self._show_bottom_control_bar()
+        else:
+            self._schedule_bottom_control_bar_hide()
+
+    def _set_thumbnail_position(self, position: str) -> None:
+        if position not in THUMBNAIL_POSITIONS:
+            position = "top"
+        self._thumbnail_position = position
+        if position != "hidden":
+            self._last_visible_thumbnail_position = position
+            self.settings.setValue(LAST_VISIBLE_THUMBNAIL_POSITION_KEY, position)
+        self.settings.setValue(THUMBNAIL_POSITION_KEY, position)
+        self.settings.sync()
+        self._apply_thumbnail_position(save=False)
+
+    def _toggle_thumbnail_visibility(self) -> None:
+        """Hide thumbnails or restore their most recently visible position."""
+        if self._thumbnail_position == "hidden":
+            self._set_thumbnail_position(self._last_visible_thumbnail_position)
+        else:
+            self._set_thumbnail_position("hidden")
+
+    def _apply_thumbnail_position(self, *, save: bool) -> None:
+        position = self._thumbnail_position
+        if position not in THUMBNAIL_POSITIONS:
+            position = "top"
+            self._thumbnail_position = position
+        vertical = position in {"left", "right"}
+        self.right_splitter.setOrientation(
+            Qt.Orientation.Horizontal if vertical else Qt.Orientation.Vertical
+        )
+        self.right_splitter.insertWidget(
+            1 if position == "right" else 0, self.thumbnail_panel
+        )
+        self.thumbnail_list.setFlow(
+            QListView.Flow.TopToBottom if vertical else QListView.Flow.LeftToRight
+        )
+        self.thumbnail_list.setWrapping(False)
+        if vertical:
+            self.thumbnail_panel.setFixedWidth(
+                max(220, self._thumbnail_grid_size.width() + 30)
+            )
+        else:
+            self.thumbnail_panel.setMinimumWidth(0)
+            self.thumbnail_panel.setMaximumWidth(16777215)
+        visible = position != "hidden" and not getattr(self, "_fullscreen_mode", False) and not getattr(self, "_pdf_preview_mode", False)
+        self.thumbnail_panel.setVisible(visible)
+        if hasattr(self, "thumbnail_position_actions"):
+            self.thumbnail_position_actions[position].setChecked(True)
+        self._sync_quick_switches()
+        if save:
+            self.settings.setValue(THUMBNAIL_POSITION_KEY, position)
+            self.settings.sync()
+        if hasattr(self, "_image_render_pending"):
+            self._schedule_image_render()
+
+    def _install_quick_switches(self) -> None:
+        """Place compact stateful shortcuts in the menu bar's top-right corner."""
+        quick_switches = QWidget(self.window.menuBar())
+        quick_switches.setObjectName("quickSwitches")
+        layout = QHBoxLayout(quick_switches)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(3)
+
+        self.thumbnail_quick_toggle = QToolButton(quick_switches)
+        self.thumbnail_quick_toggle.setObjectName("thumbnailQuickToggle")
+        self.thumbnail_quick_toggle.setCheckable(True)
+        self.thumbnail_quick_toggle.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.thumbnail_quick_toggle.clicked.connect(self._toggle_thumbnail_visibility)
+        layout.addWidget(self.thumbnail_quick_toggle)
+
+        self.details_quick_toggle = QToolButton(quick_switches)
+        self.details_quick_toggle.setObjectName("detailsQuickToggle")
+        self.details_quick_toggle.setCheckable(True)
+        self.details_quick_toggle.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.details_quick_toggle.clicked.connect(self.information_toggle_action.trigger)
+        layout.addWidget(self.details_quick_toggle)
+
+        self.fullscreen_quick_toggle = QToolButton(quick_switches)
+        self.fullscreen_quick_toggle.setObjectName("fullscreenQuickToggle")
+        self.fullscreen_quick_toggle.setCheckable(True)
+        self.fullscreen_quick_toggle.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.fullscreen_quick_toggle.clicked.connect(self.fullscreen_action.trigger)
+        layout.addWidget(self.fullscreen_quick_toggle)
+
+        self.window.menuBar().setCornerWidget(
+            quick_switches, Qt.Corner.TopRightCorner
+        )
+        self._update_quick_switches_layout()
+        self._sync_quick_switches()
+
+    def _update_quick_switches_layout(self) -> None:
+        """Reserve the size each translated quick-switch label actually needs."""
+        if not hasattr(self, "thumbnail_quick_toggle"):
+            return
+        layout = self.thumbnail_quick_toggle.parentWidget().layout()
+        if not isinstance(layout, QHBoxLayout):
+            return
+        layout.activate()
+        width = layout.sizeHint().width()
+        quick_switches = self.thumbnail_quick_toggle.parentWidget()
+        quick_switches.setFixedWidth(width)
+        quick_switches.updateGeometry()
+
+    def _sync_quick_switches(self) -> None:
+        if not hasattr(self, "thumbnail_quick_toggle"):
+            return
+        self.thumbnail_quick_toggle.setChecked(self._thumbnail_position != "hidden")
+        self.details_quick_toggle.setChecked(self.information_panel.isVisible())
+        self.fullscreen_quick_toggle.setChecked(
+            getattr(self, "_fullscreen_mode", False)
+        )
+
     def _install_information_panel(self) -> None:
         """Add a hidden, fixed-width details pane beside the image viewport."""
         preview_layout = self.preview_panel.layout()
@@ -2972,19 +3346,25 @@ class ImageViewer(QObject):
 
         self.information_panel = QWidget(self.preview_content)
         self.information_panel.setObjectName("informationPanel")
-        self.information_panel.setFixedWidth(360)
+        self.information_panel.setMinimumWidth(300)
+        self.information_panel.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding
+        )
         panel_layout = QVBoxLayout(self.information_panel)
-        panel_layout.setContentsMargins(10, 8, 10, 10)
-        panel_layout.setSpacing(6)
+        panel_layout.setContentsMargins(10, 7, 8, 8)
+        panel_layout.setSpacing(4)
         header = QHBoxLayout()
+        header.setContentsMargins(2, 0, 0, 0)
         title = QLabel("Bildinformationen", self.information_panel)
-        title.setStyleSheet("font-weight: 650;")
+        title.setObjectName("informationPanelTitle")
         close_button = QToolButton(self.information_panel)
+        close_button.setObjectName("informationCloseButton")
         close_button.setText("×")
         close_button.setToolTip("Bildinformationen schließen (I)")
         close_button.setAccessibleName(t("Bildinformationen schließen"))
         close_button.setAutoRaise(True)
-        close_button.setFixedSize(24, 24)
+        close_button.setFixedSize(20, 20)
+        self.information_close_button = close_button
         close_button.clicked.connect(self._hide_information_panel)
         header.addWidget(title)
         header.addStretch(1)
@@ -2996,10 +3376,11 @@ class ImageViewer(QObject):
         self.information_scroll_area.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
+        self.information_scroll_area.viewport().installEventFilter(self)
         self.information_content = QWidget(self.information_scroll_area)
         self.information_content_layout = QVBoxLayout(self.information_content)
         self.information_content_layout.setContentsMargins(2, 0, 2, 2)
-        self.information_content_layout.setSpacing(8)
+        self.information_content_layout.setSpacing(5)
         self.information_content_layout.addStretch(1)
         self.information_scroll_area.setWidget(self.information_content)
         panel_layout.addWidget(self.information_scroll_area, 1)
@@ -3015,6 +3396,30 @@ class ImageViewer(QObject):
                 widget.setParent(None)
                 widget.deleteLater()
 
+    def _configure_information_form(self, form: QFormLayout) -> None:
+        """Let metadata labels and values share a narrow panel gracefully."""
+        form.setContentsMargins(0, 6, 0, 0)
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(4)
+        form.setLabelAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+        )
+        form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
+        )
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+
+    def _update_information_column_widths(self) -> None:
+        """Keep labels useful without starving the flexible value column."""
+        if not hasattr(self, "information_scroll_area"):
+            return
+        available_width = self.information_scroll_area.viewport().width()
+        label_width = max(96, min(180, round(available_width * 0.42)))
+        for label in self.information_content.findChildren(
+            QLabel, "informationFieldLabel"
+        ):
+            label.setMaximumWidth(label_width)
+
     def _update_information_panel(self) -> None:
         if not self.information_panel.isVisible():
             return
@@ -3027,15 +3432,24 @@ class ImageViewer(QObject):
             return
         for title, fields in build_information_metadata(path).items():
             group = QGroupBox(title, self.information_content)
+            group.setObjectName("informationSection")
             form = QFormLayout(group)
-            form.setContentsMargins(8, 8, 8, 6)
-            form.setSpacing(5)
+            self._configure_information_form(form)
             for label_text, value_text in fields.items():
                 label = QLabel(f"{label_text}:", group)
                 label.setObjectName("informationFieldLabel")
+                label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+                label.setWordWrap(True)
+                label.setSizePolicy(
+                    QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred
+                )
                 value = QLabel(value_text, group)
                 value.setObjectName("informationValueLabel")
                 value.setWordWrap(True)
+                value.setToolTip(value_text)
+                value.setSizePolicy(
+                    QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+                )
                 value.setTextInteractionFlags(
                     Qt.TextInteractionFlag.TextSelectableByMouse
                 )
@@ -3043,6 +3457,7 @@ class ImageViewer(QObject):
             self.information_content_layout.insertWidget(
                 self.information_content_layout.count() - 1, group
             )
+        self._update_information_column_widths()
         self.all_metadata_toggle = QToolButton(self.information_content)
         self.all_metadata_toggle.setObjectName("allMetadataToggle")
         self.all_metadata_toggle.setCheckable(True)
@@ -3102,28 +3517,40 @@ class ImageViewer(QObject):
             return
         for title, fields in fields_by_group.items():
             group = QGroupBox(title, self.all_metadata_content)
+            group.setObjectName("informationSection")
             form = QFormLayout(group)
-            form.setContentsMargins(8, 8, 8, 6)
-            form.setSpacing(5)
+            self._configure_information_form(form)
             for tag, value_text in fields.items():
                 label = QLabel(f"{tag}:", group)
                 label.setObjectName("informationFieldLabel")
+                label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+                label.setWordWrap(True)
+                label.setSizePolicy(
+                    QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred
+                )
                 value = QLabel(value_text, group)
                 value.setObjectName("informationValueLabel")
                 value.setWordWrap(True)
+                value.setToolTip(value_text)
+                value.setSizePolicy(
+                    QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+                )
                 value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                 form.addRow(label, value)
             self.all_metadata_layout.addWidget(group)
+        self._update_information_column_widths()
 
     def _show_information_panel(self) -> None:
         self.information_panel.show()
         self._update_information_panel()
         self.information_toggle_button.setChecked(True)
+        self._sync_quick_switches()
         self._schedule_image_render()
 
     def _hide_information_panel(self) -> None:
         self.information_panel.hide()
         self.information_toggle_button.setChecked(False)
+        self._sync_quick_switches()
         self._schedule_image_render()
 
     def _toggle_information_panel(self) -> None:
@@ -3194,7 +3621,6 @@ class ImageViewer(QObject):
         self.rename_image_action.triggered.connect(
             lambda: self._rename_image(self._rename_context_path)
         )
-        self.file_menu.addAction(self.rename_image_action)
         self.export_resized_action = QAction(
             t("Ausgewählte Bilder verkleinert exportieren …"), self.window
         )
@@ -3247,6 +3673,8 @@ class ImageViewer(QObject):
         self.paste_image_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.paste_image_action.triggered.connect(self._paste_image_from_clipboard)
         self.edit_menu.addAction(self.paste_image_action)
+        self.edit_menu.addSeparator()
+        self.edit_menu.addAction(self.rename_image_action)
         for action in (
             self.select_all_action,
             self.copy_image_action,
@@ -3255,7 +3683,6 @@ class ImageViewer(QObject):
         ):
             self.window.addAction(action)
 
-        self.image_menu = self.window.menuBar().addMenu(t("Bild"))
         self.trash_image_action = QAction(
             t("In den Papierkorb verschieben"), self.window
         )
@@ -3264,9 +3691,7 @@ class ImageViewer(QObject):
             Qt.ShortcutContext.WindowShortcut
         )
         self.trash_image_action.triggered.connect(self._move_current_image_to_trash)
-        self.image_menu.addAction(self.trash_image_action)
         self.window.addAction(self.trash_image_action)
-        self.edit_menu.addSeparator()
         self.edit_menu.addAction(self.trash_image_action)
 
         self.show_in_file_manager_action = QAction(
@@ -3277,8 +3702,7 @@ class ImageViewer(QObject):
                 self._file_manager_context_path
             )
         )
-        self.image_menu.addSeparator()
-        self.image_menu.addAction(self.show_in_file_manager_action)
+        self.edit_menu.addAction(self.show_in_file_manager_action)
 
         display_rotation_tooltip = (
             "Dreht nur die Anzeige. Die Originaldatei bleibt unverändert."
@@ -3315,23 +3739,23 @@ class ImageViewer(QObject):
             lambda: self._reset_current_rotation(self._rotation_context_path)
         )
 
-        self.image_menu.addSeparator()
+        self.edit_menu.addSeparator()
         for action in (
             self.rotate_left_action,
             self.rotate_right_action,
             self.reset_rotation_action,
         ):
-            self.image_menu.addAction(action)
+            self.edit_menu.addAction(action)
             self.window.addAction(action)
 
-        self.image_menu.addSeparator()
+        self.edit_menu.addSeparator()
         self.save_rotated_copy_action = QAction(
             t("Gedrehte Kopie speichern …"), self.window
         )
         self.save_rotated_copy_action.triggered.connect(
             lambda: self._save_rotated_copy(self._rotation_context_path)
         )
-        self.image_menu.addAction(self.save_rotated_copy_action)
+        self.edit_menu.addAction(self.save_rotated_copy_action)
 
         self.save_rotation_to_original_action = QAction(
             t("Drehung im Original speichern …"), self.window
@@ -3341,16 +3765,15 @@ class ImageViewer(QObject):
                 self._rotation_context_path
             )
         )
-        self.image_menu.addAction(self.save_rotation_to_original_action)
+        self.edit_menu.addAction(self.save_rotation_to_original_action)
 
         self.compare_images_action = QAction(
             t("Bilder vergleichen …"), self.window
         )
         self.compare_images_action.triggered.connect(self._compare_selected_images)
-        self.image_menu.addSeparator()
         image_placeholder_action = QAction(t("Weitere Bildfunktionen folgen …"), self.window)
         image_placeholder_action.setEnabled(False)
-        self.image_menu.addAction(image_placeholder_action)
+        self.edit_menu.addAction(image_placeholder_action)
 
         self.view_menu = self.window.menuBar().addMenu(t("Ansicht"))
         self.fullscreen_action = QAction(t("Vollbild"), self.window)
@@ -3427,6 +3850,24 @@ class ImageViewer(QObject):
             self._show_thumbnail_size_dialog
         )
         self.view_menu.addAction(self.thumbnail_size_action)
+
+        self.thumbnail_position_menu = self.view_menu.addMenu(t("Vorschaubilder"))
+        self.thumbnail_position_action_group = QActionGroup(self.window)
+        self.thumbnail_position_action_group.setExclusive(True)
+        self.thumbnail_position_actions: dict[str, QAction] = {}
+        for position, label in (
+            ("top", "Oben"), ("left", "Links"),
+            ("right", "Rechts"), ("hidden", "Ausblenden"),
+        ):
+            action = QAction(t(label), self.window)
+            action.setCheckable(True)
+            action.setChecked(position == self._thumbnail_position)
+            action.triggered.connect(
+                lambda checked=False, value=position: self._set_thumbnail_position(value)
+            )
+            self.thumbnail_position_action_group.addAction(action)
+            self.thumbnail_position_menu.addAction(action)
+            self.thumbnail_position_actions[position] = action
 
         self.increase_thumbnail_size_action = QAction(
             t("Vorschaubilder vergrößern"), self.window
@@ -3517,7 +3958,8 @@ class ImageViewer(QObject):
         self._apply_color_scheme()
         self._update_view_actions()
 
-        self.navigation_menu = self.window.menuBar().addMenu(t("Navigation"))
+        self.go_to_menu = self.window.menuBar().addMenu(t("Gehe zu"))
+        self.navigation_menu = self.go_to_menu
         self.previous_folder_action = QAction(t("Vorheriger Ordner"), self.window)
         self.previous_folder_action.setShortcut(QKeySequence("Alt+Left"))
         self.previous_folder_action.setShortcutContext(
@@ -3631,10 +4073,11 @@ class ImageViewer(QObject):
         """Refresh generated main-window text after a live language switch."""
         for menu, source in (
             (self.file_menu, "Datei"), (self.edit_menu, "Bearbeiten"),
-            (self.image_menu, "Bild"), (self.view_menu, "Ansicht"),
-            (self.navigation_menu, "Navigation"), (self.tools_menu, "Werkzeuge"),
+            (self.view_menu, "Ansicht"), (self.go_to_menu, "Gehe zu"),
+            (self.tools_menu, "Werkzeuge"),
             (self.help_menu, "Hilfe"), (self.language_menu, "Sprache"),
             (self.sort_menu, "Sortieren nach"), (self.color_scheme_menu, "Farbschema"),
+            (self.thumbnail_position_menu, "Vorschaubilder"),
         ):
             menu.setTitle(t(source))
         for action, source in (
@@ -3651,6 +4094,19 @@ class ImageViewer(QObject):
             (self.about_action, "Über {name} …"),
         ):
             action.setText(t(source).format(name=APP_NAME))
+        for position, source in (
+            ("top", "Oben"), ("left", "Links"),
+            ("right", "Rechts"), ("hidden", "Ausblenden"),
+        ):
+            self.thumbnail_position_actions[position].setText(t(source))
+        self.thumbnail_quick_toggle.setText(t("Vorschaubilder"))
+        self.details_quick_toggle.setText(t("Details"))
+        self.fullscreen_quick_toggle.setText(t("Vollbild"))
+        self.thumbnail_quick_toggle.setToolTip(t("Vorschaubilder"))
+        self.details_quick_toggle.setToolTip(t("Details"))
+        self.fullscreen_quick_toggle.setToolTip(t("Vollbild"))
+        self._update_quick_switches_layout()
+        self._sync_quick_switches()
         self.previous_button.setToolTip(t("Vorheriges Bild"))
         self.next_button.setToolTip(t("Nächstes Bild"))
         self.previous_button.setAccessibleName(t("Vorheriges Bild"))
@@ -3660,6 +4116,7 @@ class ImageViewer(QObject):
         self.previous_pdf_page_button.setToolTip(t("Vorherige PDF-Seite"))
         self.next_pdf_page_button.setToolTip(t("Nächste PDF-Seite"))
         self._update_pdf_page_navigation()
+        self._refresh_status_text()
         self._update_status_bar()
 
     def _update_view_actions(self) -> None:
@@ -5283,7 +5740,7 @@ class ImageViewer(QObject):
             self.fullscreen_action.setChecked(False)
 
     def _create_slideshow_menu(self) -> None:
-        self.slideshow_menu = self.window.menuBar().addMenu(t("Diashow"))
+        self.slideshow_menu = self.view_menu.addMenu(t("Diashow"))
 
         self.slideshow_action = QAction(t("Diashow starten / beenden"), self.window)
         self.slideshow_action.setShortcut(QKeySequence("F5"))
@@ -5864,6 +6321,7 @@ class ImageViewer(QObject):
             else (select_paths[0].resolve(strict=False) if select_paths else None)
         )
         self.thumbnail_list.clear()
+        self.set_status(STATUS_BUSY, "Suche nach Bildern …")
         self._update_navigation_buttons()
         self.current_image = None
         self.original_image = QImage()
@@ -5998,6 +6456,7 @@ class ImageViewer(QObject):
             self._directory_iterator.close()
             self._directory_iterator = None
             self._set_file_name_text(t("Ordner konnte nicht vollständig gelesen werden"))
+            self.set_status(STATUS_ERROR, "Ordner konnte nicht vollständig gelesen werden")
             self._set_thumbnail_size_actions_enabled(True)
             return
 
@@ -6163,11 +6622,13 @@ class ImageViewer(QObject):
             self.thumbnail_list.scrollToItem(current_item)
         if self.current_image is not None:
             self._set_file_name_text(self.current_image.name)
+            self.set_status(STATUS_READY)
             return
         count = self.thumbnail_list.count()
         self._set_file_name_text(
             t("{count} Bild" if count == 1 else "{count} Bilder").format(count=count)
         )
+        self.set_status(STATUS_READY)
 
     def _thumbnail_selected(
         self,
@@ -6443,8 +6904,6 @@ class ImageViewer(QObject):
             or current_row < 0
         ):
             self._status_full_text = t("Kein Bild ausgewählt")
-            self.status_info_label.setText(self._status_full_text)
-            self.status_info_label.setToolTip("")
             self.status_zoom_label.clear()
             self.status_zoom_label.setToolTip("")
             return
@@ -6472,7 +6931,6 @@ class ImageViewer(QObject):
                 parts.append(f"{prefix}{value}")
 
         self._status_full_text = " | ".join(parts)
-        self._refresh_status_info_text()
         zoom_text = t("Zoom {percent} %").format(percent=round(self._zoom_factor * 100))
         self.status_zoom_label.setText(zoom_text)
 
@@ -6502,17 +6960,10 @@ class ImageViewer(QObject):
             tooltip_lines.append(metadata["gps_detail"])
         tooltip_lines.append(zoom_text)
         complete_tooltip = "\n".join(tooltip_lines)
-        self.status_info_label.setToolTip(complete_tooltip)
         self.status_zoom_label.setToolTip(complete_tooltip)
 
     def _refresh_status_info_text(self) -> None:
-        available_width = max(0, self.status_info_label.width() - 8)
-        displayed_text = self.status_info_label.fontMetrics().elidedText(
-            self._status_full_text,
-            Qt.TextElideMode.ElideRight,
-            available_width,
-        )
-        self.status_info_label.setText(displayed_text)
+        self._update_bottom_control_bar_layout()
 
     def _load_current_image(self) -> None:
         self._hide_zoom_indicator()
@@ -6521,7 +6972,9 @@ class ImageViewer(QObject):
             self._current_file_size = None
             self._clear_pdf_state()
             self._update_status_bar()
+            self.set_status(STATUS_READY)
             return
+        self.set_status(STATUS_BUSY, "Bild wird geladen …")
         if self.current_image.suffix.lower() in PDF_EXTENSIONS:
             result = load_pdf(self.current_image)
             if result.document is None:
@@ -6529,6 +6982,7 @@ class ImageViewer(QObject):
                 self.original_image = QImage()
                 self.image_label.setText(result.error or t("Die PDF konnte nicht geöffnet werden."))
                 self._update_view_actions()
+                self.set_status(STATUS_ERROR, "Datei konnte nicht geöffnet werden")
                 return
             # QPdfLinkModel retains a reference to its document.  Detach it
             # before releasing the previous document; otherwise QtPdf can
@@ -6566,6 +7020,7 @@ class ImageViewer(QObject):
             self.image_label.setText(t("Bild konnte nicht geladen werden"))
             self._update_view_actions()
             self._update_status_bar()
+            self.set_status(STATUS_ERROR, "Bild konnte nicht geladen werden")
             return
         self._exif_oriented_image = image
         rotation = self._display_rotation_by_path.get(
@@ -6577,6 +7032,7 @@ class ImageViewer(QObject):
         self._update_view_actions()
         self._zoom_mode = "fit"
         self._render_current_image()
+        self.set_status(STATUS_READY)
 
     def _render_pdf_page(
         self,
@@ -6618,6 +7074,7 @@ class ImageViewer(QObject):
         self._update_pdf_page_navigation()
         if schedule_quality_refresh:
             self._schedule_pdf_quality_refresh()
+        self.set_status(STATUS_READY)
         return True
 
     def _change_pdf_page(self, offset: int) -> None:
@@ -7347,7 +7804,7 @@ class ImageViewer(QObject):
             self._leave_fullscreen()
         self._pdf_preview_mode = False
         self.directory_panel.show()
-        self.thumbnail_panel.show()
+        self._apply_thumbnail_position(save=False)
         self.splitter.handle(1).show()
         self.right_splitter.handle(1).show()
         self.splitter.setSizes(self._pdf_preview_main_splitter_sizes)
@@ -7361,6 +7818,7 @@ class ImageViewer(QObject):
 
         self._fullscreen_mode = True
         self.fullscreen_action.setChecked(True)
+        self._sync_quick_switches()
         self._normal_geometry = self.window.geometry()
         self._normal_was_maximized = self.window.isMaximized()
         self._normal_main_splitter_sizes = self.splitter.sizes()
@@ -7375,9 +7833,8 @@ class ImageViewer(QObject):
 
         self.directory_panel.hide()
         self.thumbnail_panel.hide()
-        self.previous_button.hide()
-        self.next_button.hide()
-        self.file_name_label.hide()
+        self._bottom_control_bar_active = False
+        self.status_bar.hide()
         self.window.menuBar().hide()
         self.splitter.handle(1).hide()
         self.right_splitter.handle(1).hide()
@@ -7400,6 +7857,7 @@ class ImageViewer(QObject):
         self.fullscreen_tooltip_timer.stop()
         self._hide_fullscreen_tooltip()
         self.fullscreen_action.setChecked(False)
+        self._sync_quick_switches()
         self.window.setStyleSheet(self._normal_window_style)
         self.image_label.setStyleSheet(self._normal_image_style)
         central_layout = self.window.centralWidget().layout()
@@ -7408,11 +7866,10 @@ class ImageViewer(QObject):
 
         if not self._pdf_preview_mode:
             self.directory_panel.show()
-            self.thumbnail_panel.show()
-        self.previous_button.show()
-        self.next_button.show()
+            self._apply_thumbnail_position(save=False)
+        self._show_bottom_control_bar()
+        self.bottom_control_bar_start_timer.start(BOTTOM_CONTROL_BAR_START_DELAY_MS)
         self._update_pdf_page_navigation()
-        self.file_name_label.show()
         self.window.menuBar().show()
         if not self._pdf_preview_mode:
             self.splitter.handle(1).show()
@@ -7448,6 +7905,25 @@ class ImageViewer(QObject):
             thumbnail_viewport = self.thumbnail_list.viewport()
         except RuntimeError:
             return False
+        if (
+            hasattr(self, "information_scroll_area")
+            and watched is self.information_scroll_area.viewport()
+            and event.type() == QEvent.Type.Resize
+        ):
+            QTimer.singleShot(0, self._update_information_column_widths)
+        if watched in getattr(self, "_bottom_control_bar_watch_widgets", ()):
+            if watched is self.window and event.type() == QEvent.Type.Resize:
+                self._update_bottom_control_bar_layout()
+            if event.type() in (QEvent.Type.Enter, QEvent.Type.MouseMove):
+                global_position = (
+                    event.globalPosition().toPoint()
+                    if event.type() == QEvent.Type.MouseMove
+                    else QCursor.pos()
+                )
+                self._update_bottom_control_bar_visibility(global_position)
+            elif event.type() == QEvent.Type.Leave:
+                self._bottom_control_bar_active = False
+                self._schedule_bottom_control_bar_hide()
         if watched is self.window or watched in image_widgets:
             if event.type() == QEvent.Type.DragEnter:
                 self.dragEnterEvent(event)
@@ -7533,7 +8009,7 @@ class ImageViewer(QObject):
             and event.type() == QEvent.Type.Resize
         ):
             self._update_directory_heading()
-        if self._fullscreen_mode and watched in image_widgets:
+        if getattr(self, "_fullscreen_mode", False) and watched in image_widgets:
             if event.type() == QEvent.Type.ToolTip:
                 return True
             if event.type() in (QEvent.Type.Enter, QEvent.Type.MouseMove):

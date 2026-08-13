@@ -6,9 +6,9 @@
 
 ![BildBlick Screenshot](docs/bildblick-screenshot.png)
 
-*BildBlick 1.18.4 unter Linux Mint und macOS*
+*BildBlick 1.19.0 unter Linux Mint und macOS*
 
-**Version 1.18.4**
+**Version 1.19.0**
 
 BildBlick ist ein schneller und komfortabler Bildbetrachter für Linux. Die Anwendung wurde unter Linux Mint entwickelt und getestet und verbindet eine übersichtliche Verzeichnisnavigation mit schnellen Vorschaubildern und praktischen Werkzeugen für die Bildverwaltung.
 
@@ -31,6 +31,12 @@ BildBlick ist ein schneller und komfortabler Bildbetrachter für Linux. Die Anwe
 - Farbschemata: System, Hell, Dunkel, Anthrazit und Warm
 - Ruhige, klar gegliederte Galerie-Oberfläche mit großzügigeren Listen und
   dezenten Auswahlflächen
+- Flexible Vorschaubildpositionen oben, links, rechts oder ausgeblendet,
+  einschließlich Wiederherstellung der zuletzt sichtbaren Position
+- Schnellschalter für Vorschaubilder, Details und Vollbild sowie eine gemeinsame
+  untere Steuerleiste mit Auto-Hide und READY/BUSY/ERROR-Statusanzeige
+- Modernisierte Informations-/EXIF- und Verzeichnisbereiche mit vollständiger
+  Darstellung langer Metadatenwerte
 - Kompakte Steuerzeile mit Thumbnail-Größe, Dateiname sowie Vor- und
   Zurücknavigation unter den Vorschaubildern – unter Linux und macOS
 - Die Schaltflächen `‹` und `›` unter den Vorschaubildern wechseln zwischen

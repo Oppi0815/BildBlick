@@ -394,11 +394,12 @@ def test_fullscreen_hides_thumbnail_container_and_restores_splitters(tmp_path: P
     application.processEvents()
     assert viewer.thumbnail_panel.isHidden()
     assert viewer.directory_panel.isHidden()
-    assert viewer.previous_button.isHidden()
+    assert viewer.status_bar.isHidden()
     assert not viewer.image_scroll_area.isHidden()
 
     viewer._leave_fullscreen()
     application.processEvents()
+    assert not viewer.status_bar.isHidden()
     assert not viewer.thumbnail_panel.isHidden()
     assert not viewer.directory_panel.isHidden()
     assert viewer.splitter.sizes() == main_sizes
