@@ -2,6 +2,15 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.20.1
+
+### Behoben
+
+- Nachträglich eingehängte Netzwerkfreigaben unter `/Volumes` erscheinen
+  automatisch im Verzeichnisbaum und werden zuverlässig ausgewählt.
+- Der Ladeindikator bleibt bei Netzwerkordnern gelb, bis alle Vorschaubild- und
+  Metadatenaufgaben der aktuellen Ordnerladung abgeschlossen sind.
+
 ## 1.20.0
 
 ### Oberfläche und Bedienung

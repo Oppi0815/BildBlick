@@ -23,6 +23,7 @@ from PySide6.QtCore import (
     QEvent,
     QEasingCurve,
     QFile,
+    QFileSystemWatcher,
     QIODevice,
     QItemSelectionModel,
     QLineF,
@@ -141,7 +142,7 @@ from i18n import LANGUAGES, LanguageManager, t
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.20.0"
+APP_VERSION = "1.20.1"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 LOGGER = logging.getLogger(__name__)
 
@@ -173,6 +174,7 @@ def run_without_application_stylesheet(
             application.setStyleSheet(original_stylesheet)
 
 ROOT_DIRECTORY = Path("/")
+VOLUMES_DIRECTORY = Path("/Volumes")
 HOME_DIRECTORY = Path.home()
 _pictures_location = QStandardPaths.writableLocation(
     QStandardPaths.StandardLocation.PicturesLocation
@@ -2869,6 +2871,7 @@ class ImageViewer(QObject):
         self._normal_image_style = ""
         self._normal_central_margins = None
         self._load_generation = 0
+        self._directory_loading_generation: int | None = None
         self._pending_images: list[Path] = []
         self._next_job_index = 0
         self._prepare_index = 0
@@ -3021,14 +3024,15 @@ class ImageViewer(QObject):
         )
         self.slideshow_metadata_label.hide()
 
-        self.directory_model = QFileSystemModel(self.window)
-        self._set_directory_model_filter()
-        self.directory_model.setReadOnly(True)
-        root_index = self.directory_model.setRootPath(str(ROOT_DIRECTORY))
-        self.directory_tree.setModel(self.directory_model)
-        self.directory_tree.setRootIndex(root_index)
-        for column in range(1, self.directory_model.columnCount()):
-            self.directory_tree.hideColumn(column)
+        # QFileSystemModel populates directories asynchronously.  In particular,
+        # a volume mounted after the application started may not yet have an
+        # index when it is first selected as the startup directory.
+        self._pending_tree_path: Path | None = None
+        self._tree_path_retry_timer = QTimer(self.window)
+        self._tree_path_retry_timer.setSingleShot(True)
+        self._tree_path_retry_timer.timeout.connect(self._retry_pending_tree_path)
+        self._create_directory_model()
+        self._install_volumes_watcher()
 
         # Initial proportions only; the splitters remain fully user-adjustable.
         self.splitter.setSizes([250, 950])
@@ -3764,11 +3768,35 @@ class ImageViewer(QObject):
         ):
             self.bottom_control_bar_hide_timer.start(BOTTOM_CONTROL_BAR_HIDE_DELAY_MS)
 
+    def _directory_loading_in_progress(self) -> bool:
+        """Whether the current folder's scan or thumbnail work is unfinished."""
+        if getattr(self, "_directory_loading_generation", None) != getattr(
+            self, "_load_generation", None
+        ):
+            return False
+        pending_images = getattr(self, "_pending_images", [])
+        return (
+            getattr(self, "_directory_iterator", None) is not None
+            or getattr(self, "_prepare_index", 0) < len(pending_images)
+            or getattr(self, "_next_job_index", 0) < len(pending_images)
+            or getattr(self, "_active_jobs", 0) > 0
+            or getattr(self, "_completed_jobs", 0) < len(pending_images)
+        )
+
+    def _status_with_directory_loading_guard(
+        self, state: str, text: str | None
+    ) -> tuple[str, str | None]:
+        """Prevent unrelated image updates from marking folder loading ready."""
+        if state == STATUS_READY and self._directory_loading_in_progress():
+            return STATUS_BUSY, text or "Lade Vorschaubilder …"
+        return state, text
+
     def set_status(self, state: str, text: str | None = None) -> None:
         """Set the shared bottom-bar status and its auto-hide behaviour."""
 
         if state not in STATUS_STATES:
             raise ValueError(f"Unbekannter Status: {state!r}")
+        state, text = self._status_with_directory_loading_guard(state, text)
         defaults = {
             STATUS_READY: "Bereit",
             STATUS_BUSY: "Bitte warten …",
@@ -5265,6 +5293,7 @@ class ImageViewer(QObject):
         self.thread_pool.clear()
         self._load_generation += 1
         generation = self._load_generation
+        self._directory_loading_generation = generation
         self._pending_images = [
             Path(self.thumbnail_list.item(row).data(Qt.ItemDataRole.UserRole))
             for row in range(self.thumbnail_list.count())
@@ -6834,13 +6863,105 @@ class ImageViewer(QObject):
         elif self._pdf_preview_mode:
             self._leave_pdf_preview()
 
+    def _create_directory_model(self) -> None:
+        """Create a fresh model so mounts below /Volumes are rediscovered."""
+        previous_model = getattr(self, "directory_model", None)
+        self.directory_model = QFileSystemModel(self.window)
+        self._set_directory_model_filter()
+        self.directory_model.setReadOnly(True)
+        self.directory_model.directoryLoaded.connect(
+            lambda _path: self._retry_pending_tree_path()
+        )
+        root_index = self.directory_model.setRootPath(str(ROOT_DIRECTORY))
+        self.directory_tree.setModel(self.directory_model)
+        self.directory_tree.setRootIndex(root_index)
+        for column in range(1, self.directory_model.columnCount()):
+            self.directory_tree.hideColumn(column)
+        if previous_model is not None:
+            previous_model.deleteLater()
+
+    def _install_volumes_watcher(self) -> None:
+        """Refresh the tree when macOS adds or removes a mounted volume."""
+        if sys.platform != "darwin" or not VOLUMES_DIRECTORY.is_dir():
+            return
+        self._volumes_refresh_timer = QTimer(self.window)
+        self._volumes_refresh_timer.setSingleShot(True)
+        self._volumes_refresh_timer.timeout.connect(self._refresh_volumes_tree)
+        self._volumes_expand_retry_timer = QTimer(self.window)
+        self._volumes_expand_retry_timer.setSingleShot(True)
+        self._volumes_expand_retry_timer.timeout.connect(self._expand_volumes_node)
+        self._volumes_watcher = QFileSystemWatcher([str(VOLUMES_DIRECTORY)], self.window)
+        self._volumes_watcher.directoryChanged.connect(self._schedule_volumes_refresh)
+        self._expand_volumes_node()
+
+    def _schedule_volumes_refresh(self, _path: str = "") -> None:
+        """Coalesce the several filesystem events a mount can generate."""
+        self._volumes_refresh_timer.start(150)
+
+    def _expand_volumes_node(self) -> None:
+        volumes_index = self.directory_model.index(str(VOLUMES_DIRECTORY))
+        if volumes_index.isValid():
+            self.directory_tree.expand(volumes_index)
+            return
+        # The root model itself may still be loading when the application starts.
+        self._volumes_expand_retry_timer.start(100)
+
+    def _refresh_volumes_tree(self) -> None:
+        """Reload mounted volumes while retaining the current tree selection."""
+        selected_directory = None
+        selected_index = self.directory_tree.currentIndex()
+        if selected_index.isValid():
+            candidate = Path(self.directory_model.filePath(selected_index))
+            if candidate.is_dir():
+                selected_directory = candidate
+        if selected_directory is None:
+            current_directory = getattr(self, "current_directory", None)
+            if current_directory is not None and current_directory.is_dir():
+                selected_directory = current_directory
+
+        self._create_directory_model()
+        self._expand_volumes_node()
+        if selected_directory is not None:
+            self._expand_initial_path(selected_directory)
+
     def _expand_initial_path(self, directory: Path) -> None:
-        if directory.is_dir():
-            for parent in reversed(directory.parents):
-                self.directory_tree.expand(self.directory_model.index(str(parent)))
-            start_index = self.directory_model.index(str(directory))
-            self.directory_tree.setCurrentIndex(start_index)
-            self.directory_tree.scrollTo(start_index)
+        if not directory.is_dir():
+            self._pending_tree_path = None
+            self._tree_path_retry_timer.stop()
+            return
+        self._pending_tree_path = directory
+        self._retry_pending_tree_path()
+
+    def _retry_pending_tree_path(self) -> None:
+        """Expand and select a pending path once QFileSystemModel knows it."""
+        directory = self._pending_tree_path
+        if directory is None:
+            return
+        if not directory.is_dir():
+            self._pending_tree_path = None
+            self._tree_path_retry_timer.stop()
+            return
+
+        # Expanding every already-known ancestor causes QFileSystemModel to load
+        # the next level.  The target index can remain invalid for a short time
+        # on newly mounted network volumes, so keep trying after directoryLoaded
+        # as well as on a short timer.
+        for parent in reversed(directory.parents):
+            parent_index = self.directory_model.index(str(parent))
+            if parent_index.isValid():
+                self.directory_tree.expand(parent_index)
+
+        target_index = self.directory_model.index(str(directory))
+        if target_index.isValid():
+            self.directory_tree.expand(target_index)
+            self.directory_tree.setCurrentIndex(target_index)
+            self.directory_tree.scrollTo(target_index)
+            self._pending_tree_path = None
+            self._tree_path_retry_timer.stop()
+            return
+
+        if not self._tree_path_retry_timer.isActive():
+            self._tree_path_retry_timer.start(100)
 
     @staticmethod
     def _load_ui() -> QMainWindow:
@@ -6948,6 +7069,7 @@ class ImageViewer(QObject):
         self.thread_pool.clear()
         self._load_generation += 1
         generation = self._load_generation
+        self._directory_loading_generation = generation
         self._pending_images = []
         self._next_job_index = 0
         self._prepare_index = 0
@@ -7107,6 +7229,8 @@ class ImageViewer(QObject):
         except OSError:
             self._directory_iterator.close()
             self._directory_iterator = None
+            if self._directory_loading_generation == generation:
+                self._directory_loading_generation = None
             self._set_file_name_text(t("Ordner konnte nicht vollständig gelesen werden"))
             self.set_status(STATUS_ERROR, "Ordner konnte nicht vollständig gelesen werden")
             self._set_thumbnail_size_actions_enabled(True)
@@ -7262,6 +7386,7 @@ class ImageViewer(QObject):
     def _finish_thumbnail_loading(self, generation: int) -> None:
         if generation != self._load_generation:
             return
+        self._directory_loading_generation = None
         self._capture_sort_waiting = False
         self._sort_thumbnail_items()
         self._pending_images = [
