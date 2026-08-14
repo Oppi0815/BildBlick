@@ -9,7 +9,7 @@ from i18n import t
 
 PDF_EXTENSIONS = {".pdf"}
 PDF_SCREEN_RENDER_MAX_EDGE = 3600
-PDF_DISPLAY_MIN_RENDER_EDGE = 1800
+PDF_RENDER_SIZE_TOLERANCE = 3
 
 
 @dataclass
@@ -63,6 +63,22 @@ def render_pdf_page_with_fallback(
     return prepare_pdf_rendered_image(document.render(page, smaller_size))
 
 
+def render_pdf_page_for_printer(
+    document: QPdfDocument, page: int, printable_pixel_size: QSize
+) -> QImage:
+    """Render a PDF page for the printer's physical paint area."""
+    if not 0 <= page < document.pageCount() or printable_pixel_size.isEmpty():
+        return QImage()
+    page_size = document.pagePointSize(page)
+    if page_size.isEmpty():
+        return QImage()
+    render_size = QSize(
+        max(1, round(page_size.width())),
+        max(1, round(page_size.height())),
+    ).scaled(printable_pixel_size, Qt.AspectRatioMode.KeepAspectRatio)
+    return prepare_pdf_rendered_image(document.render(page, render_size))
+
+
 def prepare_pdf_rendered_image(image: QImage) -> QImage:
     """Composite a rendered PDF page onto opaque white for reliable display."""
     if image.isNull() or image.width() <= 0 or image.height() <= 0:
@@ -105,10 +121,36 @@ def pdf_page_render_size(
     )
 
 
-def pdf_display_target_size(viewport_size: QSize, zoom_factor: float = 1.0) -> QSize:
-    """Return a high-quality, bounded target for a PDF page in the main view."""
-    safe_zoom = max(1.0, zoom_factor)
+def pdf_display_target_size(
+    viewport_size: QSize,
+    zoom_factor: float = 1.0,
+    device_pixel_ratio: float = 1.0,
+) -> QSize:
+    """Return the physical target bounds for the visible main PDF page.
+
+    ``QPdfDocument.render`` expects physical pixels whereas widget sizes are
+    logical pixels.  The main view deliberately has no fixed minimum size or
+    render reserve: the result is displayed at this size without a second
+    raster scaling step.
+    """
+    safe_zoom = max(0.01, zoom_factor)
+    safe_dpr = max(1.0, device_pixel_ratio)
+    scale = safe_zoom * safe_dpr
     return QSize(
-        max(PDF_DISPLAY_MIN_RENDER_EDGE, round(max(1, viewport_size.width()) * 2 * safe_zoom)),
-        max(PDF_DISPLAY_MIN_RENDER_EDGE, round(max(1, viewport_size.height()) * 2 * safe_zoom)),
+        max(1, round(max(1, viewport_size.width()) * scale)),
+        max(1, round(max(1, viewport_size.height()) * scale)),
+    )
+
+
+def pdf_render_size_matches(
+    rendered_size: QSize,
+    required_size: QSize,
+    tolerance: int = PDF_RENDER_SIZE_TOLERANCE,
+) -> bool:
+    """Return whether two render sizes differ only by harmless rounding."""
+    if rendered_size.isEmpty() or required_size.isEmpty():
+        return False
+    return (
+        abs(rendered_size.width() - required_size.width()) <= tolerance
+        and abs(rendered_size.height() - required_size.height()) <= tolerance
     )

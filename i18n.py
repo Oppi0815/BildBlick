@@ -43,6 +43,14 @@ for _code, _words in {
     CATALOGUE[_code].update(_words)
 
 for _code, _words in {
+    "en": {"PDF-Seiten drucken": "Print PDF pages", "Was möchten Sie drucken?": "What would you like to print?", "Aktuelle Seite": "Current page", "Alle Seiten": "All pages", "Auswahl": "Selection", "Drucken …": "Print …"},
+    "fr": {"PDF-Seiten drucken": "Imprimer les pages PDF", "Was möchten Sie drucken?": "Que souhaitez-vous imprimer ?", "Aktuelle Seite": "Page actuelle", "Alle Seiten": "Toutes les pages", "Auswahl": "Sélection", "Drucken …": "Imprimer…"},
+    "es": {"PDF-Seiten drucken": "Imprimir páginas PDF", "Was möchten Sie drucken?": "¿Qué desea imprimir?", "Aktuelle Seite": "Página actual", "Alle Seiten": "Todas las páginas", "Auswahl": "Selección", "Drucken …": "Imprimir…"},
+    "uk": {"PDF-Seiten drucken": "Друк сторінок PDF", "Was möchten Sie drucken?": "Що ви хочете надрукувати?", "Aktuelle Seite": "Поточна сторінка", "Alle Seiten": "Усі сторінки", "Auswahl": "Вибране", "Drucken …": "Друк…"},
+}.items():
+    CATALOGUE[_code].update(_words)
+
+for _code, _words in {
     "en": {
         "Wird geladen …": "Loading …",
         "↑ / ↓ – vorherige/nächste Seite": "↑ / ↓ – previous/next page",

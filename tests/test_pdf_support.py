@@ -1,22 +1,40 @@
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QSize, QSizeF, Qt
+from PySide6.QtCore import QEvent, QPoint, QSize, QSizeF, QTimer, Qt
 from PySide6.QtGui import QColor, QImage, QPageSize, QPainter, QPdfWriter
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QAbstractItemView, QApplication
+from PySide6.QtWidgets import QAbstractItemView, QApplication, QToolTip
 
 import bildbetrachter
-from bildbetrachter import ImageViewer
+from bildbetrachter import PDF_FULLSCREEN_NAVIGATION_HINT_DURATION, ImageViewer
 from pdf_support import (
     PDF_SCREEN_RENDER_MAX_EDGE,
-    PDF_DISPLAY_MIN_RENDER_EDGE,
     pdf_display_target_size,
     load_pdf,
     pdf_page_render_size,
+    pdf_render_size_matches,
     prepare_pdf_rendered_image,
     render_pdf_page,
+    render_pdf_page_for_printer,
     render_pdf_page_with_fallback,
 )
+
+
+def test_pdf_render_size_match_tolerates_only_rounding_differences():
+    assert pdf_render_size_matches(QSize(417, 590), QSize(420, 587))
+    assert not pdf_render_size_matches(QSize(417, 590), QSize(421, 590))
+
+
+def test_pdf_printer_render_uses_print_area_not_screen_pixmap(tmp_path: Path):
+    application = QApplication.instance() or QApplication([])
+    pdf_path = tmp_path / "printer-render.pdf"
+    _write_pdf(pdf_path, [QSizeF(200, 400)])
+    document = load_pdf(pdf_path).document
+
+    image = render_pdf_page_for_printer(document, 0, QSize(2400, 1800))
+
+    assert image.size() == QSize(900, 1800)
+    application.processEvents()
 
 
 def _write_pdf(path: Path, page_sizes: list[QSizeF]) -> None:
@@ -57,13 +75,24 @@ def test_fullscreen_pdf_page_thumbnails_are_pdf_only_and_follow_navigation(tmp_p
         assert viewer.pdf_thumbnail_bar.count() == 4
         assert viewer.pdf_thumbnail_bar.currentRow() == 0
         assert viewer._pdf_thumbnail_document is not viewer._pdf_document
+        assert [
+            viewer.pdf_thumbnail_bar.item(page).data(Qt.ItemDataRole.UserRole)
+            for page in range(4)
+        ] == [0, 1, 2, 3]
 
         initial_hints = [
             viewer.pdf_thumbnail_bar.item(page).sizeHint()
             for page in range(viewer.pdf_thumbnail_bar.count())
         ]
         assert all(hint == QSize(140, 212) for hint in initial_hints)
-        assert viewer.pdf_thumbnail_panel.width() == 174
+        assert viewer.pdf_thumbnail_panel.width() == (
+            174 + viewer._pdf_print_checkbox_column_width
+        )
+        checkbox = viewer._pdf_print_checkboxes[1]
+        assert viewer._pdf_print_checkbox_column_width >= checkbox.sizeHint().width() + 12
+        checkbox.click()
+        assert viewer.selected_pdf_pages() == [1]
+        assert viewer._pdf_page == 0
         assert viewer.pdf_thumbnail_bar.horizontalScrollBar().maximum() == 0
         assert viewer.pdf_thumbnail_bar.toolTip() == ""
 
@@ -76,6 +105,7 @@ def test_fullscreen_pdf_page_thumbnails_are_pdf_only_and_follow_navigation(tmp_p
         application.processEvents()
         assert viewer._pdf_page == 2
         assert viewer.pdf_thumbnail_bar.currentRow() == 2
+        assert viewer.selected_pdf_pages() == [1]
         assert third_page.toolTip() == ""
 
         fourth_page = viewer.pdf_thumbnail_bar.item(3)
@@ -86,14 +116,26 @@ def test_fullscreen_pdf_page_thumbnails_are_pdf_only_and_follow_navigation(tmp_p
         )
         assert viewer._pdf_page == 3
         assert viewer.pdf_thumbnail_bar.currentRow() == 3
+        assert viewer.selected_pdf_pages() == [1]
         assert [
             viewer.pdf_thumbnail_bar.item(page).sizeHint()
             for page in range(viewer.pdf_thumbnail_bar.count())
         ] == initial_hints
 
+        for page in (0, 1, 2, 0, 3, 1):
+            item = viewer.pdf_thumbnail_bar.item(page)
+            QTest.mouseClick(
+                viewer.pdf_thumbnail_bar.viewport(),
+                Qt.MouseButton.LeftButton,
+                pos=viewer.pdf_thumbnail_bar.visualItemRect(item).center(),
+            )
+            application.processEvents()
+            assert viewer._pdf_page == page
+            assert viewer.pdf_thumbnail_bar.currentRow() == page
+
         viewer._change_pdf_page(-1)
-        assert viewer._pdf_page == 2
-        assert viewer.pdf_thumbnail_bar.currentRow() == 2
+        assert viewer._pdf_page == 0
+        assert viewer.pdf_thumbnail_bar.currentRow() == 0
         viewer._leave_fullscreen()
         assert viewer.pdf_thumbnail_bar.isHidden()
     finally:
@@ -302,15 +344,36 @@ def test_pdf_fullscreen_navigation_hint_only_shows_for_pdfs_and_reappears(tmp_pa
         application.processEvents()
 
 
-def test_pdf_fullscreen_suppresses_native_image_tooltips_but_images_keep_them(tmp_path: Path):
+def test_pdf_fullscreen_suppresses_native_image_tooltips_but_images_keep_them(
+    tmp_path: Path, monkeypatch
+):
     application, viewer = _viewer(tmp_path)
     pdf_path = tmp_path / "tooltip-pages.pdf"
     _write_pdf(pdf_path, [QSizeF(200, 400)] * 2)
     try:
         _open_pdf(viewer, pdf_path)
         viewer._enter_fullscreen()
+        assert PDF_FULLSCREEN_NAVIGATION_HINT_DURATION == 8000
+        assert viewer.pdf_fullscreen_navigation_hint.isVisible()
         tooltip_event = QEvent(QEvent.Type.ToolTip)
         assert viewer.eventFilter(viewer.image_label, tooltip_event) is True
+        assert viewer.pdf_fullscreen_navigation_hint_timer.isActive()
+        shown_tooltips = []
+        monkeypatch.setattr(
+            QToolTip,
+            "showText",
+            lambda *args: shown_tooltips.append(args),
+        )
+        shown_hints = []
+        monkeypatch.setattr(
+            viewer,
+            "_show_pdf_fullscreen_navigation_hint",
+            lambda: shown_hints.append(True),
+        )
+        QTest.mouseMove(viewer.image_label, QPoint(1, 1))
+        application.processEvents()
+        assert shown_tooltips == []
+        assert shown_hints == []
         assert viewer.pdf_fullscreen_navigation_hint_timer.isActive()
         viewer._leave_fullscreen()
 
@@ -491,18 +554,27 @@ def test_pdf_render_size_has_a_screen_resolution_limit(tmp_path: Path):
     application.processEvents()
 
 
-def test_pdf_display_target_uses_a_minimum_resolution_for_invalid_viewports():
-    assert pdf_display_target_size(QSize()) == QSize(
-        PDF_DISPLAY_MIN_RENDER_EDGE,
-        PDF_DISPLAY_MIN_RENDER_EDGE,
-    )
-    assert pdf_display_target_size(QSize(1, 1)) == QSize(
-        PDF_DISPLAY_MIN_RENDER_EDGE,
-        PDF_DISPLAY_MIN_RENDER_EDGE,
-    )
+def test_pdf_display_target_uses_the_actual_viewport_size():
+    assert pdf_display_target_size(QSize()) == QSize(1, 1)
+    assert pdf_display_target_size(QSize(1, 1)) == QSize(1, 1)
 
 
-def test_pdf_first_display_render_is_never_thumbnail_sized(tmp_path: Path):
+def test_pdf_display_target_accounts_for_hidpi_physical_pixels():
+    target = pdf_display_target_size(QSize(1200, 1700), device_pixel_ratio=1.5)
+
+    assert target == QSize(1800, 2550)
+
+
+def test_pdf_display_target_grows_for_zoom_and_a_larger_viewport():
+    normal = pdf_display_target_size(QSize(900, 600), device_pixel_ratio=1.0)
+    fullscreen = pdf_display_target_size(QSize(1600, 1000), device_pixel_ratio=1.0)
+    zoomed = pdf_display_target_size(QSize(1600, 1000), zoom_factor=2.0)
+
+    assert fullscreen.width() > normal.width()
+    assert zoomed.width() > fullscreen.width()
+
+
+def test_pdf_main_display_render_follows_the_visible_page_size(tmp_path: Path):
     application = QApplication.instance() or QApplication([])
     pdf_path = tmp_path / "display-quality.pdf"
     _write_pdf(pdf_path, [QSizeF(200, 400)])
@@ -512,11 +584,11 @@ def test_pdf_first_display_render_is_never_thumbnail_sized(tmp_path: Path):
     display_size = pdf_page_render_size(
         document,
         0,
-        pdf_display_target_size(QSize()),
+        pdf_display_target_size(QSize(500, 400)),
     )
 
     assert thumbnail_size == QSize(60, 120)
-    assert display_size == QSize(900, 1800)
+    assert display_size == QSize(200, 400)
     assert display_size.height() > thumbnail_size.height()
     application.processEvents()
 
@@ -710,7 +782,7 @@ def test_failed_pdf_page_render_keeps_the_visible_page_index(tmp_path: Path, mon
     application.processEvents()
 
 
-def test_pdf_quality_refresh_rerenders_only_when_the_current_render_is_too_small(
+def test_pdf_quality_refresh_rerenders_when_target_render_size_changes(
     tmp_path: Path, monkeypatch
 ):
     application, viewer = _viewer(tmp_path)
@@ -718,6 +790,16 @@ def test_pdf_quality_refresh_rerenders_only_when_the_current_render_is_too_small
     _write_pdf(pdf_path, [QSizeF(200, 400)])
     _open_pdf(viewer, pdf_path)
     rendered_pages: list[tuple[int | None, bool]] = []
+    render_scale = viewer._zoom_factor if viewer._zoom_mode == "manual" else 1.0
+    required_size = pdf_page_render_size(
+        viewer._pdf_document,
+        viewer._pdf_page,
+        pdf_display_target_size(
+            viewer.image_scroll_area.viewport().size(),
+            render_scale,
+            viewer.image_scroll_area.viewport().devicePixelRatioF(),
+        ),
+    )
 
     monkeypatch.setattr(
         viewer,
@@ -726,12 +808,20 @@ def test_pdf_quality_refresh_rerenders_only_when_the_current_render_is_too_small
             (page, schedule_quality_refresh)
         ),
     )
-    viewer._pdf_render_size = QSize(60, 120)
+    viewer._pdf_render_size = QSize(
+        max(1, required_size.width() // 2),
+        max(1, required_size.height() // 2),
+    )
     viewer._refresh_pdf_render_quality()
     assert rendered_pages == [(0, False)]
 
     rendered_pages.clear()
-    viewer._pdf_render_size = QSize(3600, 3600)
+    viewer._pdf_render_size = QSize(required_size.width() * 2, required_size.height() * 2)
+    viewer._refresh_pdf_render_quality()
+    assert rendered_pages == [(0, False)]
+
+    rendered_pages.clear()
+    viewer._pdf_render_size = required_size
     viewer._refresh_pdf_render_quality()
     assert rendered_pages == []
     viewer.window.close()
@@ -815,11 +905,87 @@ def test_fullscreen_state_is_stable_for_a_pdf(tmp_path: Path):
         viewer._enter_fullscreen()
         application.processEvents()
         assert viewer.thumbnail_panel.isHidden()
-        assert not viewer.pdf_page_navigation.isHidden()
+        assert viewer.pdf_page_navigation.isHidden()
+        assert viewer.preview_panel.layout().indexOf(viewer.pdf_page_navigation) == -1
+        assert viewer.preview_content.height() == viewer.preview_panel.contentsRect().height()
+        assert viewer.pdf_print_button.isVisible()
+        assert viewer.pdf_print_bar.height() == viewer.pdf_print_button.sizeHint().height() + 11
+        assert viewer.pdf_thumbnail_content.geometry().bottom() < viewer.pdf_print_bar.geometry().top()
+        assert viewer.pdf_print_bar.rect().contains(viewer.pdf_print_button.geometry())
+        QTest.mouseMove(
+            viewer.image_scroll_area.viewport(),
+            QPoint(
+                viewer.image_scroll_area.viewport().width() // 2,
+                viewer.image_scroll_area.viewport().height() - 1,
+            ),
+        )
+        application.processEvents()
+        assert viewer.pdf_page_navigation.isHidden()
+        assert viewer.status_bar.isHidden()
         viewer._change_pdf_page(1)
         assert viewer.pdf_page_label.text() == "Seite 2 von 2"
         viewer._leave_fullscreen()
         application.processEvents()
         assert not viewer.thumbnail_panel.isHidden()
+        assert viewer.preview_panel.layout().indexOf(viewer.pdf_page_navigation) >= 0
+        assert not viewer.pdf_page_navigation.isHidden()
+    viewer.window.close()
+    application.processEvents()
+
+
+def test_pdf_print_choice_passes_current_or_all_pages(tmp_path: Path, monkeypatch):
+    application, viewer = _viewer(tmp_path)
+    pdf_path = tmp_path / "print-pages.pdf"
+    _write_pdf(pdf_path, [QSizeF(200, 400)] * 4)
+    _open_pdf(viewer, pdf_path)
+    viewer._render_pdf_page(2)
+    printed: list[list[int]] = []
+    monkeypatch.setattr(viewer, "_print_pdf_pages", lambda pages: printed.append(pages))
+
+    def choose(label: str) -> None:
+        def click_button():
+            dialog = application.activeModalWidget()
+            for button in dialog.buttons():
+                if button.text() == label:
+                    button.click()
+                    return
+        QTimer.singleShot(0, click_button)
+        viewer._choose_pdf_pages_to_print()
+
+    choose("Aktuelle Seite")
+    choose("Alle Seiten")
+    viewer._pdf_print_selection = {3, 1}
+    choose("Auswahl")
+    choose("Abbrechen")
+
+    assert printed == [[2], [0, 1, 2, 3], [1, 3]]
+    assert viewer._pdf_page == 2
+    viewer.window.close()
+    application.processEvents()
+
+
+def test_pdf_print_selection_option_tracks_checkbox_state(tmp_path: Path):
+    application, viewer = _viewer(tmp_path)
+    pdf_path = tmp_path / "selection-option.pdf"
+    _write_pdf(pdf_path, [QSizeF(200, 400)] * 2)
+    _open_pdf(viewer, pdf_path)
+    viewer._enter_fullscreen()
+    application.processEvents()
+    enabled_states: list[bool] = []
+
+    def inspect_and_cancel():
+        dialog = application.activeModalWidget()
+        selection = next(button for button in dialog.buttons() if button.text() == "Auswahl")
+        enabled_states.append(selection.isEnabled())
+        next(button for button in dialog.buttons() if button.text() == "Abbrechen").click()
+
+    QTimer.singleShot(0, inspect_and_cancel)
+    viewer._choose_pdf_pages_to_print()
+    viewer._pdf_print_checkboxes[1].click()
+    QTimer.singleShot(0, inspect_and_cancel)
+    viewer._choose_pdf_pages_to_print()
+
+    assert enabled_states == [False, True]
+    assert viewer._pdf_page == 0
     viewer.window.close()
     application.processEvents()

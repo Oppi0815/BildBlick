@@ -191,10 +191,69 @@ def test_system_directory_tree_selection_uses_palette_for_active_and_inactive_ro
     assert "background-color: palette(highlight); color: palette(highlighted-text);" in stylesheet
 
 
+def test_system_top_thumbnail_strip_has_its_own_palette_surface_and_divider(tmp_path):
+    application, viewer = _viewer(tmp_path)
+    try:
+        stylesheet = color_scheme_stylesheet(None)
+        selector = 'QWidget#thumbnailPanel[thumbnailPosition="top"]'
+        assert selector in stylesheet
+        assert "background-color: palette(alternate-base);" in stylesheet
+        assert "border-bottom: 1px solid palette(mid);" in stylesheet
+        assert f"{selector} QListWidget#thumbnailList" in stylesheet
+        assert "background-color: transparent;" in stylesheet
+
+        viewer._color_scheme = "System"
+        viewer._apply_color_scheme()
+        viewer._set_thumbnail_position("top")
+        assert viewer.thumbnail_panel.property("thumbnailPosition") == "top"
+    finally:
+        viewer.window.close()
+        application.processEvents()
+
+
 def test_explicit_color_schemes_keep_their_existing_directory_tree_selection_colors():
     for scheme in ("Hell", "Dunkel"):
         stylesheet = color_scheme_stylesheet(COLOR_SCHEMES[scheme])
         assert "background-color: palette(highlight); color: palette(highlighted-text);" not in stylesheet
+
+
+def test_explicit_color_schemes_do_not_add_the_system_thumbnail_strip_rule():
+    selector = 'QWidget#thumbnailPanel[thumbnailPosition="top"]'
+    for scheme in ("Hell", "Dunkel"):
+        assert selector not in color_scheme_stylesheet(COLOR_SCHEMES[scheme])
+
+
+def test_bottom_information_button_is_round_accented_and_keeps_its_behavior(tmp_path):
+    application, viewer = _viewer(tmp_path)
+    try:
+        button = viewer.information_toggle_button
+        assert button.parent() is viewer.bottom_control_bar
+        assert button.width() == button.height() == 24
+        assert button.toolTip() == "Bildinformationen (I)"
+
+        system_stylesheet = color_scheme_stylesheet(None)
+        selector = "QWidget#bottomControlBar QToolButton#informationToggleButton"
+        assert selector in system_stylesheet
+        assert "border-radius: 12px; padding: 0;" in system_stylesheet
+        assert "background: #2878c8; color: #ffffff;" in system_stylesheet
+
+        for scheme in ("Hell", "Dunkel"):
+            colors = COLOR_SCHEMES[scheme]
+            stylesheet = color_scheme_stylesheet(colors)
+            assert f"background-color: {colors['selection']}; color: {colors['selection_text']};" in stylesheet
+
+        assert not viewer.information_panel.isVisible()
+        QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+        application.processEvents()
+        assert viewer.information_panel.isVisible()
+        assert button.isChecked()
+        QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+        application.processEvents()
+        assert not viewer.information_panel.isVisible()
+        assert not button.isChecked()
+    finally:
+        viewer.window.close()
+        application.processEvents()
 
 
 def test_default_main_proportions_prioritize_the_image_without_fixing_panels(tmp_path):
@@ -278,6 +337,27 @@ def test_bottom_control_bar_statuses_control_visibility_and_slider(tmp_path):
         viewer.window.resize(900, 500)
         viewer._update_bottom_control_bar_layout()
         assert viewer.thumbnail_size_slider.isVisible()
+    finally:
+        viewer.window.close()
+        application.processEvents()
+
+
+def test_repeated_ready_status_does_not_reshow_an_auto_hidden_bar(tmp_path):
+    application, viewer = _viewer(tmp_path)
+    try:
+        viewer.set_status("busy")
+        viewer.set_status("ready")
+        viewer.bottom_control_bar_start_timer.stop()
+        viewer.bottom_control_bar_start_timer.timeout.emit()
+        viewer.bottom_control_bar_hide_timer.stop()
+        viewer.bottom_control_bar_hide_timer.timeout.emit()
+        assert viewer.status_bar.isHidden()
+
+        viewer.set_status("ready")
+
+        assert viewer.status_bar.isHidden()
+        assert not viewer.bottom_control_bar_start_timer.isActive()
+        assert not viewer.bottom_control_bar_hide_timer.isActive()
     finally:
         viewer.window.close()
         application.processEvents()

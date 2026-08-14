@@ -2,6 +2,28 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.20.0
+
+### Oberfläche und Bedienung
+
+- Hauptoberfläche, Menüstruktur, Verzeichnisbereich und Informations-/EXIF-Panel
+  wurden modernisiert; Vorschaubilder lassen sich flexibel positionieren und
+  Schnellschalter halten die Ansicht synchron.
+- Die untere Steuerleiste verfügt über eine Statuslogik mit Auto-Hide; der
+  Info-Button ist als runder, kontrastreicher Button gestaltet.
+- System-Theme-Kontrast, Slider und Auswahlflächen wurden korrigiert.
+
+### PDF
+
+- PDF-Vollbild bietet eine linke Seitenvorschau, Mausklick- sowie `↑`/`↓`-
+  Navigation und einen kurz eingeblendeten Hinweis.
+- Bedarfsgerechtes Rendering sowie HiDPI-/DPR-Korrekturen sorgen für eine
+  schärfere Darstellung; Zucken durch Auto-Hide- und Render-Schleifen wurde
+  behoben.
+- PDF-Druck unterstützt aktuelle Seite, alle Seiten und eine Auswahl über eine
+  separate Checkboxspalte; der native `QPrintDialog` ersetzt die WYSIWYG-
+  Vorschau.
+
 ## 1.19.3
 
 ### PDF-Vollbild

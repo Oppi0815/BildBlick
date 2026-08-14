@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from time import perf_counter
 from io import BytesIO
 from datetime import datetime
 from dataclasses import dataclass
@@ -130,15 +131,17 @@ from pdf_support import (
     PDF_EXTENSIONS,
     pdf_display_target_size,
     pdf_page_render_size,
+    pdf_render_size_matches,
     load_pdf,
     render_pdf_page,
+    render_pdf_page_for_printer,
     render_pdf_page_with_fallback,
 )
 from i18n import LANGUAGES, LanguageManager, t
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.19.3"
+APP_VERSION = "1.20.0"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 LOGGER = logging.getLogger(__name__)
 
@@ -560,6 +563,17 @@ QWidget#fullscreenPdfThumbnailBusy {
     background: palette(window);
 }
 QWidget#fullscreenPdfThumbnailBusy QLabel { color: palette(text); }
+QWidget#fullscreenPdfPrintBar {
+    border-top: 1px solid palette(mid); padding: 6px;
+    background: #242424;
+}
+QWidget#fullscreenPdfPrintBar QPushButton {
+    color: #f8f8f8; background: #3a3a3a; border: 1px solid #777;
+    border-radius: 4px; min-height: 28px; padding: 3px 8px;
+}
+QWidget#fullscreenPdfPrintBar QPushButton:hover {
+    color: white; background: #555; border-color: #ddd;
+}
 QLabel#pdfFullscreenNavigationHint {
     border-radius: 7px; padding: 7px 11px; font-size: 14px; font-weight: 600;
 }
@@ -587,13 +601,16 @@ QWidget#bottomControlBar QLabel#fileNameLabel {
     font-size: 14px; padding: 0 12px;
 }
 QWidget#bottomControlBar QToolButton#informationToggleButton {
-    min-height: 30px; max-height: 30px;
-    min-width: 30px; max-width: 30px;
-    border-radius: 6px;
-    font-size: 17px; font-weight: 700;
+    border: 1px solid transparent; border-radius: 12px; padding: 0;
+    background: #2878c8; color: #ffffff;
+    font-size: 15px; font-weight: 700;
+}
+QWidget#bottomControlBar QToolButton#informationToggleButton:hover {
+    border: 1px solid #ffffff;
 }
 QWidget#bottomControlBar QToolButton#informationToggleButton:checked {
-    background: palette(alternate-base); border-color: palette(highlight);
+    background: #2878c8; color: #ffffff;
+    border: 1px solid #ffffff;
 }
 QWidget#bottomControlBar QWidget#bottomBarSeparator {
     background: palette(mid); max-width: 1px;
@@ -642,6 +659,13 @@ QWidget#centralwidget QTreeView::item:selected,
 QWidget#centralwidget QTreeView::item:selected:active,
 QWidget#centralwidget QTreeView::item:selected:!active {
     background-color: palette(highlight); color: palette(highlighted-text);
+}
+QWidget#thumbnailPanel[thumbnailPosition="top"] {
+    background-color: palette(alternate-base);
+    border-bottom: 1px solid palette(mid);
+}
+QWidget#thumbnailPanel[thumbnailPosition="top"] QListWidget#thumbnailList {
+    background-color: transparent;
 }
 """
     branch_variant = "dark" if QColor(colors["text"]).lightness() < 128 else "light"
@@ -713,6 +737,14 @@ QToolButton:pressed {{
     background-color: {colors['selection']}; color: {colors['selection_text']};
 }}
 QToolButton:disabled {{ color: {colors['muted']}; }}
+QWidget#bottomControlBar QToolButton#informationToggleButton,
+QWidget#bottomControlBar QToolButton#informationToggleButton:checked {{
+    background-color: {colors['selection']}; color: {colors['selection_text']};
+}}
+QWidget#bottomControlBar QToolButton#informationToggleButton:hover,
+QWidget#bottomControlBar QToolButton#informationToggleButton:checked {{
+    border-color: {colors['selection_text']};
+}}
 QWidget#informationPanel {{ background-color: {colors['panel']}; color: {colors['text']}; }}
 QWidget#informationPanel QScrollArea {{ background-color: {colors['panel']}; border: none; }}
 QWidget#informationPanel QLabel#informationPanelTitle {{ font-weight: 600; }}
@@ -3087,12 +3119,12 @@ class ImageViewer(QObject):
         layout.addWidget(self.next_pdf_page_button)
         layout.addStretch(1)
         self.pdf_page_navigation.hide()
+        self._pdf_page_navigation_layout_index: int | None = None
 
     def _install_fullscreen_pdf_thumbnail_bar(self) -> None:
         """Create the PDF-only page navigator shown beside a fullscreen page."""
         self.pdf_thumbnail_panel = QWidget(self.preview_content)
         self.pdf_thumbnail_panel.setObjectName("fullscreenPdfThumbnailPanel")
-        self.pdf_thumbnail_panel.setFixedWidth(174)
         thumbnail_layout = QVBoxLayout(self.pdf_thumbnail_panel)
         thumbnail_layout.setContentsMargins(0, 0, 0, 0)
         thumbnail_layout.setSpacing(0)
@@ -3114,13 +3146,41 @@ class ImageViewer(QObject):
             QAbstractItemView.SelectionMode.SingleSelection
         )
         self.pdf_thumbnail_bar.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.pdf_thumbnail_content = QWidget(self.pdf_thumbnail_panel)
+        pdf_thumbnail_content_layout = QHBoxLayout(self.pdf_thumbnail_content)
+        pdf_thumbnail_content_layout.setContentsMargins(0, 0, 0, 0)
+        pdf_thumbnail_content_layout.setSpacing(0)
+        self.pdf_print_checkbox_column = QWidget(self.pdf_thumbnail_content)
+        self.pdf_print_checkbox_column.setObjectName("pdfPrintCheckboxColumn")
+        checkbox_probe = QCheckBox(self.pdf_print_checkbox_column)
+        self._pdf_print_checkbox_column_width = max(
+            28, checkbox_probe.sizeHint().width() + 12
+        )
+        checkbox_probe.deleteLater()
+        self.pdf_print_checkbox_column.setFixedWidth(
+            self._pdf_print_checkbox_column_width
+        )
+        self.pdf_thumbnail_panel.setFixedWidth(
+            174 + self._pdf_print_checkbox_column_width
+        )
+        self.pdf_thumbnail_bar.setParent(self.pdf_thumbnail_content)
+        pdf_thumbnail_content_layout.addWidget(self.pdf_print_checkbox_column)
+        pdf_thumbnail_content_layout.addWidget(self.pdf_thumbnail_bar, 1)
         # Navigate on press, not release: the first click must never be only a
         # selection when the bar is still receiving its lazy-render updates.
         self.pdf_thumbnail_bar.itemPressed.connect(self._select_pdf_thumbnail_page)
         self.pdf_thumbnail_bar.verticalScrollBar().valueChanged.connect(
             lambda _value: self._schedule_visible_pdf_thumbnails()
         )
-        thumbnail_layout.addWidget(self.pdf_thumbnail_bar, 1)
+        self.pdf_thumbnail_bar.verticalScrollBar().valueChanged.connect(
+            lambda _value: self._update_pdf_print_checkbox_positions()
+        )
+        self.pdf_thumbnail_bar.verticalScrollBar().rangeChanged.connect(
+            lambda _minimum, _maximum: self._update_pdf_print_checkbox_positions()
+        )
+        self.pdf_thumbnail_viewport = self.pdf_thumbnail_bar.viewport()
+        self.pdf_thumbnail_viewport.installEventFilter(self)
+        thumbnail_layout.addWidget(self.pdf_thumbnail_content, 1)
         self.pdf_thumbnail_busy = QWidget(self.pdf_thumbnail_panel)
         self.pdf_thumbnail_busy.setObjectName("fullscreenPdfThumbnailBusy")
         busy_layout = QHBoxLayout(self.pdf_thumbnail_busy)
@@ -3133,6 +3193,18 @@ class ImageViewer(QObject):
         busy_layout.addWidget(self.pdf_thumbnail_busy_label, 1)
         thumbnail_layout.addWidget(self.pdf_thumbnail_busy)
         self.pdf_thumbnail_busy.hide()
+        self.pdf_print_bar = QWidget(self.pdf_thumbnail_panel)
+        self.pdf_print_bar.setObjectName("fullscreenPdfPrintBar")
+        pdf_print_layout = QVBoxLayout(self.pdf_print_bar)
+        pdf_print_layout.setContentsMargins(6, 5, 6, 6)
+        self.pdf_print_button = QPushButton(t("Drucken …"), self.pdf_print_bar)
+        self.pdf_print_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.pdf_print_button.clicked.connect(self._choose_pdf_pages_to_print)
+        pdf_print_layout.addWidget(self.pdf_print_button)
+        self.pdf_print_bar.setFixedHeight(
+            self.pdf_print_button.sizeHint().height() + 11
+        )
+        thumbnail_layout.addWidget(self.pdf_print_bar)
         self._pdf_busy_frames = ("◷", "◴", "◶", "◵")
         self._pdf_busy_frame = 0
         self._pdf_busy_timer = QTimer(self.pdf_thumbnail_panel)
@@ -3146,6 +3218,41 @@ class ImageViewer(QObject):
         self._pdf_thumbnail_render_scheduled = False
         self._pdf_thumbnail_document = None
         self._pdf_thumbnail_suspended = False
+        self._pdf_print_selection: set[int] = set()
+        self._pdf_print_checkboxes: dict[int, QCheckBox] = {}
+
+    def _update_pdf_print_footer_height(self) -> None:
+        margins = self.pdf_print_bar.layout().contentsMargins()
+        self.pdf_print_bar.setFixedHeight(
+            self.pdf_print_button.sizeHint().height()
+            + margins.top()
+            + margins.bottom()
+        )
+
+    def _detach_pdf_page_navigation(self) -> None:
+        layout = self.preview_panel.layout()
+        if not isinstance(layout, QVBoxLayout):
+            return
+        index = layout.indexOf(self.pdf_page_navigation)
+        if index >= 0:
+            self._pdf_page_navigation_layout_index = index
+            self.pdf_page_navigation.hide()
+            layout.removeWidget(self.pdf_page_navigation)
+            self.pdf_page_navigation.setAttribute(
+                Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
+            )
+
+    def _restore_pdf_page_navigation_to_layout(self) -> None:
+        layout = self.preview_panel.layout()
+        if not isinstance(layout, QVBoxLayout):
+            return
+        if layout.indexOf(self.pdf_page_navigation) < 0:
+            index = self._pdf_page_navigation_layout_index
+            layout.insertWidget(index if index is not None else layout.count(), self.pdf_page_navigation)
+        self.pdf_page_navigation.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents, False
+        )
+        self._pdf_page_navigation_layout_index = None
 
     def _reset_pdf_thumbnails(self) -> None:
         self._pdf_thumbnail_cache.clear()
@@ -3153,6 +3260,10 @@ class ImageViewer(QObject):
         self._pdf_thumbnail_render_scheduled = False
         self._pdf_thumbnail_document = None
         self._pdf_thumbnail_suspended = False
+        self._pdf_print_selection.clear()
+        for checkbox in self._pdf_print_checkboxes.values():
+            checkbox.deleteLater()
+        self._pdf_print_checkboxes.clear()
         self.pdf_thumbnail_bar.clear()
 
     def _show_fullscreen_pdf_thumbnails(self) -> None:
@@ -3175,13 +3286,26 @@ class ImageViewer(QObject):
                 item.setSizeHint(QSize(140, 212))
                 item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter)
                 self.pdf_thumbnail_bar.addItem(item)
+                checkbox = QCheckBox(self.pdf_print_checkbox_column)
+                checkbox.setObjectName("pdfPrintPageCheckbox")
+                checkbox.setAccessibleName(
+                    t("Seite {page}").format(page=page + 1)
+                )
+                checkbox.toggled.connect(
+                    lambda checked, page_index=page: self._toggle_pdf_print_page(
+                        page_index, checked
+                    )
+                )
+                self._pdf_print_checkboxes[page] = checkbox
         if self._pdf_thumbnail_document is None and self.current_image is not None:
             thumbnail_result = load_pdf(self.current_image)
             self._pdf_thumbnail_document = thumbnail_result.document
         self.pdf_thumbnail_bar.show()
         self.pdf_thumbnail_panel.show()
+        self._update_pdf_print_footer_height()
         self._sync_pdf_thumbnail_selection()
         self._refresh_pdf_thumbnail_text()
+        QTimer.singleShot(0, self._update_pdf_print_checkbox_positions)
         self._schedule_visible_pdf_thumbnails()
 
     def _hide_fullscreen_pdf_thumbnails(self) -> None:
@@ -3214,6 +3338,124 @@ class ImageViewer(QObject):
             self._pause_pdf_thumbnail_rendering()
             self._render_pdf_page(page)
 
+    def _toggle_pdf_print_page(self, page: int, checked: bool) -> None:
+        if checked:
+            self._pdf_print_selection.add(page)
+        else:
+            self._pdf_print_selection.discard(page)
+
+    def selected_pdf_pages(self) -> list[int]:
+        return sorted(self._pdf_print_selection)
+
+    def _update_pdf_print_checkbox_positions(self) -> None:
+        if not hasattr(self, "_pdf_print_checkboxes"):
+            return
+        try:
+            viewport = self.pdf_thumbnail_viewport
+            viewport_rect = viewport.rect()
+        except RuntimeError:
+            return
+        for page, checkbox in self._pdf_print_checkboxes.items():
+            item = self.pdf_thumbnail_bar.item(page)
+            if item is None:
+                checkbox.hide()
+                continue
+            item_rect = self.pdf_thumbnail_bar.visualItemRect(item)
+            visible = item_rect.intersects(viewport_rect)
+            if visible:
+                mapped = self.pdf_print_checkbox_column.mapFromGlobal(
+                    viewport.mapToGlobal(item_rect.topLeft())
+                )
+                checkbox.move(
+                    max(0, (self._pdf_print_checkbox_column_width - checkbox.sizeHint().width()) // 2),
+                    mapped.y() + max(0, (item_rect.height() - checkbox.sizeHint().height()) // 2),
+                )
+                checkbox.show()
+                checkbox.raise_()
+            else:
+                checkbox.hide()
+
+    def _choose_pdf_pages_to_print(self) -> None:
+        document = self._pdf_document
+        if document is None:
+            return
+        dialog = QMessageBox(self.window)
+        dialog.setObjectName("pdfPrintChoiceDialog")
+        dialog.setWindowTitle(t("PDF-Seiten drucken"))
+        dialog.setText(t("Was möchten Sie drucken?"))
+        dialog.setStyleSheet(
+            "QMessageBox#pdfPrintChoiceDialog { background: #f4f4f4; color: #171717; }"
+            "QMessageBox#pdfPrintChoiceDialog QLabel { color: #171717; background: transparent; }"
+            "QMessageBox#pdfPrintChoiceDialog QPushButton { color: #171717; background: white; border: 1px solid #666; min-width: 105px; padding: 6px 10px; }"
+            "QMessageBox#pdfPrintChoiceDialog QPushButton:hover, QMessageBox#pdfPrintChoiceDialog QPushButton:focus { color: white; background: #245a9b; border-color: #163e6d; }"
+        )
+        current_button = dialog.addButton(
+            t("Aktuelle Seite"), QMessageBox.ButtonRole.AcceptRole
+        )
+        all_button = dialog.addButton(
+            t("Alle Seiten"), QMessageBox.ButtonRole.ActionRole
+        )
+        selection_button = dialog.addButton(
+            t("Auswahl"), QMessageBox.ButtonRole.ActionRole
+        )
+        selection_button.setEnabled(bool(self._pdf_print_selection))
+        dialog.addButton(t("Abbrechen"), QMessageBox.ButtonRole.RejectRole)
+        dialog.exec()
+        if dialog.clickedButton() is current_button:
+            pages = [self._pdf_page]
+        elif dialog.clickedButton() is all_button:
+            pages = list(range(document.pageCount()))
+        elif dialog.clickedButton() is selection_button:
+            pages = self.selected_pdf_pages()
+        else:
+            return
+        self._print_pdf_pages(pages)
+
+    def _print_pdf_pages(self, pages: list[int]) -> None:
+        document = self._pdf_document
+        if document is None:
+            return
+        pages = sorted({page for page in pages if 0 <= page < document.pageCount()})
+        if not pages:
+            return
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        print_dialog = QPrintDialog(printer)
+        print_dialog.setWindowTitle(t("PDF-Seiten drucken"))
+        print_dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        if run_without_application_stylesheet(print_dialog.exec) != QDialog.DialogCode.Accepted:
+            return
+        self.set_status(STATUS_BUSY, "Bitte warten …")
+        painter = QPainter()
+        try:
+            if not painter.begin(printer):
+                raise RuntimeError(t("Der Druckauftrag konnte nicht gestartet werden."))
+            for output_index, page in enumerate(pages):
+                if output_index and not printer.newPage():
+                    raise RuntimeError(t("Eine neue Druckseite konnte nicht erzeugt werden."))
+                printable_size = painter.viewport().size()
+                image = render_pdf_page_for_printer(document, page, printable_size)
+                if image.isNull():
+                    raise RuntimeError(t("Die PDF-Seite konnte nicht gerendert werden"))
+                target = image.size().scaled(
+                    printable_size, Qt.AspectRatioMode.KeepAspectRatio
+                )
+                target_rect = QRectF(
+                    (printable_size.width() - target.width()) / 2,
+                    (printable_size.height() - target.height()) / 2,
+                    target.width(), target.height(),
+                )
+                painter.drawImage(target_rect, image)
+        except Exception as error:
+            QMessageBox.critical(
+                self.window,
+                t("Drucken fehlgeschlagen"),
+                t("Druckfehler: {detail}").format(detail=str(error)),
+            )
+        finally:
+            if painter.isActive():
+                painter.end()
+            self.set_status(STATUS_READY)
+
     def _pause_pdf_thumbnail_rendering(self) -> None:
         """Give an explicit page selection priority over background previews."""
         self._pdf_thumbnail_suspended = True
@@ -3244,7 +3486,13 @@ class ImageViewer(QObject):
         for page in range(min(page_count, self.pdf_thumbnail_bar.count())):
             item = self.pdf_thumbnail_bar.item(page)
             item.setText(t("Seite {page}").format(page=page + 1))
+            checkbox = self._pdf_print_checkboxes.get(page)
+            if checkbox is not None:
+                checkbox.setAccessibleName(
+                    t("Seite {page}").format(page=page + 1)
+                )
         self.pdf_thumbnail_busy_label.setText(t("Wird geladen …"))
+        self.pdf_print_button.setText(t("Drucken …"))
 
     def _position_pdf_fullscreen_navigation_hint(self) -> None:
         if not self.pdf_fullscreen_navigation_hint.isVisible():
@@ -3467,7 +3715,7 @@ class ImageViewer(QObject):
         separator.setObjectName("bottomBarSeparator")
         separator.setFixedWidth(1)
         layout.addWidget(separator)
-        self.information_toggle_button.setFixedSize(30, 30)
+        self.information_toggle_button.setFixedSize(24, 24)
         layout.addWidget(self.information_toggle_button)
         self.status_bar.addWidget(bottom_bar, 1)
         self._bottom_control_bar_active = False
@@ -3531,6 +3779,7 @@ class ImageViewer(QObject):
             STATUS_BUSY: "#f59e0b",
             STATUS_ERROR: "#ef4444",
         }
+        previous_state = getattr(self, "_status_state", None)
         self._status_state = state
         self._status_text_source = text or defaults[state]
         self._refresh_status_text()
@@ -3538,11 +3787,22 @@ class ImageViewer(QObject):
             f"color: {colors[state]}; font-size: 18px;"
         )
         self._update_bottom_control_bar_layout()
-        self.bottom_control_bar_hide_timer.stop()
         if getattr(self, "_fullscreen_mode", False):
+            self.bottom_control_bar_hide_timer.stop()
             self.bottom_control_bar_start_timer.stop()
             self.status_bar.hide()
             return
+        if state == STATUS_READY and previous_state == STATUS_READY:
+            if (
+                self.status_bar.isVisible()
+                and not self.bottom_control_bar_start_timer.isActive()
+                and not self.bottom_control_bar_hide_timer.isActive()
+            ):
+                self.bottom_control_bar_start_timer.start(
+                    BOTTOM_CONTROL_BAR_START_DELAY_MS
+                )
+            return
+        self.bottom_control_bar_hide_timer.stop()
         if state == STATUS_READY:
             self._show_bottom_control_bar()
             self.bottom_control_bar_start_timer.start(BOTTOM_CONTROL_BAR_START_DELAY_MS)
@@ -3571,6 +3831,9 @@ class ImageViewer(QObject):
         )
 
     def _update_bottom_control_bar_visibility(self, global_position=None) -> None:
+        if getattr(self, "_fullscreen_mode", False) and self._pdf_document is not None:
+            self._hide_normal_controls_for_pdf_fullscreen()
+            return
         if global_position is None:
             global_position = QCursor.pos()
         local_position = self.window.mapFromGlobal(global_position)
@@ -3627,6 +3890,12 @@ class ImageViewer(QObject):
         else:
             self.thumbnail_panel.setMinimumWidth(0)
             self.thumbnail_panel.setMaximumWidth(16777215)
+        self.thumbnail_panel.setProperty("thumbnailPosition", position)
+        # Dynamic properties are used by the system-theme stylesheet to give
+        # only the upper thumbnail strip its subtle own surface and divider.
+        self.thumbnail_panel.style().unpolish(self.thumbnail_panel)
+        self.thumbnail_panel.style().polish(self.thumbnail_panel)
+        self.thumbnail_panel.update()
         visible = position != "hidden" and not getattr(self, "_fullscreen_mode", False) and not getattr(self, "_pdf_preview_mode", False)
         self.thumbnail_panel.setVisible(visible)
         if hasattr(self, "thumbnail_position_actions"):
@@ -7378,6 +7647,7 @@ class ImageViewer(QObject):
             self._pdf_render_size = QSize()
             self._reset_pdf_thumbnails()
             self._zoom_mode = "fit"
+            self._zoom_factor = 1.0
             self._render_pdf_page()
             return
         if self._pdf_preview_mode:
@@ -7440,8 +7710,10 @@ class ImageViewer(QObject):
         target = pdf_display_target_size(
             viewport,
             render_scale,
+            self.image_scroll_area.viewport().devicePixelRatioF(),
         )
         self._set_pdf_thumbnail_busy(True)
+        render_started = perf_counter()
         try:
             image = render_pdf_page_with_fallback(self._pdf_document, page, target)
         finally:
@@ -7456,11 +7728,32 @@ class ImageViewer(QObject):
         self._pdf_page = page
         self._pdf_link_model.setPage(page)
         self._diagnose_pdf_links()
+        device_pixel_ratio = max(
+            1.0, self.image_scroll_area.viewport().devicePixelRatioF()
+        )
+        # ``render`` returns physical pixels.  Mark them accordingly before
+        # creating the pixmap so Qt exposes the intended logical page size.
+        image.setDevicePixelRatio(device_pixel_ratio)
         self.original_image = image
         self._pdf_render_size = image.size()
         if self._zoom_mode != "manual":
             self._zoom_mode = "fit"
+            self._zoom_factor = 1.0
         self._render_current_image()
+        page_points = self._pdf_document.pagePointSize(page)
+        LOGGER.info(
+            "PDF render: page=%s points=%sx%s zoom=%.3f viewport=%sx%s "
+            "dpr=%.2f target_physical=%sx%s rendered=%sx%s displayed=%sx%s "
+            "time_ms=%.1f",
+            page + 1,
+            round(page_points.width(), 2), round(page_points.height(), 2),
+            self._zoom_factor,
+            viewport.width(), viewport.height(),
+            self.image_scroll_area.viewport().devicePixelRatioF(),
+            target.width(), target.height(), image.width(), image.height(),
+            self.image_label.width(), self.image_label.height(),
+            (perf_counter() - render_started) * 1000,
+        )
         self._set_file_name_text(self.current_image.name)
         self._update_pdf_page_navigation()
         if schedule_quality_refresh:
@@ -7594,16 +7887,12 @@ class ImageViewer(QObject):
             self._pdf_document,
             self._pdf_page,
             pdf_display_target_size(
-                self.image_scroll_area.viewport().size(), render_scale
+                self.image_scroll_area.viewport().size(),
+                render_scale,
+                self.image_scroll_area.viewport().devicePixelRatioF(),
             ),
         )
-        if (
-            required_size.isEmpty()
-            or (
-                self._pdf_render_size.width() >= required_size.width()
-                and self._pdf_render_size.height() >= required_size.height()
-            )
-        ):
+        if pdf_render_size_matches(self._pdf_render_size, required_size):
             return
         self._render_pdf_page(
             self._pdf_page,
@@ -7614,7 +7903,11 @@ class ImageViewer(QObject):
         document = self._pdf_document
         page_count = document.pageCount() if document is not None else 0
         is_pdf = page_count > 0
-        self.pdf_page_navigation.setVisible(is_pdf and page_count > 1)
+        self.pdf_page_navigation.setVisible(
+            is_pdf
+            and page_count > 1
+            and not getattr(self, "_fullscreen_mode", False)
+        )
         self.previous_pdf_page_action.setEnabled(is_pdf and self._pdf_page > 0)
         self.next_pdf_page_action.setEnabled(is_pdf and self._pdf_page + 1 < page_count)
         if not is_pdf:
@@ -8065,6 +8358,21 @@ class ImageViewer(QObject):
         viewport_size = self.image_scroll_area.viewport().size()
         if viewport_size.width() <= 1 or viewport_size.height() <= 1:
             return
+        if self._pdf_document is not None:
+            # The PDF renderer already produced this pixmap at the visible
+            # page size.  Do not send small text through the generic image
+            # downscaler, which would soften its rasterized edges.
+            pixmap = QPixmap.fromImage(self.original_image)
+            logical_size = pixmap.deviceIndependentSize().toSize()
+            if logical_size.isEmpty():
+                logical_size = self.original_image.size()
+            self.image_label.resize(logical_size)
+            self.image_label.setPixmap(pixmap)
+            if self._zoom_mode == "fit":
+                self.image_scroll_area.horizontalScrollBar().setValue(0)
+                self.image_scroll_area.verticalScrollBar().setValue(0)
+            self._update_status_bar()
+            return
         if self._zoom_mode == "fit":
             self._zoom_factor = image_fit_zoom_factor(
                 self.original_image, viewport_size
@@ -8088,7 +8396,11 @@ class ImageViewer(QObject):
         if self.original_image.isNull():
             return
         self._zoom_mode = "fit"
-        self._render_current_image()
+        self._zoom_factor = 1.0
+        if self._pdf_document is not None:
+            self._render_pdf_page(schedule_quality_refresh=False)
+        else:
+            self._render_current_image()
         self._show_zoom_indicator()
 
     def _show_image_at_actual_size(self) -> None:
@@ -8096,7 +8408,10 @@ class ImageViewer(QObject):
             return
         self._zoom_mode = "manual"
         self._zoom_factor = 1.0
-        self._render_current_image()
+        if self._pdf_document is not None:
+            self._render_pdf_page(schedule_quality_refresh=False)
+        else:
+            self._render_current_image()
         self._show_zoom_indicator()
         horizontal_bar = self.image_scroll_area.horizontalScrollBar()
         vertical_bar = self.image_scroll_area.verticalScrollBar()
@@ -8118,7 +8433,10 @@ class ImageViewer(QObject):
         )
         self._zoom_mode = "manual"
         self._zoom_factor = min(MAX_ZOOM, max(MIN_ZOOM, self._zoom_factor * factor))
-        self._render_current_image()
+        if self._pdf_document is not None:
+            self._render_pdf_page(schedule_quality_refresh=False)
+        else:
+            self._render_current_image()
         self._show_zoom_indicator()
         horizontal_bar = self.image_scroll_area.horizontalScrollBar()
         vertical_bar = self.image_scroll_area.verticalScrollBar()
@@ -8165,7 +8483,11 @@ class ImageViewer(QObject):
         self.zoom_indicator.hide()
 
     def _show_fullscreen_tooltip(self, global_position) -> None:
-        if not self._fullscreen_mode or self._fullscreen_tooltip_visible:
+        if (
+            not self._fullscreen_mode
+            or self._pdf_document is not None
+            or self._fullscreen_tooltip_visible
+        ):
             return
         self._fullscreen_tooltip_visible = True
         QToolTip.showText(global_position, FULLSCREEN_TOOLTIP, self.window)
@@ -8230,7 +8552,13 @@ class ImageViewer(QObject):
         self.thumbnail_panel.hide()
         self._show_fullscreen_pdf_thumbnails()
         self._bottom_control_bar_active = False
+        self.bottom_control_bar_hide_timer.stop()
+        self.bottom_control_bar_start_timer.stop()
+        self.bottom_control_bar.hide()
         self.status_bar.hide()
+        if self._pdf_document is not None:
+            self._detach_pdf_page_navigation()
+        self._update_pdf_page_navigation()
         self.window.menuBar().hide()
         self.splitter.handle(1).hide()
         self.right_splitter.handle(1).hide()
@@ -8239,6 +8567,10 @@ class ImageViewer(QObject):
         self.window.setStyleSheet("background-color: black;")
         self.image_label.setStyleSheet("background-color: black;")
         self.window.showFullScreen()
+        # Qt can restore child visibility during the fullscreen transition.
+        # Reassert the PDF-only fullscreen contract after that event cycle.
+        if self._pdf_document is not None:
+            QTimer.singleShot(0, self._hide_normal_controls_for_pdf_fullscreen)
         # The list can be temporarily not visible while the window changes
         # state.  Start the lazy queue again once Qt has processed that change.
         QTimer.singleShot(0, self._schedule_visible_pdf_thumbnails)
@@ -8274,6 +8606,7 @@ class ImageViewer(QObject):
             self._apply_thumbnail_position(save=False)
         self._show_bottom_control_bar()
         self.bottom_control_bar_start_timer.start(BOTTOM_CONTROL_BAR_START_DELAY_MS)
+        self._restore_pdf_page_navigation_to_layout()
         self._update_pdf_page_navigation()
         self.window.menuBar().show()
         if not self._pdf_preview_mode:
@@ -8293,7 +8626,20 @@ class ImageViewer(QObject):
             self.right_splitter.setSizes(self._normal_right_splitter_sizes)
         self._schedule_image_render()
 
+    def _hide_normal_controls_for_pdf_fullscreen(self) -> None:
+        if self._fullscreen_mode and self._pdf_document is not None:
+            self.bottom_control_bar_hide_timer.stop()
+            self.bottom_control_bar_start_timer.stop()
+            self.bottom_control_bar.hide()
+            self.status_bar.hide()
+
     def eventFilter(self, watched, event) -> bool:
+        if (
+            hasattr(self, "pdf_thumbnail_viewport")
+            and watched is self.pdf_thumbnail_viewport
+            and event.type() == QEvent.Type.Resize
+        ):
+            QTimer.singleShot(0, self._update_pdf_print_checkbox_positions)
         # Qt can deliver events for the status bar while the window is still
         # being assembled, before the drag-and-drop widgets exist.
         if not all(
@@ -8434,11 +8780,15 @@ class ImageViewer(QObject):
             getattr(self, "_fullscreen_mode", False)
             and self._pdf_document is not None
             and watched in image_widgets
-            and event.type() == QEvent.Type.ToolTip
         ):
-            # The PDF navigation hint is a dedicated overlay.  Do not let the
-            # normal image widget's tooltip create a second empty/native box.
-            return True
+            # The PDF navigation hint is a dedicated overlay.  Suppress both
+            # native widget tooltips and link-hover tooltips here; otherwise a
+            # MouseMove can still create a second, empty-looking tooltip box.
+            if event.type() == QEvent.Type.ToolTip:
+                QToolTip.hideText()
+                return True
+            if event.type() in (QEvent.Type.Enter, QEvent.Type.MouseMove):
+                QToolTip.hideText()
         if watched in image_widgets and event.type() == QEvent.Type.ContextMenu:
             self._restore_slideshow_cursor()
             self._show_image_context_menu(event.globalPos())
@@ -8447,7 +8797,14 @@ class ImageViewer(QObject):
         if watched in image_widgets and event.type() == QEvent.Type.Leave:
             self.image_label.unsetCursor()
             QToolTip.hideText()
-        elif watched in image_widgets and event.type() == QEvent.Type.MouseMove:
+        elif (
+            watched in image_widgets
+            and event.type() == QEvent.Type.MouseMove
+            and not (
+                getattr(self, "_fullscreen_mode", False)
+                and self._pdf_document is not None
+            )
+        ):
             self._update_pdf_link_hover(event.globalPosition().toPoint())
         if (
             watched is self.image_scroll_area.viewport()
