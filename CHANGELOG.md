@@ -2,6 +2,12 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.20.5
+
+### Wartung
+
+- Wartungsrelease ohne Funktionsänderungen gegenüber 1.20.4.
+
 ## 1.20.4
 
 ### Netzwerk
