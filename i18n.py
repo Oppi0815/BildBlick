@@ -406,6 +406,38 @@ for _code, _words in {
 }.items():
     CATALOGUE[_code].update(_words)
 
+for _code, _words in {
+    "en": {
+        "Netzlaufwerk verbinden …": "Connect network drive …",
+        "Netzlaufwerk verbinden": "Connect network drive",
+        "Der Finder-Dialog konnte nicht geöffnet werden.": (
+            "The Finder dialog could not be opened."
+        ),
+    },
+    "fr": {
+        "Netzlaufwerk verbinden …": "Connecter un lecteur réseau …",
+        "Netzlaufwerk verbinden": "Connecter un lecteur réseau",
+        "Der Finder-Dialog konnte nicht geöffnet werden.": (
+            "Impossible d’ouvrir la boîte de dialogue du Finder."
+        ),
+    },
+    "es": {
+        "Netzlaufwerk verbinden …": "Conectar unidad de red …",
+        "Netzlaufwerk verbinden": "Conectar unidad de red",
+        "Der Finder-Dialog konnte nicht geöffnet werden.": (
+            "No se pudo abrir el cuadro de diálogo del Finder."
+        ),
+    },
+    "uk": {
+        "Netzlaufwerk verbinden …": "Підключити мережевий диск …",
+        "Netzlaufwerk verbinden": "Підключити мережевий диск",
+        "Der Finder-Dialog konnte nicht geöffnet werden.": (
+            "Не вдалося відкрити діалог Finder."
+        ),
+    },
+}.items():
+    CATALOGUE[_code].update(_words)
+
 def language_code(value: str | None) -> str:
     return value if value in LANGUAGES else "de"
 
