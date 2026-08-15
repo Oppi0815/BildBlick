@@ -109,6 +109,8 @@ from PySide6.QtWidgets import (
     QToolButton,
     QToolTip,
     QTreeView,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -143,7 +145,7 @@ from i18n import LANGUAGES, LanguageManager, t
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.20.3"
+APP_VERSION = "1.20.4"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 LOGGER = logging.getLogger(__name__)
 
@@ -177,6 +179,98 @@ def run_without_application_stylesheet(
 ROOT_DIRECTORY = Path("/")
 VOLUMES_DIRECTORY = Path("/Volumes")
 HOME_DIRECTORY = Path.home()
+
+
+def network_mount_roots(
+    platform: str | None = None,
+    uid: int | None = None,
+    username: str | None = None,
+    *,
+    is_dir: Callable[[Path], bool] | None = None,
+) -> tuple[Path, ...]:
+    """Return existing roots where desktop network mounts can appear.
+
+    macOS publishes mounted shares below ``/Volumes``.  Mint's file manager
+    exposes GVFS shares below the per-user FUSE directory; ``/media/$USER``
+    and ``/mnt`` are also watched as conventional administrator-managed mount
+    locations.  Missing roots are deliberately omitted so a temporary GVFS
+    daemon shutdown cannot make the tree watcher fail.
+    """
+    platform = sys.platform if platform is None else platform
+    is_dir = Path.is_dir if is_dir is None else is_dir
+    if platform == "darwin":
+        candidates = (VOLUMES_DIRECTORY,)
+    elif platform.startswith("linux"):
+        uid = os.getuid() if uid is None else uid
+        username = os.environ.get("USER", "") if username is None else username
+        candidates = (
+            Path(f"/run/user/{uid}/gvfs"),
+            Path("/media") / username,
+            Path("/mnt"),
+        )
+    else:
+        candidates = ()
+    return tuple(path for path in candidates if is_dir(path))
+
+
+def network_mount_paths(
+    roots: tuple[Path, ...] | None = None,
+    *,
+    iterdir: Callable[[Path], object] | None = None,
+    mountinfo_text: str | None = None,
+) -> tuple[Path, ...]:
+    """Return only actual network mounts below known mount roots.
+
+    A QFileSystemWatcher also reports unrelated activity at e.g.
+    ``/run/user/$UID``.  The child-directory snapshot is therefore the source
+    of truth for deciding whether a tree rebuild is necessary.
+    """
+    roots = network_mount_roots() if roots is None else roots
+    iterdir = Path.iterdir if iterdir is None else iterdir
+    paths: list[Path] = []
+    network_mounts: set[Path] = set()
+    if sys.platform.startswith("linux"):
+        if mountinfo_text is None:
+            try:
+                mountinfo_text = Path("/proc/self/mountinfo").read_text()
+            except OSError:
+                mountinfo_text = ""
+        network_fstypes = {"cifs", "smb3", "nfs", "nfs4", "fuse.sshfs", "sshfs"}
+        for line in mountinfo_text.splitlines():
+            before, marker, after = line.partition(" - ")
+            fields = before.split()
+            filesystem = after.split()[0] if marker and after else ""
+            if len(fields) >= 5 and filesystem in network_fstypes:
+                network_mounts.add(Path(fields[4].replace("\\040", " ")))
+    for root in roots:
+        if sys.platform.startswith("linux") and root.name != "gvfs":
+            continue
+        try:
+            children = iterdir(root)
+        except OSError:
+            continue
+        try:
+            # Do not stat every child here.  A GVFS entry can require a round
+            # trip to a sleeping network host; its presence is sufficient for
+            # mount-change detection and avoids blocking the GUI thread.
+            paths.extend(child for child in children if not child.name.startswith("."))
+        except OSError:
+            continue
+    paths.extend(network_mounts)
+    return tuple(sorted(set(paths), key=lambda path: str(path)))
+
+
+def network_mount_label(path: Path) -> str:
+    """Provide a short, human-readable label while retaining the real path."""
+    name = path.name
+    host = re.search(r"(?:^|[:,])host=([^,]+)", name)
+    if host:
+        return host.group(1)
+    server = re.search(r"(?:^|,)server=([^,]+)", name)
+    if server:
+        share = re.search(r"(?:^|,)share=([^,]+)", name)
+        return f"{server.group(1)}/{share.group(1)}" if share else server.group(1)
+    return name
 _pictures_location = QStandardPaths.writableLocation(
     QStandardPaths.StandardLocation.PicturesLocation
 )
@@ -3023,6 +3117,7 @@ class ImageViewer(QObject):
         self.right_splitter = self._widget(QSplitter, "rightSplitter")
         self.directory_panel = self.directory_tree.parentWidget()
         self.preview_panel = self.image_scroll_area.parentWidget()
+        self._install_network_navigation()
         self._install_pdf_page_navigation()
         self._install_thumbnail_size_controls()
         self._install_information_panel()
@@ -3240,7 +3335,7 @@ class ImageViewer(QObject):
         self._tree_path_retry_timer.setSingleShot(True)
         self._tree_path_retry_timer.timeout.connect(self._retry_pending_tree_path)
         self._create_directory_model()
-        self._install_volumes_watcher()
+        self._install_network_mount_watcher()
 
         # Initial proportions only; the splitters remain fully user-adjustable.
         self.splitter.setSizes([250, 950])
@@ -7107,6 +7202,146 @@ class ImageViewer(QObject):
         elif self._pdf_preview_mode:
             self._leave_pdf_preview()
 
+    def _install_network_navigation(self) -> None:
+        """Add a compact alias view for desktop-managed network mounts."""
+        self.network_navigation = QWidget(self.directory_panel)
+        navigation_layout = QVBoxLayout(self.network_navigation)
+        navigation_layout.setContentsMargins(0, 0, 0, 0)
+        navigation_layout.setSpacing(4)
+
+        header_row = QWidget(self.network_navigation)
+        header_layout = QHBoxLayout(header_row)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(0)
+        self.network_toggle_button = QToolButton(header_row)
+        self.network_toggle_button.setObjectName("networkToggleButton")
+        self.network_toggle_button.setText(t("Netzwerk"))
+        self.network_toggle_button.setCheckable(True)
+        self.network_toggle_button.setChecked(False)
+        self.network_toggle_button.setArrowType(Qt.ArrowType.RightArrow)
+        self.network_toggle_button.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self.network_toggle_button.setFixedHeight(28)
+        self.network_toggle_button.setMinimumWidth(112)
+        self.network_toggle_button.setStyleSheet(
+            "QToolButton { border: 1px solid palette(mid); border-radius: 3px; "
+            "padding: 1px 7px; }"
+            "QToolButton:hover { background: palette(alternate-base); }"
+        )
+        self.network_toggle_button.toggled.connect(self._set_network_navigation_expanded)
+        header_layout.addWidget(self.network_toggle_button)
+        header_layout.addStretch()
+        navigation_layout.addWidget(header_row)
+
+        self.network_navigation_content = QWidget(self.network_navigation)
+        content_layout = QVBoxLayout(self.network_navigation_content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(2)
+        self.network_tree = QTreeWidget(self.network_navigation_content)
+        self.network_tree.setHeaderHidden(True)
+        self.network_tree.setRootIsDecorated(False)
+        self.network_tree.setIndentation(14)
+        self.network_tree.setMaximumHeight(66)
+        self.network_tree.setStyleSheet(
+            "QTreeWidget { border: 0; }"
+            "QTreeWidget::item { height: 22px; padding: 0 2px; }"
+        )
+        self.network_tree.setObjectName("networkTreeWidget")
+        self.network_tree.itemClicked.connect(self._network_tree_item_clicked)
+        self.network_tree.itemExpanded.connect(self._populate_network_tree_item)
+        self.network_connect_button = QPushButton(t("Netzwerkort verbinden …"), self.directory_panel)
+        self.network_connect_button.setMaximumHeight(24)
+        self.network_connect_button.setStyleSheet("QPushButton { padding: 1px 6px; }")
+        self.network_connect_button.clicked.connect(self._connect_network_location)
+        content_layout.addWidget(self.network_tree)
+        content_layout.addWidget(self.network_connect_button)
+        navigation_layout.addWidget(self.network_navigation_content)
+        layout = self.directory_panel.layout()
+        layout.setSpacing(4)
+        layout.insertWidget(1, self.network_navigation)
+        self._refresh_network_navigation()
+        self._set_network_navigation_expanded(False)
+
+    def _set_network_navigation_expanded(self, expanded: bool) -> None:
+        """Show mount controls only after the compact network header is opened."""
+        self.network_navigation_content.setVisible(expanded)
+        self.network_toggle_button.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+        )
+
+    def _refresh_network_navigation(self) -> None:
+        """Refresh aliases only; the real QFileSystemModel remains shared."""
+        if not hasattr(self, "network_tree"):
+            return
+        self.network_tree.clear()
+        for path in network_mount_paths():
+            item = QTreeWidgetItem([network_mount_label(path)])
+            item.setData(0, Qt.ItemDataRole.UserRole, str(path))
+            item.setChildIndicatorPolicy(
+                QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator
+            )
+            self.network_tree.addTopLevelItem(item)
+
+    def _populate_network_tree_item(self, item: QTreeWidgetItem) -> None:
+        populated_role = Qt.ItemDataRole.UserRole.value + 1
+        if item.data(0, populated_role):
+            return
+        value = item.data(0, Qt.ItemDataRole.UserRole)
+        if not value:
+            return
+        path = Path(value)
+        try:
+            children = sorted(
+                (child for child in path.iterdir() if child.is_dir()),
+                key=lambda child: child.name.casefold(),
+            )
+        except OSError:
+            return
+        item.takeChildren()
+        for child in children:
+            child_item = QTreeWidgetItem([child.name])
+            child_item.setData(0, Qt.ItemDataRole.UserRole, str(child))
+            child_item.setChildIndicatorPolicy(
+                QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator
+            )
+            item.addChild(child_item)
+        item.setData(0, populated_role, True)
+
+    def _network_tree_item_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
+        value = item.data(0, Qt.ItemDataRole.UserRole)
+        if not value:
+            return
+        directory = Path(value)
+        if directory.is_dir():
+            self._show_directory(directory)
+            self._expand_initial_path(directory)
+
+    def _connect_network_location(self) -> None:
+        """Delegate connection and authentication to the desktop's GIO/GVFS."""
+        dialog = QDialog(self.window)
+        dialog.setWindowTitle(t("Netzwerkort verbinden"))
+        layout = QFormLayout(dialog)
+        address = QLineEdit(dialog)
+        address.setPlaceholderText("sftp://mac.local/")
+        layout.addRow(t("Adresse:"), address)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok,
+            parent=dialog,
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(t("Verbinden"))
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        layout.addRow(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted or not address.text().strip():
+            return
+        # gio invokes the existing GVFS/system authentication UI.  Credentials
+        # are deliberately neither collected nor persisted by BildBlick.
+        try:
+            subprocess.Popen(["gio", "mount", address.text().strip()])
+        except OSError as error:
+            QMessageBox.warning(self.window, t("Netzwerkort verbinden"), str(error))
+
     def _create_directory_model(self) -> None:
         """Create a fresh model so mounts below /Volumes are rediscovered."""
         previous_model = getattr(self, "directory_model", None)
@@ -7145,23 +7380,61 @@ class ImageViewer(QObject):
         if previous_model is not None:
             previous_model.deleteLater()
 
-    def _install_volumes_watcher(self) -> None:
-        """Refresh the tree when macOS adds or removes a mounted volume."""
-        if sys.platform != "darwin" or not VOLUMES_DIRECTORY.is_dir():
+    def _network_mount_watch_paths(self) -> tuple[Path, ...]:
+        """Return existing mount roots and the parent needed to notice GVFS."""
+        paths = list(network_mount_roots())
+        if sys.platform.startswith("linux"):
+            gvfs_parent = Path(f"/run/user/{os.getuid()}")
+            if gvfs_parent.is_dir() and gvfs_parent not in paths:
+                paths.append(gvfs_parent)
+        return tuple(paths)
+
+    def _install_network_mount_watcher(self) -> None:
+        """Refresh the tree when a macOS or Linux network mount changes."""
+        watch_paths = self._network_mount_watch_paths()
+        if not watch_paths:
             return
         self._volumes_refresh_timer = QTimer(self.window)
         self._volumes_refresh_timer.setSingleShot(True)
-        self._volumes_refresh_timer.timeout.connect(self._refresh_volumes_tree)
+        self._volumes_refresh_timer.timeout.connect(self._refresh_network_mounts_tree)
         self._volumes_expand_retry_timer = QTimer(self.window)
         self._volumes_expand_retry_timer.setSingleShot(True)
-        self._volumes_expand_retry_timer.timeout.connect(self._expand_volumes_node)
-        self._volumes_watcher = QFileSystemWatcher([str(VOLUMES_DIRECTORY)], self.window)
+        self._volumes_expand_retry_timer.timeout.connect(self._expand_network_mount_nodes)
+        self._volumes_watcher = QFileSystemWatcher(
+            [str(path) for path in watch_paths], self.window
+        )
+        self._network_mount_snapshot = network_mount_paths()
         self._volumes_watcher.directoryChanged.connect(self._schedule_volumes_refresh)
-        self._expand_volumes_node()
+        self._expand_network_mount_nodes()
 
     def _schedule_volumes_refresh(self, _path: str = "") -> None:
         """Coalesce the several filesystem events a mount can generate."""
         self._volumes_refresh_timer.start(150)
+
+    def _sync_network_mount_watch_paths(self) -> None:
+        """Keep watches valid when GVFS itself appears or disappears."""
+        desired = {str(path) for path in self._network_mount_watch_paths()}
+        current = set(self._volumes_watcher.directories())
+        stale = list(current - desired)
+        if stale:
+            self._volumes_watcher.removePaths(stale)
+        added = list(desired - current)
+        if added:
+            self._volumes_watcher.addPaths(added)
+
+    def _expand_network_mount_nodes(self) -> None:
+        if sys.platform == "darwin":
+            # Preserve the retry behaviour used while /Volumes is populated.
+            self._expand_volumes_node()
+            return
+        expanded = False
+        for mount_root in network_mount_roots():
+            root_index = self.directory_model.index(str(mount_root))
+            if root_index.isValid():
+                self.directory_tree.expand(root_index)
+                expanded = True
+        if not expanded:
+            self._volumes_expand_retry_timer.start(100)
 
     def _expand_volumes_node(self) -> None:
         volumes_index = self.directory_model.index(str(VOLUMES_DIRECTORY))
@@ -7172,7 +7445,22 @@ class ImageViewer(QObject):
         self._volumes_expand_retry_timer.start(100)
 
     def _refresh_volumes_tree(self) -> None:
-        """Reload mounted volumes while retaining the current tree selection."""
+        """Backward-compatible name for the common mount refresh."""
+        self._refresh_network_mounts_tree()
+
+    def _refresh_network_mounts_tree(self) -> None:
+        """Reload only after an actual mount-list change.
+
+        GVFS and the user's runtime directory generate unrelated watcher
+        events.  Recreating QFileSystemModel for those events discarded the
+        tree's expansion state and made the view jump back to ``/``.
+        """
+        current_snapshot = network_mount_paths()
+        previous_snapshot = getattr(self, "_network_mount_snapshot", ())
+        self._sync_network_mount_watch_paths()
+        if current_snapshot == previous_snapshot:
+            return
+        self._network_mount_snapshot = current_snapshot
         selected_directory = None
         selected_index = self.directory_tree.currentIndex()
         if selected_index.isValid():
@@ -7185,7 +7473,8 @@ class ImageViewer(QObject):
                 selected_directory = current_directory
 
         self._create_directory_model()
-        self._expand_volumes_node()
+        self._expand_network_mount_nodes()
+        self._refresh_network_navigation()
         if selected_directory is not None:
             self._expand_initial_path(selected_directory)
 

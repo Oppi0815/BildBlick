@@ -2,6 +2,24 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.20.4
+
+### Netzwerk
+
+- Gemeinsame Netzwerk-Mount-Erkennung für macOS und Linux Mint; die
+  `/Volumes`-Unterstützung auf macOS bleibt erhalten.
+- Linux-GVFS-, `/media`- sowie echte CIFS-, NFS- und SSHFS-Mounts unter `/mnt`
+  werden unterstützt; vorhandene GVFS-/Nemo-Verbindungen werden erkannt.
+- Netzwerkorte erscheinen als benutzerfreundliche Aliase wie `mac.local` statt
+  über technische GVFS-Pfade. Lokale `/mnt`-Ordner werden nicht fälschlich als
+  Netzwerkorte angezeigt.
+- Kompakter, einklappbarer Netzwerkbereich mit „Netzwerkort verbinden …“ über
+  GIO/GVFS und ohne Passwortspeicherung in BildBlick.
+- Der Netzwerkbereich kann auch bei aktivem Netzwerkpfad eingeklappt werden;
+  der aktuelle Netzwerkordner bleibt rechts geöffnet.
+- Watcher-Ereignisse setzen den Verzeichnisbaum nicht mehr zurück: Das Modell
+  wird nur bei einer tatsächlich geänderten Mount-Liste neu aufgebaut.
+
 ## 1.20.3
 
 ### Behoben
