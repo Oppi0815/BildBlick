@@ -191,6 +191,97 @@ def test_system_directory_tree_selection_uses_palette_for_active_and_inactive_ro
     assert "background-color: palette(highlight); color: palette(highlighted-text);" in stylesheet
 
 
+def test_directory_tree_indicators_reflect_direct_subdirectories(tmp_path):
+    files_only = tmp_path / "files-only"
+    files_only.mkdir()
+    (files_only / "photo.jpg").touch()
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "child").mkdir()
+
+    application, viewer = _viewer(tmp_path)
+    try:
+        application.processEvents()
+        delegate = viewer.directory_tree_indicator_delegate
+        files_index = viewer.directory_model.index(str(files_only))
+        nested_index = viewer.directory_model.index(str(nested))
+
+        assert delegate._symbol_kind(files_index) == "none"
+        assert delegate._symbol_kind(nested_index) == "plus"
+        viewer.directory_tree.expand(viewer.directory_model.index(str(tmp_path)))
+        application.processEvents()
+        viewer.directory_tree.expand(nested_index)
+        application.processEvents()
+        assert delegate._symbol_kind(nested_index) == "down"
+        child_index = viewer.directory_model.index(str(nested / "child"))
+        assert (
+            delegate._branch_x(delegate.indicator_rect(child_index))
+            - viewer.directory_tree.indentation()
+            == delegate._branch_x(delegate.indicator_rect(nested_index))
+        )
+        viewer.directory_tree.collapse(nested_index)
+        application.processEvents()
+        assert delegate._symbol_kind(nested_index) == "plus"
+
+        added_directory = tmp_path / "added"
+        added_directory.mkdir()
+        added_index = viewer.directory_model.index(str(added_directory))
+        assert delegate._symbol_kind(added_index) == "none"
+        assert str(added_directory) in delegate._directory_watcher.directories()
+        (added_directory / "child").mkdir()
+        delegate.invalidate(added_directory)
+        assert delegate._symbol_kind(added_index) == "plus"
+        (added_directory / "child").rmdir()
+        delegate.invalidate(added_directory)
+        assert delegate._symbol_kind(added_index) == "none"
+
+        viewer.directory_tree.expand(viewer.directory_model.index(str(tmp_path)))
+        application.processEvents()
+        assert not viewer.directory_tree.viewport().grab().isNull()
+        assert delegate.indicator_rect(files_index).size() == delegate.indicator_rect(
+            nested_index
+        ).size()
+        QTest.mouseClick(
+            viewer.directory_tree.viewport(),
+            Qt.MouseButton.LeftButton,
+            pos=delegate.indicator_rect(nested_index).center(),
+        )
+        application.processEvents()
+        assert viewer.directory_tree.isExpanded(nested_index)
+        QTest.mouseClick(
+            viewer.directory_tree.viewport(),
+            Qt.MouseButton.LeftButton,
+            pos=delegate.indicator_rect(nested_index).center(),
+        )
+        application.processEvents()
+        assert not viewer.directory_tree.isExpanded(nested_index)
+        QTest.mouseClick(
+            viewer.directory_tree.viewport(),
+            Qt.MouseButton.LeftButton,
+            pos=delegate.indicator_rect(files_index).center(),
+        )
+        application.processEvents()
+        assert not viewer.directory_tree.isExpanded(files_index)
+    finally:
+        viewer.window.close()
+        application.processEvents()
+
+
+def test_directory_tree_hierarchy_lines_have_theme_based_colors(tmp_path):
+    application, viewer = _viewer(tmp_path)
+    try:
+        for scheme in ("System", "Hell", "Dunkel"):
+            viewer._color_scheme = scheme
+            viewer._apply_color_scheme()
+            color = viewer.directory_tree.property("directoryHierarchyColor")
+            assert isinstance(color, str) and color.startswith("#")
+    finally:
+        viewer._color_scheme = "System"
+        viewer._apply_color_scheme()
+        viewer.window.close()
+        application.processEvents()
+
+
 def test_system_top_thumbnail_strip_has_its_own_palette_surface_and_divider(tmp_path):
     application, viewer = _viewer(tmp_path)
     try:

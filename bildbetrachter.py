@@ -35,6 +35,7 @@ from PySide6.QtCore import (
     QSettings,
     QSize,
     QPointF,
+    QRect,
     QRectF,
     QStandardPaths,
     QCommandLineParser,
@@ -142,7 +143,7 @@ from i18n import LANGUAGES, LanguageManager, t
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.20.1"
+APP_VERSION = "1.20.2"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 LOGGER = logging.getLogger(__name__)
 
@@ -453,6 +454,222 @@ class ComboPopupItemDelegate(QStyledItemDelegate):
         super().paint(painter, view_option, index)
 
 
+class DirectoryTreeIndicatorDelegate(QStyledItemDelegate):
+    """Draw cached folder-depth indicators in the tree's branch area."""
+
+    _LINE_WIDTH = 1.15
+    _SYMBOL_SIZE = 8.0
+
+    def __init__(self, tree: QTreeView) -> None:
+        super().__init__(tree)
+        self._tree = tree
+        self._contains_subdirectory_cache: dict[str, bool] = {}
+        self._watched_directory_paths: set[str] = set()
+        self._directory_watcher = QFileSystemWatcher(tree)
+        self._directory_watcher.directoryChanged.connect(self.invalidate)
+        tree.viewport().installEventFilter(self)
+        tree.expanded.connect(lambda _index: tree.viewport().update())
+        tree.collapsed.connect(lambda _index: tree.viewport().update())
+
+    def indicator_rect(self, index: QModelIndex) -> QRect:
+        item_rect = self._tree.visualRect(index)
+        return QRect(
+            item_rect.left() - self._tree.indentation(),
+            item_rect.top(),
+            self._tree.indentation(),
+            item_rect.height(),
+        )
+
+    def invalidate(self, directory: str | Path | None = None) -> None:
+        if directory is None:
+            self._contains_subdirectory_cache.clear()
+        else:
+            directory_path = str(directory)
+            self._contains_subdirectory_cache.pop(directory_path, None)
+            if directory_path not in self._directory_watcher.directories():
+                self._watched_directory_paths.discard(directory_path)
+        self._tree.viewport().update()
+
+    def _directory_path(self, index: QModelIndex) -> Path | None:
+        model = self._tree.model()
+        if not isinstance(model, QFileSystemModel) or not index.isValid():
+            return None
+        path = Path(model.filePath(index))
+        return path if path.is_dir() else None
+
+    def _contains_subdirectory(self, index: QModelIndex) -> bool:
+        path = self._directory_path(index)
+        if path is None:
+            return False
+        cache_key = str(path)
+        cached = self._contains_subdirectory_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        if cache_key not in self._watched_directory_paths:
+            if self._directory_watcher.addPath(cache_key):
+                self._watched_directory_paths.add(cache_key)
+        try:
+            with os.scandir(path) as entries:
+                contains_subdirectory = any(
+                    entry.is_dir(follow_symlinks=False)
+                    and (
+                        self._tree.property("showHiddenDirectories")
+                        or not entry.name.startswith(".")
+                    )
+                    for entry in entries
+                )
+        except OSError:
+            contains_subdirectory = False
+        self._contains_subdirectory_cache[cache_key] = contains_subdirectory
+        return contains_subdirectory
+
+    def _symbol_kind(self, index: QModelIndex) -> str:
+        if not self._contains_subdirectory(index):
+            return "none"
+        return "down" if self._tree.isExpanded(index) else "plus"
+
+    def _symbol_color(self, option: QStyleOptionViewItem) -> QColor:
+        configured_color = self._tree.property("directoryIndicatorColor")
+        if configured_color:
+            return QColor(str(configured_color))
+        return option.palette.color(QPalette.ColorRole.Text)
+
+    def _hierarchy_color(self, option: QStyleOptionViewItem) -> QColor:
+        configured_color = self._tree.property("directoryHierarchyColor")
+        color = (
+            QColor(str(configured_color))
+            if configured_color
+            else option.palette.color(QPalette.ColorRole.Mid)
+        )
+        color.setAlphaF(0.52)
+        return color
+
+    @staticmethod
+    def _symbol_center(rect: QRect) -> QPointF:
+        return QPointF(rect.right() - 5, QRectF(rect).center().y())
+
+    @staticmethod
+    def _branch_x(rect: QRect) -> int:
+        return rect.left() + 1
+
+    @staticmethod
+    def _has_next_sibling(index: QModelIndex) -> bool:
+        model = index.model()
+        return model is not None and model.index(
+            index.row() + 1, 0, index.parent()
+        ).isValid()
+
+    def _draw_hierarchy_lines(
+        self,
+        painter: QPainter,
+        rect: QRect,
+        index: QModelIndex,
+        option: QStyleOptionViewItem,
+    ) -> None:
+        parent = index.parent()
+        if not parent.isValid():
+            return
+
+        center_y = QRectF(rect).center().y()
+        symbol_x = self._symbol_center(rect).x()
+        branch_x = self._branch_x(rect)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pen = QPen(self._hierarchy_color(option), 1.0)
+        pen.setDashPattern([1.0, 1.5])
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+
+        ancestor = parent
+        ancestor_x = branch_x - self._tree.indentation()
+        while ancestor.isValid() and ancestor != self._tree.rootIndex():
+            if self._has_next_sibling(ancestor):
+                painter.drawLine(
+                    QPointF(ancestor_x, rect.top()),
+                    QPointF(ancestor_x, rect.bottom()),
+                )
+            ancestor = ancestor.parent()
+            ancestor_x -= self._tree.indentation()
+
+        painter.drawLine(
+            QPointF(branch_x, rect.top()), QPointF(branch_x, center_y)
+        )
+        if self._has_next_sibling(index):
+            painter.drawLine(
+                QPointF(branch_x, center_y), QPointF(branch_x, rect.bottom())
+            )
+        painter.drawLine(
+            QPointF(branch_x, center_y),
+            QPointF(symbol_x - self._SYMBOL_SIZE / 2 - 2, center_y),
+        )
+        painter.restore()
+
+    def _draw_symbol(
+        self, painter: QPainter, rect: QRect, kind: str, color: QColor
+    ) -> None:
+        center = self._symbol_center(rect)
+        half_size = self._SYMBOL_SIZE / 2
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pen = QPen(color, self._LINE_WIDTH)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        if kind == "plus":
+            painter.drawLine(
+                QPointF(center.x() - half_size, center.y()),
+                QPointF(center.x() + half_size, center.y()),
+            )
+            painter.drawLine(
+                QPointF(center.x(), center.y() - half_size),
+                QPointF(center.x(), center.y() + half_size),
+            )
+        elif kind == "down":
+            painter.drawPolyline(
+                [
+                    QPointF(center.x() - half_size, center.y() - 2),
+                    QPointF(center.x(), center.y() + 2),
+                    QPointF(center.x() + half_size, center.y() - 2),
+                ]
+            )
+        else:
+            painter.drawPolyline(
+                [
+                    QPointF(center.x() - 2, center.y() - half_size),
+                    QPointF(center.x() + 2, center.y()),
+                    QPointF(center.x() - 2, center.y() + half_size),
+                ]
+            )
+        painter.restore()
+
+    def paint(self, painter, option, index) -> None:
+        super().paint(painter, option, index)
+        if index.column() != 0 or not self._directory_path(index):
+            return
+        indicator_rect = self.indicator_rect(index)
+        self._draw_hierarchy_lines(painter, indicator_rect, index, option)
+        symbol_kind = self._symbol_kind(index)
+        if symbol_kind != "none":
+            self._draw_symbol(
+                painter, indicator_rect, symbol_kind, self._symbol_color(option)
+            )
+
+    def eventFilter(self, watched, event) -> bool:
+        if (
+            watched is self._tree.viewport()
+            and event.type() == QEvent.Type.MouseButtonPress
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            index = self._tree.indexAt(event.position().toPoint())
+            if index.isValid() and self.indicator_rect(index).contains(
+                event.position().toPoint()
+            ):
+                if self._contains_subdirectory(index):
+                    self._tree.setExpanded(index, not self._tree.isExpanded(index))
+                return True
+        return super().eventFilter(watched, event)
+
+
 def configure_plain_combo_popup(combo: QComboBox, object_name: str) -> None:
     combo.setObjectName(object_name)
     combo.view().setItemDelegate(ComboPopupItemDelegate(combo.view()))
@@ -500,6 +717,7 @@ QWidget#centralwidget QTreeView {
 QWidget#centralwidget QTreeView::item {
     min-height: 28px; border-radius: 5px; padding: 1px 5px;
 }
+QWidget#centralwidget QTreeView::branch { image: none; }
 QWidget#centralwidget QListWidget {
     border: none; padding: 10px;
 }
@@ -670,13 +888,6 @@ QWidget#thumbnailPanel[thumbnailPosition="top"] QListWidget#thumbnailList {
     background-color: transparent;
 }
 """
-    branch_variant = "dark" if QColor(colors["text"]).lightness() < 128 else "light"
-    closed_branch_icon = resource_path(
-        f"assets/tree-branch-{branch_variant}-closed.svg"
-    ).as_posix()
-    open_branch_icon = resource_path(
-        f"assets/tree-branch-{branch_variant}-open.svg"
-    ).as_posix()
     return selection_menu_stylesheet() + interface_polish_stylesheet() + f"""
 QMainWindow, QWidget#centralwidget {{
     background-color: {colors['window']}; color: {colors['text']};
@@ -691,16 +902,6 @@ QTreeView, QListWidget {{
 }}
 QListWidget#thumbnailList {{ background-color: {colors['preview']}; }}
 QTreeView::item:hover, QListWidget::item:hover {{ background-color: {colors['hover']}; }}
-QTreeView::branch:has-children:closed,
-QTreeView::branch:has-children:closed:hover,
-QTreeView::branch:has-children:closed:disabled {{
-    image: url("{closed_branch_icon}");
-}}
-QTreeView::branch:has-children:open,
-QTreeView::branch:has-children:open:hover,
-QTreeView::branch:has-children:open:disabled {{
-    image: url("{open_branch_icon}");
-}}
 QTreeView::item:selected, QListWidget::item:selected,
 QTreeView::item:selected:active, QListWidget::item:selected:active,
 QTreeView::item:selected:!active, QListWidget::item:selected:!active {{
@@ -4248,6 +4449,8 @@ class ImageViewer(QObject):
 
     def _set_show_hidden_files(self, checked: bool) -> None:
         self._show_hidden_files = checked
+        self.directory_tree.setProperty("showHiddenDirectories", checked)
+        self.directory_tree_indicator_delegate.invalidate()
         self.settings.setValue(SHOW_HIDDEN_FILES_KEY, checked)
         self.settings.sync()
         self._set_directory_model_filter()
@@ -4263,6 +4466,14 @@ class ImageViewer(QObject):
         ):
             selection.insert(0, self.current_image)
         self._show_directory(self.current_directory, selection)
+
+    def _invalidate_directory_indicator(self, index: QModelIndex) -> None:
+        if not index.isValid():
+            self.directory_tree_indicator_delegate.invalidate()
+            return
+        self.directory_tree_indicator_delegate.invalidate(
+            self.directory_model.filePath(index)
+        )
 
     def _start_directory(self) -> Path:
         saved_value = self.settings.value(LAST_DIRECTORY_KEY, "", type=str)
@@ -5165,6 +5376,23 @@ class ImageViewer(QObject):
         application = QApplication.instance()
         if application is not None:
             colors = COLOR_SCHEMES[self._color_scheme]
+            indicator_color = (
+                colors["text"]
+                if colors is not None
+                else application.palette().color(QPalette.ColorRole.Text).name()
+            )
+            self.directory_tree.setProperty(
+                "directoryIndicatorColor", indicator_color
+            )
+            hierarchy_color = (
+                colors["muted"]
+                if colors is not None
+                else application.palette().color(QPalette.ColorRole.Text).name()
+            )
+            self.directory_tree.setProperty(
+                "directoryHierarchyColor", hierarchy_color
+            )
+            self.directory_tree.viewport().update()
             tooltip_palette = QPalette(self._system_tooltip_palette)
             if colors is not None:
                 for color_group in (
@@ -6871,6 +7099,27 @@ class ImageViewer(QObject):
         self.directory_model.setReadOnly(True)
         self.directory_model.directoryLoaded.connect(
             lambda _path: self._retry_pending_tree_path()
+        )
+        if not hasattr(self, "directory_tree_indicator_delegate"):
+            self.directory_tree.setProperty(
+                "showHiddenDirectories", self._show_hidden_files
+            )
+            self.directory_tree_indicator_delegate = DirectoryTreeIndicatorDelegate(
+                self.directory_tree
+            )
+            self.directory_tree.setItemDelegate(
+                self.directory_tree_indicator_delegate
+            )
+        else:
+            self.directory_tree_indicator_delegate.invalidate()
+        self.directory_model.directoryLoaded.connect(
+            self.directory_tree_indicator_delegate.invalidate
+        )
+        self.directory_model.rowsInserted.connect(
+            lambda parent, _first, _last: self._invalidate_directory_indicator(parent)
+        )
+        self.directory_model.rowsRemoved.connect(
+            lambda parent, _first, _last: self._invalidate_directory_indicator(parent)
         )
         root_index = self.directory_model.setRootPath(str(ROOT_DIRECTORY))
         self.directory_tree.setModel(self.directory_model)

@@ -2,6 +2,18 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.20.2
+
+### Verzeichnisbaum
+
+- Geschlossene Ordner mit Unterordnern zeigen ein Plus, geöffnete Ordner ein
+  dünnes Chevron nach unten; bei Ordnern ohne Unterordner bleibt die
+  Expanderposition leer.
+- Feine Hierarchielinien und vollständig sichtbare horizontale
+  Verbindungszweige erleichtern die Orientierung über mehrere Ebenen.
+- Die Darstellung der Baumstruktur wurde für System-, Light- und Dark-Themes
+  verbessert.
+
 ## 1.20.1
 
 ### Behoben
