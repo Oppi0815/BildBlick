@@ -2,6 +2,15 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.20.3
+
+### Behoben
+
+- Ein Klick auf die eigenen Auf-/Zuklapp-Symbole im Verzeichnisbaum bleibt
+  dauerhaft wirksam, statt beim Loslassen wieder zurückzuklappen.
+- Schnellschalter im Hauptfenster passen ihre Breite nach einem Sprachwechsel
+  an; lange Übersetzungen wie „Pantalla completa“ werden nicht abgeschnitten.
+
 ## 1.20.2
 
 ### Verzeichnisbaum

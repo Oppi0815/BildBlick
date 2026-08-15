@@ -267,6 +267,47 @@ def test_directory_tree_indicators_reflect_direct_subdirectories(tmp_path):
         application.processEvents()
 
 
+def test_directory_tree_indicator_click_toggles_only_on_release(tmp_path):
+    nested = tmp_path / "nested"
+    (nested / "child").mkdir(parents=True)
+
+    application, viewer = _viewer(tmp_path)
+    try:
+        tree = viewer.directory_tree
+        tree.setRootIndex(viewer.directory_model.index(str(tmp_path)))
+        application.processEvents()
+        nested_index = viewer.directory_model.index(str(nested))
+        indicator_rect = viewer.directory_tree_indicator_delegate.indicator_rect(
+            nested_index
+        )
+        indicator_center = indicator_rect.center()
+
+        QTest.mousePress(
+            tree.viewport(), Qt.MouseButton.LeftButton, pos=indicator_center
+        )
+        application.processEvents()
+        assert not tree.isExpanded(nested_index)
+        QTest.mouseRelease(
+            tree.viewport(), Qt.MouseButton.LeftButton, pos=indicator_center
+        )
+        application.processEvents()
+        assert tree.isExpanded(nested_index)
+
+        QTest.mousePress(
+            tree.viewport(), Qt.MouseButton.LeftButton, pos=indicator_center
+        )
+        application.processEvents()
+        assert tree.isExpanded(nested_index)
+        QTest.mouseRelease(
+            tree.viewport(), Qt.MouseButton.LeftButton, pos=indicator_center
+        )
+        application.processEvents()
+        assert not tree.isExpanded(nested_index)
+    finally:
+        viewer.window.close()
+        application.processEvents()
+
+
 def test_directory_tree_hierarchy_lines_have_theme_based_colors(tmp_path):
     application, viewer = _viewer(tmp_path)
     try:

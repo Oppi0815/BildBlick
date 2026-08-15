@@ -143,7 +143,7 @@ from i18n import LANGUAGES, LanguageManager, t
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.20.2"
+APP_VERSION = "1.20.3"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 LOGGER = logging.getLogger(__name__)
 
@@ -657,14 +657,21 @@ class DirectoryTreeIndicatorDelegate(QStyledItemDelegate):
     def eventFilter(self, watched, event) -> bool:
         if (
             watched is self._tree.viewport()
-            and event.type() == QEvent.Type.MouseButtonPress
+            and event.type()
+            in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease)
             and event.button() == Qt.MouseButton.LeftButton
         ):
             index = self._tree.indexAt(event.position().toPoint())
             if index.isValid() and self.indicator_rect(index).contains(
                 event.position().toPoint()
             ):
-                if self._contains_subdirectory(index):
+                # Consume the complete click sequence.  QTreeView handles its
+                # native branch indicator on release, so toggling on press
+                # would otherwise be immediately undone by the view.
+                if (
+                    event.type() == QEvent.Type.MouseButtonRelease
+                    and self._contains_subdirectory(index)
+                ):
                     self._tree.setExpanded(index, not self._tree.isExpanded(index))
                 return True
         return super().eventFilter(watched, event)
@@ -4178,6 +4185,15 @@ class ImageViewer(QObject):
         layout = self.thumbnail_quick_toggle.parentWidget().layout()
         if not isinstance(layout, QHBoxLayout):
             return
+        for button in (
+            self.thumbnail_quick_toggle,
+            self.details_quick_toggle,
+            self.fullscreen_quick_toggle,
+        ):
+            # The menu bar does not reliably relayout its corner widget after
+            # a live language change.  Size every button explicitly so longer
+            # labels such as Spanish "Pantalla completa" stay fully visible.
+            button.setFixedWidth(button.fontMetrics().horizontalAdvance(button.text()) + 14)
         layout.activate()
         width = layout.sizeHint().width()
         quick_switches = self.thumbnail_quick_toggle.parentWidget()
