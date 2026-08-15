@@ -4925,6 +4925,16 @@ class ImageViewer(QObject):
         self.tools_menu = self.window.menuBar().addMenu(t("Werkzeuge"))
         self.tools_menu.addAction(self.compare_images_action)
         self.tools_menu.addSeparator()
+        self.connect_network_drive_action: QAction | None = None
+        if sys.platform == "darwin":
+            self.connect_network_drive_action = QAction(
+                t("Netzlaufwerk verbinden …"), self.window
+            )
+            self.connect_network_drive_action.triggered.connect(
+                self._connect_network_drive
+            )
+            self.tools_menu.addAction(self.connect_network_drive_action)
+            self.tools_menu.addSeparator()
         self.find_duplicates_action = QAction(
             t("Doppelte Bilder finden …"), self.window
         )
@@ -4982,6 +4992,10 @@ class ImageViewer(QObject):
             (self.about_action, "Über {name} …"),
         ):
             action.setText(t(source).format(name=APP_NAME))
+        if self.connect_network_drive_action is not None:
+            self.connect_network_drive_action.setText(
+                t("Netzlaufwerk verbinden …")
+            )
         for position, source in (
             ("top", "Oben"), ("left", "Links"),
             ("right", "Rechts"), ("hidden", "Ausblenden"),
@@ -7144,6 +7158,30 @@ class ImageViewer(QObject):
             self.directory_tree.hideColumn(column)
         if previous_model is not None:
             previous_model.deleteLater()
+
+    def _connect_network_drive(self) -> None:
+        """Open Finder's Connect to Server dialog without handling credentials."""
+        if sys.platform != "darwin":
+            return
+        try:
+            subprocess.Popen(
+                [
+                    "osascript",
+                    "-e",
+                    'tell application "Finder" to activate',
+                    "-e",
+                    'tell application "System Events" to keystroke "k" using {command down}',
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError:
+            QMessageBox.warning(
+                self.window,
+                t("Netzlaufwerk verbinden"),
+                t("Der Finder-Dialog konnte nicht geöffnet werden."),
+            )
 
     def _install_volumes_watcher(self) -> None:
         """Refresh the tree when macOS adds or removes a mounted volume."""

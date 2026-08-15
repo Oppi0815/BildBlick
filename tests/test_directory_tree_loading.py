@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import bildbetrachter
 from bildbetrachter import ImageViewer, STATUS_BUSY, STATUS_READY
 
 
@@ -117,6 +118,36 @@ def test_volume_refreshes_preserve_the_selected_directory_for_later_mounts(tmp_p
 
     assert recreated == [True, True]
     assert restored_paths == [selected_directory, selected_directory]
+
+
+def test_connect_network_drive_opens_finders_connect_to_server_dialog(monkeypatch):
+    viewer = ImageViewer.__new__(ImageViewer)
+    started = []
+    monkeypatch.setattr(bildbetrachter.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        bildbetrachter.subprocess,
+        "Popen",
+        lambda command, **kwargs: started.append((command, kwargs)),
+    )
+
+    viewer._connect_network_drive()
+
+    assert started == [
+        (
+            [
+                "osascript",
+                "-e",
+                'tell application "Finder" to activate',
+                "-e",
+                'tell application "System Events" to keystroke "k" using {command down}',
+            ],
+            {
+                "stdout": bildbetrachter.subprocess.DEVNULL,
+                "stderr": bildbetrachter.subprocess.DEVNULL,
+                "start_new_session": True,
+            },
+        )
+    ]
 
 
 def test_delayed_thumbnail_job_keeps_the_status_indicator_busy():

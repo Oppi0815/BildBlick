@@ -1,4 +1,5 @@
 from pathlib import Path
+import sys
 
 from PySide6.QtCore import QPoint, QSettings, Qt
 from PySide6.QtGui import QImage
@@ -49,6 +50,8 @@ def test_main_menu_reuses_existing_actions_in_their_new_groups(tmp_path):
     assert viewer.next_folder_action in viewer.go_to_menu.actions()
     assert viewer.parent_folder_action in viewer.go_to_menu.actions()
     assert viewer.compare_images_action in viewer.tools_menu.actions()
+    if sys.platform == "darwin":
+        assert viewer.connect_network_drive_action in viewer.tools_menu.actions()
     assert viewer.find_duplicates_action in viewer.tools_menu.actions()
     assert viewer.slideshow_menu.menuAction() in viewer.view_menu.actions()
     assert viewer.information_toggle_action in viewer.view_menu.actions()
