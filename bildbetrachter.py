@@ -1,4 +1,5 @@
 import hashlib
+import json
 import logging
 import os
 import random
@@ -38,6 +39,7 @@ from PySide6.QtCore import (
     QRect,
     QRectF,
     QStandardPaths,
+    QStringListModel,
     QCommandLineParser,
     QCommandLineOption,
     QCollator,
@@ -78,6 +80,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QCompleter,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -97,6 +100,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QProgressBar,
     QProxyStyle,
+    QFrame,
     QScrollArea,
     QSlider,
     QSpinBox,
@@ -108,6 +112,7 @@ from PySide6.QtWidgets import (
     QStyledItemDelegate,
     QToolButton,
     QToolTip,
+    QTextEdit,
     QTreeView,
     QTreeWidget,
     QTreeWidgetItem,
@@ -116,6 +121,7 @@ from PySide6.QtWidgets import (
 )
 
 from duplicate_finder import DuplicateFinderDialog
+from metadata_database import suggest_people, suggest_places, upsert_person, upsert_place
 from printing.multi_image_print import (
     MultiImagePrintSettings,
     current_print_date_text,
@@ -145,7 +151,7 @@ from i18n import LANGUAGES, LanguageManager, t
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.20.5"
+APP_VERSION = "1.21.0"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 LOGGER = logging.getLogger(__name__)
 
@@ -276,7 +282,102 @@ _pictures_location = QStandardPaths.writableLocation(
 )
 START_DIRECTORY = Path(_pictures_location) if _pictures_location else HOME_DIRECTORY
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
+JPEG_EXTENSIONS = {".jpg", ".jpeg"}
 SUPPORTED_FILE_EXTENSIONS = IMAGE_EXTENSIONS | PDF_EXTENSIONS
+
+
+def _manual_metadata_people(value: str) -> list[str]:
+    """Normalize the comma-separated editor value for XMP list storage."""
+    people: list[str] = []
+    seen: set[str] = set()
+    for part in value.split(","):
+        person = part.strip()
+        key = person.casefold()
+        if person and key not in seen:
+            people.append(person)
+            seen.add(key)
+    return people
+
+
+def _manual_metadata_gps(value: str) -> tuple[float, float] | None:
+    value = value.strip()
+    if not value:
+        return None
+    try:
+        latitude, longitude = (float(item.strip()) for item in value.split(","))
+    except (TypeError, ValueError):
+        raise ValueError(t("GPS muss als Breitengrad, Längengrad eingegeben werden.")) from None
+    if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
+        raise ValueError(t("GPS-Koordinaten liegen außerhalb des gültigen Bereichs."))
+    return latitude, longitude
+
+
+class PersonCompleter(QCompleter):
+    """Complete only the person currently being typed after the last comma."""
+    def splitPath(self, path: str) -> list[str]:
+        return [path.rsplit(",", 1)[-1].strip()]
+
+    def pathFromIndex(self, index: QModelIndex) -> str:
+        completion = super().pathFromIndex(index)
+        widget = self.widget()
+        current = widget.text() if isinstance(widget, QLineEdit) else ""
+        prefix = current.rsplit(",", 1)
+        return f"{prefix[0]}, {completion}" if len(prefix) == 2 else completion
+
+
+def _exiftool_json(path: Path) -> dict[str, object]:
+    result = subprocess.run(
+        ["exiftool", "-j", "-n", "-G1", "-XMP-dc:Description", "-IPTC:Caption-Abstract",
+         "-EXIF:ImageDescription", "-XMP-iptcExt:PersonInImage", "-XMP-photoshop:City",
+         "-IPTC:City", "-GPS:GPSLatitude", "-GPS:GPSLongitude", str(path)],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or t("Metadaten konnten nicht gelesen werden."))
+    records = json.loads(result.stdout)
+    return records[0] if records else {}
+
+
+def read_manual_image_metadata(path: Path) -> dict[str, str]:
+    """Read the standardized fields without decoding or rewriting JPEG pixels."""
+    if path.suffix.lower() not in JPEG_EXTENSIONS:
+        return {"comment": "", "people": "", "place": "", "gps": ""}
+    tags = _exiftool_json(path)
+    comment = next((str(tags[key]) for key in ("XMP-dc:Description", "IPTC:Caption-Abstract", "EXIF:ImageDescription") if tags.get(key)), "")
+    raw_people = tags.get("XMP-iptcExt:PersonInImage", [])
+    people = raw_people if isinstance(raw_people, list) else [raw_people]
+    place = next((str(tags[key]) for key in ("XMP-photoshop:City", "IPTC:City") if tags.get(key)), "")
+    latitude, longitude = tags.get("GPS:GPSLatitude"), tags.get("GPS:GPSLongitude")
+    gps = "" if latitude is None or longitude is None else f"{float(latitude):.6f}, {float(longitude):.6f}"
+    return {"comment": comment, "people": ", ".join(str(item) for item in people), "place": place, "gps": gps}
+
+
+def write_manual_image_metadata(path: Path, metadata: dict[str, str]) -> None:
+    """Update only requested metadata tags via ExifTool, preserving JPEG data."""
+    if path.suffix.lower() not in JPEG_EXTENSIONS:
+        raise ValueError(t("Bildinformationen können nur in JPG/JPEG gespeichert werden."))
+    gps = _manual_metadata_gps(metadata.get("gps", ""))
+    args = ["exiftool", "-overwrite_original"]
+    def set_or_delete(tag: str, value: str) -> None:
+        args.append(f"-{tag}={value.strip()}" if value.strip() else f"-{tag}=")
+    comment = metadata.get("comment", "")
+    set_or_delete("XMP-dc:Description", comment)
+    set_or_delete("IPTC:Caption-Abstract", comment)
+    place = metadata.get("place", "")
+    set_or_delete("XMP-photoshop:City", place)
+    set_or_delete("IPTC:City", place)
+    args.append("-XMP-iptcExt:PersonInImage=")
+    for person in _manual_metadata_people(metadata.get("people", "")):
+        args.append(f"-XMP-iptcExt:PersonInImage+={person}")
+    if gps is None:
+        for tag in ("GPSLatitude", "GPSLatitudeRef", "GPSLongitude", "GPSLongitudeRef"):
+            args.append(f"-{tag}=")
+    else:
+        latitude, longitude = gps
+        args.extend((f"-GPSLatitude={abs(latitude)}", f"-GPSLatitudeRef={'S' if latitude < 0 else 'N'}", f"-GPSLongitude={abs(longitude)}", f"-GPSLongitudeRef={'W' if longitude < 0 else 'E'}"))
+    result = subprocess.run([*args, str(path)], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or t("Metadaten konnten nicht gespeichert werden."))
 THUMBNAIL_SIZE = QSize(160, 120)
 THUMBNAIL_GRID_SIZE = QSize(190, 175)
 THUMBNAIL_SPACING = 14
@@ -1065,6 +1166,24 @@ QWidget#informationPanel QGroupBox#informationSection::title {{
 }}
 QWidget#informationPanel QLabel#informationFieldLabel {{ color: {colors['muted']}; font-weight: 400; }}
 QWidget#informationPanel QLabel#informationValueLabel {{ color: {colors['text']}; font-weight: 500; }}
+QWidget#informationPanel QGroupBox#manualMetadataSection {{
+    border: none; margin-top: 3px; padding: 4px 0 0 0; font-weight: 600;
+}}
+QWidget#informationPanel QGroupBox#manualMetadataSection::title {{
+    subcontrol-origin: margin; left: 0; padding: 0; color: {colors['text']};
+}}
+QWidget#informationPanel QLabel#manualMetadataLabel {{ color: {colors['muted']}; font-size: 11px; }}
+QWidget#informationPanel QLineEdit#manualMetadataField,
+QWidget#informationPanel QTextEdit#manualMetadataField {{
+    background-color: {colors['window']}; color: {colors['text']};
+    border: 1px solid {colors['border']}; border-radius: 4px; padding: 4px;
+    selection-background-color: {colors['selection']}; selection-color: {colors['selection_text']};
+}}
+QWidget#informationPanel QLineEdit#manualMetadataField:focus,
+QWidget#informationPanel QTextEdit#manualMetadataField:focus {{ border-color: {colors['selection']}; }}
+QWidget#informationPanel QLineEdit#manualMetadataField:disabled,
+QWidget#informationPanel QTextEdit#manualMetadataField:disabled {{ color: {colors['muted']}; }}
+QWidget#informationPanel QFrame#manualMetadataSeparator {{ background: {colors['border']}; max-height: 1px; }}
 QWidget#informationPanel QToolButton#allMetadataToggle {{
     padding: 2px 0; border: none; border-radius: 4px; background: transparent;
     text-align: left; font-weight: 600;
@@ -3125,6 +3244,9 @@ class ImageViewer(QObject):
         self._apply_thumbnail_position(save=False)
         self.current_directory: Path | None = None
         self.current_image: Path | None = None
+        self.manual_metadata = {"comment": "", "people": "", "place": "", "gps": ""}
+        self._manual_metadata_path: Path | None = None
+        self.manual_metadata_dirty = False
         self._pdf_document = None
         self._pdf_link_model = QPdfLinkModel(self.window)
         self._pdf_page = 0
@@ -4344,6 +4466,8 @@ class ImageViewer(QObject):
         header.addWidget(close_button)
         panel_layout.addLayout(header)
 
+        self._install_manual_metadata_editor(panel_layout)
+
         self.information_scroll_area = QScrollArea(self.information_panel)
         self.information_scroll_area.setWidgetResizable(True)
         self.information_scroll_area.setHorizontalScrollBarPolicy(
@@ -4360,6 +4484,202 @@ class ImageViewer(QObject):
         preview_content_layout.addWidget(self.information_panel)
         preview_layout.insertWidget(0, self.preview_content, 1)
         self.information_panel.hide()
+
+    def _install_manual_metadata_editor(self, panel_layout: QVBoxLayout) -> None:
+        """Create the pinned editor; persistence is intentionally deferred."""
+        section = QGroupBox(t("Bildinformationen"), self.information_panel)
+        section.setObjectName("manualMetadataSection")
+        layout = QVBoxLayout(section)
+        layout.setContentsMargins(0, 7, 0, 2)
+        layout.setSpacing(2)
+        self.manual_metadata_section = section
+        self.manual_metadata_fields: dict[str, QLineEdit | QTextEdit] = {}
+        self.manual_metadata_labels: dict[str, QLabel] = {}
+        self.manual_metadata_placeholders: dict[str, str] = {}
+        specifications = (
+            ("comment", "Bemerkungen", "Bemerkung hinzufügen …", True),
+            ("people", "Personen", "Personen hinzufügen …", False),
+            ("place", "Aufnahmeort", "Ort hinzufügen …", False),
+            ("gps", "GPS", "GPS-Koordinaten hinzufügen …", False),
+        )
+        for key, label_text, placeholder, multiline in specifications:
+            label = QLabel(t(label_text), section)
+            label.setObjectName("manualMetadataLabel")
+            self.manual_metadata_labels[key] = label
+            self.manual_metadata_placeholders[key] = placeholder
+            if multiline:
+                field = QTextEdit(section)
+                field.setFixedHeight(40)
+                field.setAcceptRichText(False)
+            else:
+                field = QLineEdit(section)
+            field.setObjectName("manualMetadataField")
+            field.setPlaceholderText(t(placeholder))
+            field.setAccessibleName(t(label_text))
+            # These are explicit because the editor lives beside a scroll area
+            # with several event filters.  JPEG fields must remain genuine text
+            # inputs, not merely visually enabled controls.
+            field.setReadOnly(False)
+            field.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            field.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+            self.manual_metadata_fields[key] = field
+            if isinstance(field, QTextEdit):
+                field.textChanged.connect(self._mark_manual_metadata_dirty)
+            else:
+                field.textChanged.connect(self._mark_manual_metadata_dirty)
+            if multiline:
+                layout.addWidget(label)
+                layout.addWidget(field)
+            else:
+                row = QHBoxLayout()
+                row.setContentsMargins(0, 0, 0, 0)
+                row.setSpacing(7)
+                label.setMinimumWidth(74)
+                row.addWidget(label)
+                row.addWidget(field, 1)
+                layout.addLayout(row)
+        buttons = QHBoxLayout()
+        buttons.setContentsMargins(0, 3, 0, 0)
+        self.manual_metadata_reset_button = QPushButton(t("Zurücksetzen"), section)
+        self.manual_metadata_reset_button.setMaximumHeight(24)
+        self.manual_metadata_reset_button.clicked.connect(self.clear_manual_metadata_fields)
+        self.manual_metadata_save_button = QPushButton(t("Speichern"), section)
+        self.manual_metadata_save_button.setMaximumHeight(24)
+        self.manual_metadata_save_button.clicked.connect(self._capture_manual_metadata)
+        buttons.addWidget(self.manual_metadata_reset_button)
+        buttons.addWidget(self.manual_metadata_save_button)
+        layout.addLayout(buttons)
+        panel_layout.addWidget(section)
+        separator = QFrame(self.information_panel)
+        separator.setObjectName("manualMetadataSeparator")
+        separator.setFrameShape(QFrame.Shape.HLine)
+        panel_layout.addWidget(separator)
+        self._install_manual_metadata_completers()
+
+    def _install_manual_metadata_completers(self) -> None:
+        self._people_completer = PersonCompleter([], self.information_panel)
+        self._people_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._people_completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        people = self.manual_metadata_fields["people"]
+        assert isinstance(people, QLineEdit)
+        people.setCompleter(self._people_completer)
+        people.textEdited.connect(self._update_people_completions)
+        self._place_completer = QCompleter([], self.information_panel)
+        self._place_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._place_completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        place = self.manual_metadata_fields["place"]
+        assert isinstance(place, QLineEdit)
+        place.setCompleter(self._place_completer)
+        place.textEdited.connect(lambda text: self._place_completer.setModel(QStringListModel(suggest_places(text), self._place_completer)))
+
+    def _update_people_completions(self, text: str) -> None:
+        prefix = text.rsplit(",", 1)[-1].strip()
+        self._people_completer.setModel(QStringListModel(suggest_people(prefix), self._people_completer))
+
+    def collect_manual_metadata_from_fields(self) -> dict[str, str]:
+        """Return editor values for a future metadata persistence layer."""
+        return {
+            key: field.toPlainText() if isinstance(field, QTextEdit) else field.text()
+            for key, field in self.manual_metadata_fields.items()
+        }
+
+    def load_manual_metadata_into_fields(self, metadata: dict[str, str] | None = None) -> None:
+        """Load a metadata mapping into the pinned editor without file access."""
+        self.manual_metadata = {"comment": "", "people": "", "place": "", "gps": ""}
+        self.manual_metadata.update(metadata or {})
+        for key, field in self.manual_metadata_fields.items():
+            value = self.manual_metadata[key]
+            if isinstance(field, QTextEdit):
+                field.setPlainText(value)
+            else:
+                field.setText(value)
+        self.manual_metadata_dirty = False
+        self.manual_metadata_save_button.setEnabled(False)
+
+    def clear_manual_metadata_fields(self) -> None:
+        """Discard unsaved editor values for the current image."""
+        self.load_manual_metadata_into_fields(self.manual_metadata)
+
+    def set_manual_metadata_editable(self, editable: bool) -> None:
+        for field in self.manual_metadata_fields.values():
+            field.setEnabled(editable)
+            field.setReadOnly(not editable)
+            field.setFocusPolicy(
+                Qt.FocusPolicy.StrongFocus if editable else Qt.FocusPolicy.NoFocus
+            )
+        self.manual_metadata_save_button.setEnabled(editable and self.manual_metadata_dirty)
+        self.manual_metadata_reset_button.setEnabled(editable)
+
+    def _mark_manual_metadata_dirty(self) -> None:
+        if self._manual_metadata_path is None:
+            return
+        self.manual_metadata_dirty = True
+        self.manual_metadata_save_button.setEnabled(True)
+
+    def _capture_manual_metadata(self) -> None:
+        """Validate and persist standardized JPEG metadata through ExifTool."""
+        path = self.current_image
+        if path is None or not path.is_file() or path.suffix.lower() not in JPEG_EXTENSIONS:
+            return
+        metadata = self.collect_manual_metadata_from_fields()
+        try:
+            self.set_status(STATUS_BUSY, t("Bildinformationen werden gespeichert …"))
+            write_manual_image_metadata(path, metadata)
+            saved = read_manual_image_metadata(path)
+        except (OSError, RuntimeError, ValueError) as error:
+            self.set_status(STATUS_ERROR, str(error))
+            QMessageBox.warning(self.window, t("Bildinformationen"), str(error))
+            return
+        self.load_manual_metadata_into_fields(saved)
+        try:
+            for person in _manual_metadata_people(metadata.get("people", "")):
+                upsert_person(person)
+            latitude_longitude = _manual_metadata_gps(metadata.get("gps", ""))
+            if metadata.get("place", "").strip():
+                upsert_place(metadata["place"], *(latitude_longitude or (None, None)))
+        except Exception:
+            logging.exception("Could not update local metadata suggestions")
+        self.set_status(STATUS_READY)
+
+    def _refresh_manual_metadata_editor(self, path: Path | None) -> None:
+        if path != self._manual_metadata_path:
+            self._manual_metadata_path = path
+            try:
+                self.load_manual_metadata_into_fields(read_manual_image_metadata(path) if path and path.is_file() else None)
+            except (OSError, RuntimeError, json.JSONDecodeError):
+                self.load_manual_metadata_into_fields()
+        editable = path is not None and path.is_file() and path.suffix.lower() in {".jpg", ".jpeg"}
+        self.set_manual_metadata_editable(editable)
+
+    def _retranslate_manual_metadata_editor(self) -> None:
+        self.manual_metadata_section.setTitle(t("Bildinformationen"))
+        for key, label in self.manual_metadata_labels.items():
+            source = {"comment": "Bemerkungen", "people": "Personen", "place": "Aufnahmeort", "gps": "GPS"}[key]
+            label.setText(t(source))
+            field = self.manual_metadata_fields[key]
+            field.setPlaceholderText(t(self.manual_metadata_placeholders[key]))
+            field.setAccessibleName(t(source))
+        self.manual_metadata_reset_button.setText(t("Zurücksetzen"))
+        self.manual_metadata_save_button.setText(t("Speichern"))
+
+    def _confirm_manual_metadata_navigation(self) -> bool:
+        if not self.manual_metadata_dirty:
+            return True
+        dialog = QMessageBox(self.window)
+        dialog.setIcon(QMessageBox.Icon.Warning)
+        dialog.setWindowTitle(t("Bildinformationen"))
+        dialog.setText(t("Die Bildinformationen wurden geändert."))
+        save = dialog.addButton(t("Speichern"), QMessageBox.ButtonRole.AcceptRole)
+        discard = dialog.addButton(t("Verwerfen"), QMessageBox.ButtonRole.DestructiveRole)
+        dialog.addButton(t("Abbrechen"), QMessageBox.ButtonRole.RejectRole)
+        dialog.exec()
+        if dialog.clickedButton() is save:
+            self._capture_manual_metadata()
+            return not self.manual_metadata_dirty
+        if dialog.clickedButton() is discard:
+            self.clear_manual_metadata_fields()
+            return True
+        return False
 
     def _clear_information_content(self) -> None:
         while self.information_content_layout.count() > 1:
@@ -4396,6 +4716,7 @@ class ImageViewer(QObject):
     def _update_information_panel(self) -> None:
         if not self.information_panel.isVisible():
             return
+        self._refresh_manual_metadata_editor(self.current_image)
         self._clear_information_content()
         path = self.current_image
         if path is None or not path.is_file():
@@ -5048,6 +5369,7 @@ class ImageViewer(QObject):
         self.language_manager.set_language(code)
         for value, action in self.language_actions.items():
             action.setChecked(value == self.language_manager.code)
+        self._retranslate_manual_metadata_editor()
         self._update_information_panel()
         self.language_manager.translate_widget_tree(self.window)
         self.refresh_i18n()
@@ -7968,6 +8290,10 @@ class ImageViewer(QObject):
     ) -> None:
         if item is None:
             self._update_navigation_buttons()
+            return
+        if not self._confirm_manual_metadata_navigation():
+            with QSignalBlocker(self.thumbnail_list):
+                self.thumbnail_list.setCurrentItem(_previous_item)
             return
         self.current_image = Path(item.data(Qt.ItemDataRole.UserRole))
         self._set_file_name_text(self.current_image.name)

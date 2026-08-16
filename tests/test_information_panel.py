@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from PIL import Image
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
@@ -11,6 +12,8 @@ from bildbetrachter import (
     _raw_metadata_text,
     build_all_image_metadata,
     build_information_metadata,
+    read_manual_image_metadata,
+    write_manual_image_metadata,
 )
 
 
@@ -181,6 +184,120 @@ def test_the_information_panel_handles_all_color_schemes(tmp_path):
         assert viewer.information_panel.isVisible()
         viewer._hide_information_panel()
     viewer.window.close()
+
+
+def test_pinned_manual_metadata_editor_is_editable_for_jpeg_and_not_scrolled(tmp_path):
+    path = _image(tmp_path / "editor.jpg")
+    application, viewer = _viewer(tmp_path)
+    try:
+        viewer.current_image = path
+        viewer._show_information_panel()
+        application.processEvents()
+
+        assert list(viewer.manual_metadata_fields) == ["comment", "people", "place", "gps"]
+        assert all(field.isEnabled() for field in viewer.manual_metadata_fields.values())
+        assert not viewer.information_scroll_area.isAncestorOf(viewer.manual_metadata_section)
+        assert viewer.information_panel.isAncestorOf(viewer.manual_metadata_section)
+
+        viewer.manual_metadata_fields["comment"].setPlainText("Restaurierung")
+        viewer.manual_metadata_fields["people"].setText("Ingeborg, Horst")
+        assert viewer.collect_manual_metadata_from_fields() == {
+            "comment": "Restaurierung", "people": "Ingeborg, Horst", "place": "", "gps": ""
+        }
+        viewer.manual_metadata_save_button.click()
+        assert viewer.manual_metadata == viewer.collect_manual_metadata_from_fields()
+    finally:
+        viewer.window.close()
+
+
+def test_pinned_manual_metadata_fields_accept_real_mouse_and_keyboard_input(tmp_path):
+    path = _image(tmp_path / "interactive.JPG")
+    application, viewer = _viewer(tmp_path)
+    try:
+        viewer.current_image = path
+        viewer._show_information_panel()
+        application.processEvents()
+        values = {
+            "comment": "BildBlick Test", "people": "Horst, Ingeborg",
+            "place": "Steyerberg", "gps": "52.000000, 9.000000",
+        }
+        for key, expected in values.items():
+            field = viewer.manual_metadata_fields[key]
+            target = field.viewport() if hasattr(field, "viewport") else field
+            assert field.isEnabled() and not field.isReadOnly()
+            assert not field.visibleRegion().isEmpty()
+            QTest.mouseClick(target, Qt.MouseButton.LeftButton)
+            assert field.hasFocus() or target.hasFocus()
+            QTest.keyClicks(target, expected)
+        application.processEvents()
+        assert viewer.collect_manual_metadata_from_fields() == values
+    finally:
+        viewer.window.close()
+
+
+def test_pinned_manual_metadata_editor_resets_on_file_change_and_disables_for_pdf(tmp_path):
+    first = _image(tmp_path / "first.jpg")
+    second = _image(tmp_path / "second.jpg")
+    pdf_path = tmp_path / "document.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+    application, viewer = _viewer(tmp_path)
+    try:
+        viewer.current_image = first
+        viewer._show_information_panel()
+        viewer.manual_metadata_fields["place"].setText("Steyerberg")
+        viewer.current_image = second
+        viewer._update_information_panel()
+        assert viewer.manual_metadata_fields["place"].text() == ""
+
+        viewer.current_image = pdf_path
+        viewer._update_information_panel()
+        assert all(not field.isEnabled() for field in viewer.manual_metadata_fields.values())
+    finally:
+        viewer.window.close()
+
+
+def test_pinned_manual_metadata_editor_retranslates_live(tmp_path):
+    path = _image(tmp_path / "editor.jpg")
+    application, viewer = _viewer(tmp_path)
+    try:
+        viewer.current_image = path
+        viewer._show_information_panel()
+        for language, expected in (("en", "Notes"), ("fr", "Remarques"), ("es", "Notas"), ("uk", "Примітки"), ("de", "Bemerkungen")):
+            viewer._set_language(language)
+            application.processEvents()
+            assert viewer.manual_metadata_labels["comment"].text() == expected
+    finally:
+        viewer.window.close()
+
+
+def test_manual_jpeg_metadata_round_trip_preserves_image_and_existing_exif(tmp_path):
+    exif = Image.Exif()
+    exif[271] = "Existing camera"
+    path = _image(tmp_path / "metadata with spaces.jpg", exif=exif)
+    size_before = Image.open(path).size
+
+    write_manual_image_metadata(path, {
+        "comment": "Restaurierung", "people": "Ingeborg, Horst, Ingeborg",
+        "place": "Steyerberg", "gps": "52.123456, 9.123456",
+    })
+
+    assert read_manual_image_metadata(path) == {
+        "comment": "Restaurierung", "people": "Ingeborg, Horst",
+        "place": "Steyerberg", "gps": "52.123456, 9.123456",
+    }
+    assert Image.open(path).getexif()[271] == "Existing camera"
+    assert Image.open(path).size == size_before
+
+
+def test_manual_jpeg_metadata_removes_empty_values_and_rejects_invalid_gps(tmp_path):
+    path = _image(tmp_path / "metadata.jpg")
+    write_manual_image_metadata(path, {
+        "comment": "Text", "people": "Horst", "place": "Ort", "gps": "52, 9",
+    })
+    write_manual_image_metadata(path, {"comment": "", "people": "", "place": "", "gps": ""})
+    assert read_manual_image_metadata(path) == {"comment": "", "people": "", "place": "", "gps": ""}
+    with pytest.raises(ValueError):
+        write_manual_image_metadata(path, {"comment": "", "people": "", "place": "", "gps": "91, 9"})
 
 
 def test_pdf_information_is_file_only_and_does_not_read_exif(tmp_path):

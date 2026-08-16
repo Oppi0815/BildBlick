@@ -2,6 +2,28 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.21.0
+
+### Bildinformationen / Metadaten
+
+- Angepinnter Bereich „Bildinformationen“ im Details-Panel mit editierbaren
+  Feldern für Bemerkungen, Personen, Aufnahmeort und GPS; technische EXIF-Daten
+  bleiben schreibgeschützt.
+- JPG/JPEG-Metadaten werden über ExifTool standardkonform gelesen und ohne
+  erneute JPEG-Kompression geschrieben. Leere Felder entfernen ihre Tags,
+  GPS wird als EXIF-GPS gespeichert und ungespeicherte Änderungen werden beim
+  Bildwechsel abgefangen.
+
+### Personen- und Ortsdatenbank
+
+- Lokale SQLite-Vorschlagsdatenbank unter `~/.local/share/BildBlick/metadata.db`
+  unter Linux bzw. `~/Library/Application Support/BildBlick/metadata.db` auf macOS.
+- Autovervollständigung für Personen und Aufnahmeorte, einschließlich mehrerer
+  Personen pro Bild, Nutzungshäufigkeit, zuletzt verwendeter Einträge und
+  optionaler GPS-Zuordnung zu Orten.
+- Die Datenbank wird nur nach erfolgreichem JPG-Speichern aktualisiert; es gibt
+  keine Cloud- oder externe Datenübertragung.
+
 ## 1.20.5
 
 ### Wartung

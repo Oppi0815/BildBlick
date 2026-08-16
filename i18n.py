@@ -406,6 +406,24 @@ for _code, _words in {
 }.items():
     CATALOGUE[_code].update(_words)
 
+# Pinned manual image-information editor.  Storage is deliberately not part
+# of this first UI-only step.
+for _code, _words in {
+    "en": {"Bemerkungen": "Notes", "Personen": "People", "Aufnahmeort": "Location", "Speichern": "Save", "Zurücksetzen": "Reset", "Bemerkung hinzufügen …": "Add a note …", "Personen hinzufügen …": "Add people …", "Ort hinzufügen …": "Add a location …", "GPS-Koordinaten hinzufügen …": "Add GPS coordinates …", "Noch nicht gespeichert": "Not saved yet", "Bildinformationen werden gespeichert …": "Saving image information …", "GPS muss als Breitengrad, Längengrad eingegeben werden.": "GPS must be entered as latitude, longitude.", "GPS-Koordinaten liegen außerhalb des gültigen Bereichs.": "GPS coordinates are outside the valid range.", "Bildinformationen können nur in JPG/JPEG gespeichert werden.": "Image information can only be saved in JPG/JPEG.", "Metadaten konnten nicht gelesen werden.": "Metadata could not be read.", "Metadaten konnten nicht gespeichert werden.": "Metadata could not be saved."},
+    "fr": {"Bemerkungen": "Remarques", "Personen": "Personnes", "Aufnahmeort": "Lieu de prise de vue", "Speichern": "Enregistrer", "Zurücksetzen": "Réinitialiser", "Bemerkung hinzufügen …": "Ajouter une remarque …", "Personen hinzufügen …": "Ajouter des personnes …", "Ort hinzufügen …": "Ajouter un lieu …", "GPS-Koordinaten hinzufügen …": "Ajouter des coordonnées GPS …", "Noch nicht gespeichert": "Pas encore enregistré"},
+    "es": {"Bemerkungen": "Notas", "Personen": "Personas", "Aufnahmeort": "Lugar de la toma", "Speichern": "Guardar", "Zurücksetzen": "Restablecer", "Bemerkung hinzufügen …": "Añadir una nota …", "Personen hinzufügen …": "Añadir personas …", "Ort hinzufügen …": "Añadir un lugar …", "GPS-Koordinaten hinzufügen …": "Añadir coordenadas GPS …", "Noch nicht gespeichert": "Aún no guardado"},
+    "uk": {"Bemerkungen": "Примітки", "Personen": "Люди", "Aufnahmeort": "Місце зйомки", "Speichern": "Зберегти", "Zurücksetzen": "Скинути", "Bemerkung hinzufügen …": "Додати примітку …", "Personen hinzufügen …": "Додати людей …", "Ort hinzufügen …": "Додати місце …", "GPS-Koordinaten hinzufügen …": "Додати GPS-координати …", "Noch nicht gespeichert": "Ще не збережено"},
+}.items():
+    CATALOGUE[_code].update(_words)
+
+for _code, _words in {
+    "en": {"Die Bildinformationen wurden geändert.": "The image information has been changed.", "Verwerfen": "Discard"},
+    "fr": {"Die Bildinformationen wurden geändert.": "Les informations de l’image ont été modifiées.", "Verwerfen": "Ignorer", "Bildinformationen werden gespeichert …": "Enregistrement des informations de l’image …", "GPS muss als Breitengrad, Längengrad eingegeben werden.": "Le GPS doit être saisi sous la forme latitude, longitude.", "GPS-Koordinaten liegen außerhalb des gültigen Bereichs.": "Les coordonnées GPS sont hors de la plage valide."},
+    "es": {"Die Bildinformationen wurden geändert.": "La información de la imagen ha cambiado.", "Verwerfen": "Descartar", "Bildinformationen werden gespeichert …": "Guardando información de la imagen …", "GPS muss als Breitengrad, Längengrad eingegeben werden.": "El GPS debe introducirse como latitud, longitud.", "GPS-Koordinaten liegen außerhalb des gültigen Bereichs.": "Las coordenadas GPS están fuera del intervalo válido."},
+    "uk": {"Die Bildinformationen wurden geändert.": "Інформацію про зображення змінено.", "Verwerfen": "Відкинути", "Bildinformationen werden gespeichert …": "Збереження інформації про зображення …", "GPS muss als Breitengrad, Längengrad eingegeben werden.": "GPS слід вводити як широту, довготу.", "GPS-Koordinaten liegen außerhalb des gültigen Bereichs.": "GPS-координати виходять за допустимий діапазон."},
+}.items():
+    CATALOGUE[_code].update(_words)
+
 def language_code(value: str | None) -> str:
     return value if value in LANGUAGES else "de"
 

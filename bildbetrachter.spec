@@ -60,8 +60,8 @@ if sys.platform == "darwin":
         info_plist={
             "CFBundleName": "BildBlick",
             "CFBundleDisplayName": "BildBlick",
-            "CFBundleShortVersionString": "1.20.5",
-            "CFBundleVersion": "1.20.5",
+            "CFBundleShortVersionString": "1.21.0",
+            "CFBundleVersion": "1.21.0",
             "LSApplicationCategoryType": "public.app-category.photography",
             "NSHighResolutionCapable": True,
         },
