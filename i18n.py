@@ -43,6 +43,14 @@ for _code, _words in {
     CATALOGUE[_code].update(_words)
 
 for _code, _words in {
+    "en": {"Diesen Ordner in die Bildsuche aufnehmen …": "Add this folder to image search …", "Bilder suchen …": "Search images …", "Suche beenden": "End search", "Unterordner einschließen": "Include subfolders", "Indexieren": "Index", "Bildindex wird aktualisiert …": "Updating image index …", "Bitte mindestens ein Suchkriterium eingeben.": "Please enter at least one search criterion.", "Suchergebnisse – {count} Bilder": "Search results – {count} images", "{count} Bilder gefunden": "{count} images found", "{count} Bilder indexiert": "{count} images indexed", "Bitte wähle zuerst einen Ordner aus.": "Please select a folder first.", "Bildindex": "Image index", "Ordner": "Folder", "Person": "Person", "Suchen": "Search"},
+    "fr": {"Diesen Ordner in die Bildsuche aufnehmen …": "Ajouter ce dossier à la recherche d’images …", "Bilder suchen …": "Rechercher des images …", "Suche beenden": "Quitter la recherche", "Unterordner einschließen": "Inclure les sous-dossiers", "Indexieren": "Indexer", "Bildindex wird aktualisiert …": "Mise à jour de l’index d’images …", "Bitte mindestens ein Suchkriterium eingeben.": "Saisissez au moins un critère de recherche.", "Suchergebnisse – {count} Bilder": "Résultats – {count} images", "{count} Bilder gefunden": "{count} images trouvées", "{count} Bilder indexiert": "{count} images indexées"},
+    "es": {"Diesen Ordner in die Bildsuche aufnehmen …": "Añadir esta carpeta a la búsqueda de imágenes …", "Bilder suchen …": "Buscar imágenes …", "Suche beenden": "Finalizar búsqueda", "Unterordner einschließen": "Incluir subcarpetas", "Indexieren": "Indexar", "Bildindex wird aktualisiert …": "Actualizando el índice de imágenes …", "Bitte mindestens ein Suchkriterium eingeben.": "Introduzca al menos un criterio de búsqueda.", "Suchergebnisse – {count} Bilder": "Resultados – {count} imágenes", "{count} Bilder gefunden": "{count} imágenes encontradas", "{count} Bilder indexiert": "{count} imágenes indexadas"},
+    "uk": {"Diesen Ordner in die Bildsuche aufnehmen …": "Додати цю теку до пошуку зображень …", "Bilder suchen …": "Пошук зображень …", "Suche beenden": "Завершити пошук", "Unterordner einschließen": "Включати вкладені теки", "Indexieren": "Індексувати", "Bildindex wird aktualisiert …": "Оновлення індексу зображень …", "Bitte mindestens ein Suchkriterium eingeben.": "Введіть принаймні один критерій пошуку.", "Suchergebnisse – {count} Bilder": "Результати – {count} зображень", "{count} Bilder gefunden": "Знайдено зображень: {count}", "{count} Bilder indexiert": "Проіндексовано зображень: {count}"},
+}.items():
+    CATALOGUE[_code].update(_words)
+
+for _code, _words in {
     "en": {"PDF-Seiten drucken": "Print PDF pages", "Was möchten Sie drucken?": "What would you like to print?", "Aktuelle Seite": "Current page", "Alle Seiten": "All pages", "Auswahl": "Selection", "Drucken …": "Print …"},
     "fr": {"PDF-Seiten drucken": "Imprimer les pages PDF", "Was möchten Sie drucken?": "Que souhaitez-vous imprimer ?", "Aktuelle Seite": "Page actuelle", "Alle Seiten": "Toutes les pages", "Auswahl": "Sélection", "Drucken …": "Imprimer…"},
     "es": {"PDF-Seiten drucken": "Imprimir páginas PDF", "Was möchten Sie drucken?": "¿Qué desea imprimir?", "Aktuelle Seite": "Página actual", "Alle Seiten": "Todas las páginas", "Auswahl": "Selección", "Drucken …": "Imprimir…"},
@@ -423,6 +431,22 @@ for _code, _words in {
     "uk": {"Die Bildinformationen wurden geändert.": "Інформацію про зображення змінено.", "Verwerfen": "Відкинути", "Bildinformationen werden gespeichert …": "Збереження інформації про зображення …", "GPS muss als Breitengrad, Längengrad eingegeben werden.": "GPS слід вводити як широту, довготу.", "GPS-Koordinaten liegen außerhalb des gültigen Bereichs.": "GPS-координати виходять за допустимий діапазон."},
 }.items():
     CATALOGUE[_code].update(_words)
+
+for _code, _words in {
+    "en": {"Bildindex verwalten …":"Manage image index …","{current} von {total} Bildern":"{current} of {total} images","Indexierung abgebrochen":"Indexing cancelled","Unterordner":"Subfolders","Letzter Scan":"Last scan","Aktualisieren":"Update","Alle aktualisieren":"Update all","Aus Index entfernen":"Remove from index","Den ausgewählten Ordner nur aus dem Bildindex entfernen?":"Remove the selected folder from the image index only?","Ja":"Yes","Nein":"No"},
+    "fr": {"Bildindex verwalten …":"Gérer l’index d’images …","{current} von {total} Bildern":"{current} images sur {total}","Indexierung abgebrochen":"Indexation annulée","Unterordner":"Sous-dossiers","Letzter Scan":"Dernière analyse","Aktualisieren":"Actualiser","Alle aktualisieren":"Tout actualiser","Aus Index entfernen":"Retirer de l’index","Den ausgewählten Ordner nur aus dem Bildindex entfernen?":"Retirer le dossier sélectionné uniquement de l’index ?","Ja":"Oui","Nein":"Non"},
+    "es": {"Bildindex verwalten …":"Gestionar índice de imágenes …","{current} von {total} Bildern":"{current} de {total} imágenes","Indexierung abgebrochen":"Indexación cancelada","Unterordner":"Subcarpetas","Letzter Scan":"Último análisis","Aktualisieren":"Actualizar","Alle aktualisieren":"Actualizar todo","Aus Index entfernen":"Quitar del índice","Den ausgewählten Ordner nur aus dem Bildindex entfernen?":"¿Quitar la carpeta seleccionada solo del índice?","Ja":"Sí","Nein":"No"},
+    "uk": {"Bildindex verwalten …":"Керувати індексом зображень …","{current} von {total} Bildern":"{current} із {total} зображень","Indexierung abgebrochen":"Індексування скасовано","Unterordner":"Вкладені теки","Letzter Scan":"Останнє сканування","Aktualisieren":"Оновити","Alle aktualisieren":"Оновити все","Aus Index entfernen":"Вилучити з індексу","Den ausgewählten Ordner nur aus dem Bildindex entfernen?":"Вилучити вибрану теку лише з індексу?","Ja":"Так","Nein":"Ні"},
+}.items():
+    CATALOGUE[_code].update(_words)
+
+for _code, _text in {
+    "en": "No folders in the image index yet.",
+    "fr": "Aucun dossier dans l’index d’images.",
+    "es": "Todavía no hay carpetas en el índice de imágenes.",
+    "uk": "В індексі зображень ще немає тек.",
+}.items():
+    CATALOGUE[_code]["Noch keine Ordner im Bildindex."] = _text
 
 def language_code(value: str | None) -> str:
     return value if value in LANGUAGES else "de"

@@ -14,5 +14,5 @@ def test_people_places_and_suggestions_use_a_temporary_database(tmp_path):
     assert suggest_people("ing", path=database) == ["Ingeborg", "Ingrid"]
     assert suggest_places("ste", path=database) == ["Steyerberg"]
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
         assert connection.execute("SELECT use_count, latitude, longitude FROM places").fetchone() == (2, 52.0, 9.0)

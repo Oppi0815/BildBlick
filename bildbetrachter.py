@@ -99,6 +99,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QProgressBar,
+    QProgressDialog,
     QProxyStyle,
     QFrame,
     QScrollArea,
@@ -122,6 +123,10 @@ from PySide6.QtWidgets import (
 
 from duplicate_finder import DuplicateFinderDialog
 from metadata_database import suggest_people, suggest_places, upsert_person, upsert_place
+from image_index import (
+    index_folder, indexed_folders, remove_indexed_folder, search_images,
+    update_indexed_image,
+)
 from printing.multi_image_print import (
     MultiImagePrintSettings,
     current_print_date_text,
@@ -151,7 +156,7 @@ from i18n import LANGUAGES, LanguageManager, t
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.21.0"
+APP_VERSION = "1.22.0"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 LOGGER = logging.getLogger(__name__)
 
@@ -964,6 +969,17 @@ QWidget#centralwidget QWidget#informationPanel {
 QWidget#centralwidget QLabel#informationEmptyLabel {
     color: palette(mid); padding: 8px 2px;
 }
+QWidget#informationPanel QLineEdit#manualMetadataField,
+QWidget#informationPanel QTextEdit#manualMetadataField {
+    background-color: palette(base); color: palette(text);
+    border: 1px solid palette(mid); border-radius: 4px; padding: 4px;
+    selection-background-color: palette(highlight);
+    selection-color: palette(highlighted-text);
+}
+QWidget#informationPanel QLineEdit#manualMetadataField:focus,
+QWidget#informationPanel QTextEdit#manualMetadataField:focus {
+    border-color: palette(highlight);
+}
 QWidget#centralwidget QWidget#pdfPageNavigation QPushButton {
     min-height: 20px; max-height: 20px;
     min-width: 22px; max-width: 22px;
@@ -1166,16 +1182,10 @@ QWidget#informationPanel QGroupBox#informationSection::title {{
 }}
 QWidget#informationPanel QLabel#informationFieldLabel {{ color: {colors['muted']}; font-weight: 400; }}
 QWidget#informationPanel QLabel#informationValueLabel {{ color: {colors['text']}; font-weight: 500; }}
-QWidget#informationPanel QGroupBox#manualMetadataSection {{
-    border: none; margin-top: 3px; padding: 4px 0 0 0; font-weight: 600;
-}}
-QWidget#informationPanel QGroupBox#manualMetadataSection::title {{
-    subcontrol-origin: margin; left: 0; padding: 0; color: {colors['text']};
-}}
 QWidget#informationPanel QLabel#manualMetadataLabel {{ color: {colors['muted']}; font-size: 11px; }}
 QWidget#informationPanel QLineEdit#manualMetadataField,
 QWidget#informationPanel QTextEdit#manualMetadataField {{
-    background-color: {colors['window']}; color: {colors['text']};
+    background-color: {colors['button']}; color: {colors['text']};
     border: 1px solid {colors['border']}; border-radius: 4px; padding: 4px;
     selection-background-color: {colors['selection']}; selection-color: {colors['selection_text']};
 }}
@@ -1936,6 +1946,40 @@ def build_all_image_metadata(path: Path) -> dict[str, dict[str, str]]:
     except Exception:
         return {}
     return groups
+
+
+class ImageIndexSignals(QObject):
+    progress = Signal(int, int)
+    finished = Signal(int, bool)
+    failed = Signal(str)
+
+
+class ImageIndexTask(QRunnable):
+    def __init__(self, folders: list[tuple[Path, bool]], database_path: Path | None = None) -> None:
+        super().__init__()
+        self.folders = folders
+        self.database_path = database_path
+        self.signals = ImageIndexSignals()
+        self._cancelled = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+
+    def run(self) -> None:
+        indexed = 0
+        try:
+            for folder, recursive in self.folders:
+                if self._cancelled.is_set(): break
+                indexed += index_folder(
+                    folder, recursive, read_manual_image_metadata,
+                    path=self.database_path,
+                    progress=self.signals.progress.emit,
+                    cancelled=self._cancelled.is_set,
+                )
+        except Exception as error:
+            self.signals.failed.emit(str(error))
+            return
+        self.signals.finished.emit(indexed, self._cancelled.is_set())
 
 
 class ThumbnailSignals(QObject):
@@ -3244,6 +3288,9 @@ class ImageViewer(QObject):
         self._apply_thumbnail_position(save=False)
         self.current_directory: Path | None = None
         self.current_image: Path | None = None
+        self._search_mode = False
+        self._search_return_directory: Path | None = None
+        self._search_return_image: Path | None = None
         self.manual_metadata = {"comment": "", "people": "", "place": "", "gps": ""}
         self._manual_metadata_path: Path | None = None
         self.manual_metadata_dirty = False
@@ -4487,10 +4534,10 @@ class ImageViewer(QObject):
 
     def _install_manual_metadata_editor(self, panel_layout: QVBoxLayout) -> None:
         """Create the pinned editor; persistence is intentionally deferred."""
-        section = QGroupBox(t("Bildinformationen"), self.information_panel)
+        section = QWidget(self.information_panel)
         section.setObjectName("manualMetadataSection")
         layout = QVBoxLayout(section)
-        layout.setContentsMargins(0, 7, 0, 2)
+        layout.setContentsMargins(0, 1, 0, 2)
         layout.setSpacing(2)
         self.manual_metadata_section = section
         self.manual_metadata_fields: dict[str, QLineEdit | QTextEdit] = {}
@@ -4639,6 +4686,10 @@ class ImageViewer(QObject):
                 upsert_place(metadata["place"], *(latitude_longitude or (None, None)))
         except Exception:
             logging.exception("Could not update local metadata suggestions")
+        try:
+            update_indexed_image(path, saved)
+        except Exception:
+            logging.exception("JPEG metadata was saved, but its image-index entry could not be updated")
         self.set_status(STATUS_READY)
 
     def _refresh_manual_metadata_editor(self, path: Path | None) -> None:
@@ -4652,7 +4703,6 @@ class ImageViewer(QObject):
         self.set_manual_metadata_editable(editable)
 
     def _retranslate_manual_metadata_editor(self) -> None:
-        self.manual_metadata_section.setTitle(t("Bildinformationen"))
         for key, label in self.manual_metadata_labels.items():
             source = {"comment": "Bemerkungen", "people": "Personen", "place": "Aufnahmeort", "gps": "GPS"}[key]
             label.setText(t(source))
@@ -5348,6 +5398,20 @@ class ImageViewer(QObject):
             self._show_duplicate_finder
         )
         self.tools_menu.addAction(self.find_duplicates_action)
+        self.tools_menu.addSeparator()
+        self.index_current_folder_action = QAction(t("Diesen Ordner in die Bildsuche aufnehmen …"), self.window)
+        self.index_current_folder_action.setObjectName("indexCurrentFolderAction")
+        self.index_current_folder_action.triggered.connect(self._show_index_current_folder_dialog)
+        self.search_images_action = QAction(t("Bilder suchen …"), self.window)
+        self.search_images_action.setObjectName("searchImagesAction")
+        self.search_images_action.triggered.connect(self._show_image_search_dialog)
+        self.manage_image_index_action = QAction(t("Bildindex verwalten …"), self.window)
+        self.manage_image_index_action.setObjectName("manageImageIndexAction")
+        self.manage_image_index_action.triggered.connect(self._show_image_index_manager)
+        self.end_image_search_action = QAction(t("Suche beenden"), self.window)
+        self.end_image_search_action.triggered.connect(self._end_image_search)
+        self.end_image_search_action.setVisible(False)
+        self.tools_menu.addActions((self.index_current_folder_action, self.search_images_action, self.manage_image_index_action, self.end_image_search_action))
 
         self.help_menu = self.window.menuBar().addMenu(t("Hilfe"))
         self.controls_help_action = QAction(
@@ -5363,6 +5427,132 @@ class ImageViewer(QObject):
         self.about_action = QAction(f"Über {APP_NAME} …", self.window)
         self.about_action.triggered.connect(self._show_about)
         self.help_menu.addAction(self.about_action)
+
+    def _show_index_current_folder_dialog(self) -> None:
+        folder = self.current_directory
+        if folder is None or not folder.is_dir():
+            QMessageBox.information(self.window, t("Bildindex"), t("Bitte wähle zuerst einen Ordner aus."))
+            return
+        dialog = QDialog(self.window)
+        dialog.setWindowTitle(t("Diesen Ordner in die Bildsuche aufnehmen …"))
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(f"{t('Ordner')}:\n{folder}"))
+        recursive = QCheckBox(t("Unterordner einschließen"), dialog)
+        layout.addWidget(recursive)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel, dialog)
+        index_button = buttons.addButton(t("Indexieren"), QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons.rejected.connect(dialog.reject); index_button.clicked.connect(dialog.accept)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted: return
+        self._start_image_indexing([(folder, recursive.isChecked())])
+
+    def _start_image_indexing(self, folders: list[tuple[Path, bool]]) -> None:
+        if not folders or getattr(self, "_image_index_task", None) is not None:
+            return
+        self.set_status(STATUS_BUSY, t("Bildindex wird aktualisiert …"))
+        progress = QProgressDialog(t("Bildindex wird aktualisiert …"), t("Abbrechen"), 0, 0, self.window)
+        progress.setWindowTitle(t("Bildindex")); progress.setWindowModality(Qt.WindowModality.NonModal)
+        progress.setMinimumDuration(0); progress.setAutoClose(False); progress.setAutoReset(False)
+        task = ImageIndexTask(folders)
+        self._image_index_task, self._image_index_progress = task, progress
+        task.signals.progress.connect(self._image_index_progress_changed)
+        task.signals.finished.connect(self._image_index_finished)
+        task.signals.failed.connect(self._image_index_failed)
+        progress.canceled.connect(task.cancel)
+        progress.show(); self.thread_pool.start(task)
+
+    def _image_index_progress_changed(self, current: int, total: int) -> None:
+        progress = self._image_index_progress
+        progress.setRange(0, max(0, total)); progress.setValue(current)
+        progress.setLabelText(t("{current} von {total} Bildern").format(current=current, total=total))
+
+    def _image_index_finished(self, count: int, cancelled: bool) -> None:
+        self._image_index_progress.close()
+        self._image_index_task = self._image_index_progress = None
+        self.set_status(STATUS_READY, t("Indexierung abgebrochen") if cancelled else t("{count} Bilder indexiert").format(count=count))
+
+    def _image_index_failed(self, detail: str) -> None:
+        logging.error("Image indexing failed: %s", detail)
+        self._image_index_progress.close()
+        self._image_index_task = self._image_index_progress = None
+        self.set_status(STATUS_ERROR, detail)
+
+    def _show_image_index_manager(self) -> None:
+        dialog = QDialog(self.window); dialog.setWindowTitle(t("Bildindex verwalten …"))
+        dialog.setObjectName("imageIndexManagerDialog")
+        layout = QVBoxLayout(dialog); tree = QTreeWidget(dialog)
+        tree.setObjectName("indexedFoldersTree")
+        tree.setColumnCount(3); tree.setHeaderLabels((t("Ordner"), t("Unterordner"), t("Letzter Scan")))
+        folder_entries = indexed_folders()
+        for folder, recursive, last_scan in folder_entries:
+            item = QTreeWidgetItem((str(folder), t("Ja") if recursive else t("Nein"), last_scan))
+            item.setData(0, Qt.ItemDataRole.UserRole, (str(folder), recursive)); tree.addTopLevelItem(item)
+        if not folder_entries:
+            empty = QTreeWidgetItem((t("Noch keine Ordner im Bildindex."), "", ""))
+            empty.setFlags(Qt.ItemFlag.NoItemFlags); tree.addTopLevelItem(empty)
+        layout.addWidget(tree)
+        row = QHBoxLayout(); update = QPushButton(t("Aktualisieren"), dialog)
+        update_all = QPushButton(t("Alle aktualisieren"), dialog)
+        remove = QPushButton(t("Aus Index entfernen"), dialog); close = QPushButton(t("Schließen"), dialog)
+        update.setObjectName("updateIndexedFolderButton")
+        update_all.setObjectName("updateAllIndexedFoldersButton")
+        remove.setObjectName("removeIndexedFolderButton")
+        close.setObjectName("closeImageIndexManagerButton")
+        for button in (update, update_all, remove, close): row.addWidget(button)
+        layout.addLayout(row); close.clicked.connect(dialog.accept)
+        def selected_folder():
+            item = tree.currentItem(); return item.data(0, Qt.ItemDataRole.UserRole) if item else None
+        def refresh_buttons():
+            selected = selected_folder() is not None
+            update.setEnabled(selected); remove.setEnabled(selected)
+            update_all.setEnabled(bool(folder_entries))
+        tree.currentItemChanged.connect(lambda *_: refresh_buttons())
+        if folder_entries: tree.setCurrentItem(tree.topLevelItem(0))
+        refresh_buttons()
+        update.clicked.connect(lambda: self._start_image_indexing([(Path(value[0]), bool(value[1]))]) if (value := selected_folder()) else None)
+        update_all.clicked.connect(lambda: self._start_image_indexing([(folder, recursive) for folder, recursive, _ in indexed_folders()]))
+        def remove_selected():
+            value = selected_folder()
+            if not value: return
+            answer = QMessageBox.question(dialog, t("Aus Index entfernen"), t("Den ausgewählten Ordner nur aus dem Bildindex entfernen?"))
+            if answer != QMessageBox.StandardButton.Yes: return
+            remove_indexed_folder(Path(value[0])); tree.takeTopLevelItem(tree.indexOfTopLevelItem(tree.currentItem()))
+            folder_entries[:] = [entry for entry in folder_entries if entry[0] != Path(value[0])]
+            refresh_buttons()
+        remove.clicked.connect(remove_selected); dialog.exec()
+
+    def _show_image_search_dialog(self) -> None:
+        dialog = QDialog(self.window); dialog.setWindowTitle(t("Bilder suchen …"))
+        form = QFormLayout(dialog)
+        person, place, comment = QLineEdit(dialog), QLineEdit(dialog), QLineEdit(dialog)
+        form.addRow(t("Person"), person); form.addRow(t("Aufnahmeort"), place); form.addRow(t("Bemerkungen"), comment)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel, dialog)
+        reset = buttons.addButton(t("Zurücksetzen"), QDialogButtonBox.ButtonRole.ResetRole)
+        search = buttons.addButton(t("Suchen"), QDialogButtonBox.ButtonRole.AcceptRole)
+        reset.clicked.connect(lambda: (person.clear(), place.clear(), comment.clear()))
+        buttons.rejected.connect(dialog.reject); search.clicked.connect(dialog.accept); form.addRow(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted: return
+        if not any((person.text().strip(), place.text().strip(), comment.text().strip())):
+            QMessageBox.information(self.window, t("Bilder suchen …"), t("Bitte mindestens ein Suchkriterium eingeben.")); return
+        self._show_image_search_results(search_images(person.text(), place.text(), comment.text()))
+
+    def _show_image_search_results(self, paths: list[Path]) -> None:
+        if not self._search_mode:
+            self._search_return_directory, self._search_return_image = self.current_directory, self.current_image
+        self._search_mode = True; self.end_image_search_action.setVisible(True)
+        self.thread_pool.clear(); self._load_generation += 1; generation = self._load_generation
+        self._pending_images = [path for path in paths if path.is_file()]
+        self._prepare_index = self._next_job_index = self._completed_jobs = self._active_jobs = 0
+        self.thumbnail_list.clear(); self.current_image = None
+        self._set_file_name_text(t("Suchergebnisse – {count} Bilder").format(count=len(self._pending_images)))
+        self.set_status(STATUS_READY, t("{count} Bilder gefunden").format(count=len(self._pending_images)))
+        self._prepare_thumbnail_items(generation)
+
+    def _end_image_search(self) -> None:
+        if not self._search_mode: return
+        self._search_mode = False; self.end_image_search_action.setVisible(False)
+        if self._search_return_directory is not None:
+            self._show_directory(self._search_return_directory, [self._search_return_image] if self._search_return_image else None)
 
     def _set_language(self, code: str) -> None:
         """Apply and persist one supported interface language immediately."""

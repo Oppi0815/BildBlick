@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def metadata_database_path() -> Path:
@@ -49,8 +49,23 @@ def initialize_metadata_database(connection_or_path: sqlite3.Connection | Path |
         CREATE TABLE IF NOT EXISTS places (id INTEGER PRIMARY KEY, name TEXT NOT NULL,
           normalized_name TEXT NOT NULL UNIQUE, latitude REAL NULL, longitude REAL NULL,
           use_count INTEGER NOT NULL DEFAULT 0, created_at TEXT, updated_at TEXT, last_used_at TEXT);
-        PRAGMA user_version = 1;
     """)
+    version = connection.execute("PRAGMA user_version").fetchone()[0]
+    if version < 2:
+        connection.executescript("""
+            CREATE TABLE IF NOT EXISTS images (id INTEGER PRIMARY KEY, file_path TEXT NOT NULL UNIQUE,
+              file_name TEXT NOT NULL, directory_path TEXT NOT NULL, modified_time REAL, file_size INTEGER,
+              comment TEXT, place_name TEXT, latitude REAL, longitude REAL, indexed_at TEXT);
+            CREATE TABLE IF NOT EXISTS image_people (image_id INTEGER NOT NULL, person_id INTEGER NOT NULL,
+              UNIQUE(image_id, person_id), FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE,
+              FOREIGN KEY(person_id) REFERENCES people(id) ON DELETE CASCADE);
+            CREATE TABLE IF NOT EXISTS indexed_folders (id INTEGER PRIMARY KEY, folder_path TEXT NOT NULL UNIQUE,
+              recursive INTEGER NOT NULL DEFAULT 0, added_at TEXT, last_scan_at TEXT);
+            CREATE INDEX IF NOT EXISTS images_directory_path_index ON images(directory_path);
+            CREATE INDEX IF NOT EXISTS images_place_name_index ON images(place_name);
+            CREATE INDEX IF NOT EXISTS image_people_person_id_index ON image_people(person_id);
+        """)
+        connection.execute("PRAGMA user_version = 2")
     connection.commit()
     if owns_connection:
         connection.close()

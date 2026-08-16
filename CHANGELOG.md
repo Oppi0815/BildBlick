@@ -2,6 +2,34 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.22.0
+
+### Bildindex
+
+- Ausgewählte JPG-/JPEG-Ordner lassen sich lokal und optional rekursiv
+  indexieren. Der SQLite-Index enthält ausschließlich Pfade und Metadaten,
+  keine Bildkopien.
+- Neue und geänderte Dateien werden aktualisiert, gelöschte Dateien entfernt;
+  die Indexierung läuft mit Fortschrittsanzeige und kontrolliertem Abbruch im
+  Hintergrund.
+- Die Bildindex-Verwaltung aktualisiert einzelne oder alle Ordner und entfernt
+  Ordner samt Indexeinträgen, ohne Dateien anzutasten. Änderungen an Metadaten
+  bereits indexierter Bilder werden unmittelbar übernommen.
+
+### Bildsuche
+
+- Suche nach Personen, Aufnahmeort und Bemerkungen sowie kombinierte
+  AND-Suchen mit Autovervollständigung für Personen und Orte.
+- Treffer aus mehreren Ordnern erscheinen als normale BildBlick-Thumbnails;
+  Bildansicht, Details und Vollbild bleiben verfügbar.
+- „Suche beenden“ stellt die vorherige Ordneransicht wieder her.
+
+### Oberfläche
+
+- Die doppelte Überschrift im Bereich „Bildinformationen“ wurde entfernt und
+  die vier editierbaren Felder wurden optisch vereinheitlicht.
+- „Bildindex verwalten …“ ist eindeutig über das Menü Werkzeuge erreichbar.
+
 ## 1.21.0
 
 ### Bildinformationen / Metadaten

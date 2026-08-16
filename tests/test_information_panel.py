@@ -2,12 +2,17 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QThread, QThreadPool, QTimer, Qt
+from PySide6.QtGui import QPalette
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QFormLayout, QGroupBox, QLabel, QSizePolicy
+from PySide6.QtWidgets import (
+    QApplication, QDialog, QFormLayout, QGroupBox, QLabel, QPushButton,
+    QSizePolicy, QTreeWidget,
+)
 
 from bildbetrachter import (
     ImageViewer,
+    ImageIndexTask,
     _metadata_value_present,
     _raw_metadata_text,
     build_all_image_metadata,
@@ -210,6 +215,41 @@ def test_pinned_manual_metadata_editor_is_editable_for_jpeg_and_not_scrolled(tmp
         viewer.window.close()
 
 
+def test_manual_metadata_has_one_heading_and_uniform_theme_fields(tmp_path):
+    path = _image(tmp_path / "theme.jpg")
+    application, viewer = _viewer(tmp_path)
+    try:
+        viewer.current_image = path; viewer._show_information_panel(); application.processEvents()
+        headings = [label for label in viewer.information_panel.findChildren(QLabel) if label.text() == "Bildinformationen"]
+        assert len(headings) == 1
+        for scheme, expected in (("System", "#ffffff"), ("Hell", "#ffffff"), ("Dunkel", "#343a42")):
+            viewer._color_scheme = scheme; viewer._apply_color_scheme(); application.processEvents()
+            colors = {field.palette().color(QPalette.ColorRole.Base).name() for field in viewer.manual_metadata_fields.values()}
+            assert colors == {expected}
+            assert all(field.isEnabled() and not field.isReadOnly() for field in viewer.manual_metadata_fields.values())
+    finally:
+        viewer.window.close()
+
+
+def test_image_index_manager_is_reachable_and_empty_state_disables_folder_actions(tmp_path, monkeypatch):
+    application, viewer = _viewer(tmp_path)
+    monkeypatch.setattr("bildbetrachter.indexed_folders", lambda: [])
+    observed = {}
+    def inspect_dialog():
+        dialog = next(widget for widget in application.topLevelWidgets() if isinstance(widget, QDialog) and widget.objectName() == "imageIndexManagerDialog")
+        tree = dialog.findChild(QTreeWidget, "indexedFoldersTree")
+        observed["empty"] = tree.topLevelItem(0).text(0)
+        observed["update"] = dialog.findChild(QPushButton, "updateIndexedFolderButton").isEnabled()
+        observed["update_all"] = dialog.findChild(QPushButton, "updateAllIndexedFoldersButton").isEnabled()
+        observed["remove"] = dialog.findChild(QPushButton, "removeIndexedFolderButton").isEnabled()
+        dialog.accept()
+    QTimer.singleShot(0, inspect_dialog)
+    viewer.manage_image_index_action.trigger()
+    assert viewer.manage_image_index_action in viewer.tools_menu.actions()
+    assert observed == {"empty":"Noch keine Ordner im Bildindex.", "update":False, "update_all":False, "remove":False}
+    viewer.window.close()
+
+
 def test_pinned_manual_metadata_fields_accept_real_mouse_and_keyboard_input(tmp_path):
     path = _image(tmp_path / "interactive.JPG")
     application, viewer = _viewer(tmp_path)
@@ -270,6 +310,25 @@ def test_pinned_manual_metadata_editor_retranslates_live(tmp_path):
         viewer.window.close()
 
 
+def test_image_index_worker_runs_outside_gui_thread_and_reports_progress(tmp_path, monkeypatch):
+    application = QApplication.instance() or QApplication([])
+    worker_threads = []
+    def fake_index(folder, recursive, reader, path=None, progress=None, cancelled=None):
+        worker_threads.append(QThread.currentThread())
+        progress(1, 2); progress(2, 2)
+        return 2
+    monkeypatch.setattr("bildbetrachter.index_folder", fake_index)
+    task = ImageIndexTask([(tmp_path, False)])
+    progress_values, finished_values = [], []
+    task.signals.progress.connect(lambda current, total: progress_values.append((current, total)), Qt.ConnectionType.DirectConnection)
+    task.signals.finished.connect(lambda count, cancelled: finished_values.append((count, cancelled)), Qt.ConnectionType.DirectConnection)
+    pool = QThreadPool.globalInstance(); pool.start(task)
+    assert pool.waitForDone(3000)
+    assert worker_threads and worker_threads[0] is not application.thread()
+    assert progress_values == [(1, 2), (2, 2)]
+    assert finished_values == [(2, False)]
+
+
 def test_manual_jpeg_metadata_round_trip_preserves_image_and_existing_exif(tmp_path):
     exif = Image.Exif()
     exif[271] = "Existing camera"
@@ -298,6 +357,29 @@ def test_manual_jpeg_metadata_removes_empty_values_and_rejects_invalid_gps(tmp_p
     assert read_manual_image_metadata(path) == {"comment": "", "people": "", "place": "", "gps": ""}
     with pytest.raises(ValueError):
         write_manual_image_metadata(path, {"comment": "", "people": "", "place": "", "gps": "91, 9"})
+
+
+def test_successful_metadata_save_updates_index_and_index_failure_does_not_undo_save(tmp_path, monkeypatch):
+    path = _image(tmp_path / "indexed.jpg")
+    application, viewer = _viewer(tmp_path)
+    saved_calls, index_calls = [], []
+    metadata = {"comment":"Neu", "people":"Ingeborg", "place":"Steyerberg", "gps":"52, 9"}
+    monkeypatch.setattr("bildbetrachter.write_manual_image_metadata", lambda file_path, values: saved_calls.append((file_path, values)))
+    monkeypatch.setattr("bildbetrachter.read_manual_image_metadata", lambda file_path: metadata)
+    monkeypatch.setattr("bildbetrachter.upsert_person", lambda *args: None)
+    monkeypatch.setattr("bildbetrachter.upsert_place", lambda *args: None)
+    monkeypatch.setattr("bildbetrachter.update_indexed_image", lambda file_path, values: index_calls.append((file_path, values)) or True)
+    try:
+        viewer.current_image = path; viewer._show_information_panel()
+        viewer.load_manual_metadata_into_fields(metadata); viewer.manual_metadata_dirty = True
+        viewer._capture_manual_metadata()
+        assert saved_calls and index_calls == [(path, metadata)]
+        assert not viewer.manual_metadata_dirty
+        monkeypatch.setattr("bildbetrachter.update_indexed_image", lambda *args: (_ for _ in ()).throw(OSError("DB defekt")))
+        viewer.manual_metadata_dirty = True; viewer._capture_manual_metadata()
+        assert len(saved_calls) == 2 and not viewer.manual_metadata_dirty
+    finally:
+        viewer.window.close()
 
 
 def test_pdf_information_is_file_only_and_does_not_read_exif(tmp_path):
