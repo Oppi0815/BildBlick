@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def metadata_database_path() -> Path:
@@ -66,6 +66,16 @@ def initialize_metadata_database(connection_or_path: sqlite3.Connection | Path |
             CREATE INDEX IF NOT EXISTS image_people_person_id_index ON image_people(person_id);
         """)
         connection.execute("PRAGMA user_version = 2")
+    if version < 3:
+        for table in ("people", "places"):
+            columns = {
+                row[1] for row in connection.execute(f"PRAGMA table_info({table})")
+            }
+            if "hidden" not in columns:
+                connection.execute(
+                    f"ALTER TABLE {table} ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0"
+                )
+        connection.execute("PRAGMA user_version = 3")
     connection.commit()
     if owns_connection:
         connection.close()
@@ -101,12 +111,52 @@ def upsert_place(name: str, latitude: float | None = None, longitude: float | No
     _upsert("places", name, latitude, longitude, path)
 
 
+def place_coordinates(name: str, path: Path | None = None) -> tuple[float, float] | None:
+    """Return locally stored coordinates for a place, if both are present."""
+    normalized = _normalized(name)
+    if not normalized:
+        return None
+    with _connection(path) as connection:
+        row = connection.execute(
+            "SELECT latitude, longitude FROM places WHERE normalized_name=?",
+            (normalized,),
+        ).fetchone()
+    if row is None or row["latitude"] is None or row["longitude"] is None:
+        return None
+    return float(row["latitude"]), float(row["longitude"])
+
+
+def set_place_coordinates(
+    name: str, latitude: float | None, longitude: float | None,
+    path: Path | None = None,
+) -> None:
+    """Explicitly replace a place's coordinates; never touches image files."""
+    name = " ".join(name.split())
+    if not name:
+        raise ValueError("empty name")
+    if (latitude is None) != (longitude is None):
+        raise ValueError("latitude and longitude must be set together")
+    if latitude is not None and not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        raise ValueError("invalid coordinates")
+    with _connection(path) as connection:
+        row = connection.execute(
+            "SELECT id FROM places WHERE normalized_name=?", (_normalized(name),)
+        ).fetchone()
+        if row is None:
+            _upsert("places", name, latitude, longitude, path)
+            return
+        connection.execute(
+            "UPDATE places SET latitude=?, longitude=?, updated_at=? WHERE id=?",
+            (latitude, longitude, datetime.now(timezone.utc).isoformat(), row["id"]),
+        )
+
+
 def _suggest(table: str, prefix: str, limit: int, path: Path | None) -> list[str]:
     prefix = _normalized(prefix)
     if not prefix:
         return []
     with _connection(path) as connection:
-        rows = connection.execute(f"""SELECT name FROM {table} WHERE normalized_name LIKE ?
+        rows = connection.execute(f"""SELECT name FROM {table} WHERE hidden=0 AND normalized_name LIKE ?
             ORDER BY CASE WHEN normalized_name LIKE ? THEN 0 ELSE 1 END, use_count DESC,
             last_used_at DESC, name COLLATE NOCASE LIMIT ?""", (f"%{prefix}%", f"{prefix}%", limit)).fetchall()
     return [row["name"] for row in rows]
@@ -118,3 +168,99 @@ def suggest_people(prefix: str, limit: int = 10, path: Path | None = None) -> li
 
 def suggest_places(prefix: str, limit: int = 10, path: Path | None = None) -> list[str]:
     return _suggest("places", prefix, limit, path)
+
+
+def metadata_entries(kind: str, path: Path | None = None) -> list[dict[str, object]]:
+    """Return manageable suggestion entries and their current index usage."""
+    if kind not in {"people", "places"}:
+        raise ValueError(kind)
+    with _connection(path) as connection:
+        if kind == "people":
+            rows = connection.execute("""SELECT people.id,people.name,people.use_count,people.last_used_at,
+                people.hidden,count(DISTINCT image_people.image_id) AS indexed_count,NULL AS latitude,NULL AS longitude
+                FROM people LEFT JOIN image_people ON image_people.person_id=people.id
+                GROUP BY people.id ORDER BY people.name COLLATE NOCASE""").fetchall()
+        else:
+            rows = connection.execute("""SELECT places.id,places.name,places.use_count,places.last_used_at,
+                places.hidden,count(DISTINCT images.id) AS indexed_count,places.latitude,places.longitude
+                FROM places LEFT JOIN images ON lower(images.place_name)=places.normalized_name
+                GROUP BY places.id ORDER BY places.name COLLATE NOCASE""").fetchall()
+    return [dict(row) for row in rows]
+
+
+def indexed_metadata_paths(kind: str, name: str, path: Path | None = None) -> list[Path]:
+    normalized = _normalized(name)
+    with _connection(path) as connection:
+        if kind == "people":
+            rows = connection.execute("""SELECT images.file_path FROM images
+                JOIN image_people ON image_people.image_id=images.id
+                JOIN people ON people.id=image_people.person_id
+                WHERE people.normalized_name=? ORDER BY images.file_path""", (normalized,)).fetchall()
+        elif kind == "places":
+            rows = connection.execute(
+                "SELECT file_path FROM images WHERE lower(place_name)=? ORDER BY file_path",
+                (normalized,),
+            ).fetchall()
+        else:
+            raise ValueError(kind)
+    return [Path(row[0]) for row in rows]
+
+
+def rename_metadata_entry(
+    kind: str, entry_id: int, new_name: str, *, merge: bool = False,
+    path: Path | None = None,
+) -> int:
+    """Rename or merge an entry atomically and return the surviving id."""
+    if kind not in {"people", "places"}:
+        raise ValueError(kind)
+    new_name = " ".join(new_name.split())
+    if not new_name:
+        raise ValueError("empty name")
+    normalized = _normalized(new_name)
+    now = datetime.now(timezone.utc).isoformat()
+    with _connection(path) as connection:
+        source = connection.execute(
+            f"SELECT * FROM {kind} WHERE id=?", (entry_id,)
+        ).fetchone()
+        if source is None:
+            raise KeyError(entry_id)
+        target = connection.execute(
+            f"SELECT * FROM {kind} WHERE normalized_name=? AND id<>?",
+            (normalized, entry_id),
+        ).fetchone()
+        if target is not None and not merge:
+            raise FileExistsError(new_name)
+        if target is not None:
+            target_id = int(target["id"])
+            if kind == "people":
+                connection.execute("""INSERT OR IGNORE INTO image_people(image_id,person_id)
+                    SELECT image_id,? FROM image_people WHERE person_id=?""", (target_id, entry_id))
+                connection.execute("DELETE FROM image_people WHERE person_id=?", (entry_id,))
+            connection.execute(
+                f"UPDATE {kind} SET use_count=use_count+?,hidden=0,updated_at=? WHERE id=?",
+                (int(source["use_count"]), now, target_id),
+            )
+            connection.execute(f"DELETE FROM {kind} WHERE id=?", (entry_id,))
+            if kind == "places":
+                connection.execute(
+                    "UPDATE images SET place_name=? WHERE lower(place_name)=?",
+                    (target["name"], source["normalized_name"]),
+                )
+            return target_id
+        connection.execute(
+            f"UPDATE {kind} SET name=?,normalized_name=?,hidden=0,updated_at=? WHERE id=?",
+            (new_name, normalized, now, entry_id),
+        )
+        if kind == "places":
+            connection.execute(
+                "UPDATE images SET place_name=? WHERE lower(place_name)=?",
+                (new_name, source["normalized_name"]),
+            )
+        return entry_id
+
+
+def hide_metadata_entry(kind: str, entry_id: int, path: Path | None = None) -> None:
+    if kind not in {"people", "places"}:
+        raise ValueError(kind)
+    with _connection(path) as connection:
+        connection.execute(f"UPDATE {kind} SET hidden=1 WHERE id=?", (entry_id,))

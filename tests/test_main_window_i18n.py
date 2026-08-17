@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QSettings, Qt
-from PySide6.QtGui import QImage
+from PySide6.QtCore import QEvent, QPoint, QPointF, QSettings, Qt
+from PySide6.QtGui import QImage, QMouseEvent
 from PySide6.QtWidgets import QApplication, QLabel, QGroupBox, QListView, QListWidgetItem, QMenu
 from PySide6.QtTest import QTest
 
@@ -415,6 +415,16 @@ def test_bottom_control_bar_auto_hides_and_returns_for_the_bottom_activation_zon
     try:
         viewer.set_status("ready")
         assert viewer.status_bar.isVisible()
+        # READY -> READY is an internal update, not user activity.  A real
+        # interaction is what arms a new auto-hide cycle.
+        viewer._status_state = "ready"
+        if not viewer.bottom_control_bar_start_timer.isActive():
+            viewer._record_bottom_control_bar_activity()
+        remaining_before = viewer.bottom_control_bar_start_timer.remainingTime()
+        viewer.set_status("ready")
+        assert viewer.bottom_control_bar_start_timer.remainingTime() <= remaining_before
+        viewer._status_state = "ready"
+        viewer._record_bottom_control_bar_activity()
         assert viewer.bottom_control_bar_start_timer.isActive()
 
         viewer.bottom_control_bar_start_timer.timeout.emit()
@@ -428,11 +438,10 @@ def test_bottom_control_bar_auto_hides_and_returns_for_the_bottom_activation_zon
         viewer._update_bottom_control_bar_visibility(bottom_position)
         assert viewer.status_bar.isVisible()
 
-        viewer._bottom_control_bar_active = True
         viewer.bottom_control_bar_hide_timer.timeout.emit()
-        assert viewer.status_bar.isVisible()
-        viewer._bottom_control_bar_active = False
-        viewer._schedule_bottom_control_bar_hide()
+        assert viewer.status_bar.isHidden()
+        viewer._record_bottom_control_bar_activity()
+        viewer.bottom_control_bar_start_timer.timeout.emit()
         assert viewer.bottom_control_bar_hide_timer.isActive()
         viewer.bottom_control_bar_hide_timer.timeout.emit()
         assert viewer.status_bar.isHidden()
@@ -490,6 +499,45 @@ def test_repeated_ready_status_does_not_reshow_an_auto_hidden_bar(tmp_path):
         assert viewer.status_bar.isHidden()
         assert not viewer.bottom_control_bar_start_timer.isActive()
         assert not viewer.bottom_control_bar_hide_timer.isActive()
+    finally:
+        viewer.window.close()
+        application.processEvents()
+
+
+def test_bottom_bar_auto_hide_ignores_internal_events_but_restarts_for_mouse_input(tmp_path):
+    application, viewer = _viewer(tmp_path)
+    try:
+        viewer._status_state = "ready"
+        viewer._record_bottom_control_bar_activity()
+        assert viewer.bottom_control_bar_start_timer.isActive()
+
+        remaining_before = viewer.bottom_control_bar_start_timer.remainingTime()
+        viewer.eventFilter(viewer.window, QEvent(QEvent.Type.LayoutRequest))
+        viewer.eventFilter(viewer.window, QEvent(QEvent.Type.Paint))
+        viewer.set_status("ready")
+        assert viewer.bottom_control_bar_start_timer.isActive()
+        assert viewer.bottom_control_bar_start_timer.remainingTime() <= remaining_before
+
+        viewer.bottom_control_bar_start_timer.timeout.emit()
+        assert viewer.bottom_control_bar_hide_timer.isActive()
+        viewer.bottom_control_bar_hide_timer.timeout.emit()
+        assert viewer.status_bar.isHidden()
+
+        position = QPoint(20, 20)
+        viewer.eventFilter(
+            viewer.window,
+            QMouseEvent(
+                QEvent.Type.MouseMove,
+                QPointF(position),
+                QPointF(viewer.window.mapToGlobal(position)),
+                Qt.MouseButton.NoButton,
+                Qt.MouseButton.NoButton,
+                Qt.KeyboardModifier.NoModifier,
+            ),
+        )
+        application.processEvents()
+        assert viewer.status_bar.isVisible()
+        assert viewer.bottom_control_bar_start_timer.isActive()
     finally:
         viewer.window.close()
         application.processEvents()

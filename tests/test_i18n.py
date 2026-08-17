@@ -42,6 +42,22 @@ def test_package_one_remaining_rotation_and_drop_texts_have_all_translations():
     manager.set_language("de", persist=False)
 
 
+def test_image_index_reread_labels_and_tooltips_have_all_translations():
+    keys = (
+        "Neu einlesen", "Alle neu einlesen",
+        "Liest diesen Ordner erneut ein und synchronisiert die Bildmetadaten im Index.",
+        "Liest alle im Bildindex eingetragenen Ordner erneut ein.",
+    )
+    manager = LanguageManager(QSettings())
+    for code in LANGUAGES:
+        manager.set_language(code, persist=False)
+        for key in keys:
+            assert t(key)
+            if code != "de":
+                assert t(key) != key
+    manager.set_language("de", persist=False)
+
+
 def test_language_codes_fall_back_to_german():
     assert language_code("de") == "de"
     assert language_code("ua") == "de"

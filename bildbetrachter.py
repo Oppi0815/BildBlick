@@ -75,6 +75,12 @@ from PySide6.QtGui import (
 from PySide6.QtUiTools import QUiLoader
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 from PySide6.QtPdf import QPdfLinkModel
+try:
+    from PySide6.QtWebEngineWidgets import QWebEngineView
+    from PySide6.QtWebEngineCore import QWebEngineSettings
+except ImportError:  # Optional at runtime, never required to edit metadata.
+    QWebEngineView = None
+    QWebEngineSettings = None
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -87,6 +93,7 @@ from PySide6.QtWidgets import (
     QFileSystemModel,
     QFormLayout,
     QGroupBox,
+    QHeaderView,
     QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
@@ -101,12 +108,14 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QProgressDialog,
     QProxyStyle,
+    QRadioButton,
     QFrame,
     QScrollArea,
     QSlider,
     QSpinBox,
     QSizePolicy,
     QSplitter,
+    QTabWidget,
     QStyle,
     QStyleOptionMenuItem,
     QStyleOptionViewItem,
@@ -122,9 +131,21 @@ from PySide6.QtWidgets import (
 )
 
 from duplicate_finder import DuplicateFinderDialog
-from metadata_database import suggest_people, suggest_places, upsert_person, upsert_place
+from metadata_database import (
+    hide_metadata_entry,
+    indexed_metadata_paths,
+    metadata_database_path,
+    metadata_entries,
+    place_coordinates,
+    rename_metadata_entry,
+    set_place_coordinates,
+    suggest_people,
+    suggest_places,
+    upsert_person,
+    upsert_place,
+)
 from image_index import (
-    index_folder, indexed_folders, remove_indexed_folder, search_images,
+    index_folder, indexed_folders, refresh_indexed_metadata, remove_indexed_folder, search_images,
     update_indexed_image,
 )
 from printing.multi_image_print import (
@@ -156,7 +177,7 @@ from i18n import LANGUAGES, LanguageManager, t
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.22.0"
+APP_VERSION = "1.23.0"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 LOGGER = logging.getLogger(__name__)
 
@@ -353,7 +374,10 @@ def read_manual_image_metadata(path: Path) -> dict[str, str]:
     people = raw_people if isinstance(raw_people, list) else [raw_people]
     place = next((str(tags[key]) for key in ("XMP-photoshop:City", "IPTC:City") if tags.get(key)), "")
     latitude, longitude = tags.get("GPS:GPSLatitude"), tags.get("GPS:GPSLongitude")
-    gps = "" if latitude is None or longitude is None else f"{float(latitude):.6f}, {float(longitude):.6f}"
+    try:
+        gps = f"{float(latitude):.6f}, {float(longitude):.6f}"
+    except (TypeError, ValueError):
+        gps = ""
     return {"comment": comment, "people": ", ".join(str(item) for item in people), "place": place, "gps": gps}
 
 
@@ -361,28 +385,39 @@ def write_manual_image_metadata(path: Path, metadata: dict[str, str]) -> None:
     """Update only requested metadata tags via ExifTool, preserving JPEG data."""
     if path.suffix.lower() not in JPEG_EXTENSIONS:
         raise ValueError(t("Bildinformationen können nur in JPG/JPEG gespeichert werden."))
-    gps = _manual_metadata_gps(metadata.get("gps", ""))
     args = ["exiftool", "-overwrite_original"]
     def set_or_delete(tag: str, value: str) -> None:
         args.append(f"-{tag}={value.strip()}" if value.strip() else f"-{tag}=")
-    comment = metadata.get("comment", "")
-    set_or_delete("XMP-dc:Description", comment)
-    set_or_delete("IPTC:Caption-Abstract", comment)
-    place = metadata.get("place", "")
-    set_or_delete("XMP-photoshop:City", place)
-    set_or_delete("IPTC:City", place)
-    args.append("-XMP-iptcExt:PersonInImage=")
-    for person in _manual_metadata_people(metadata.get("people", "")):
-        args.append(f"-XMP-iptcExt:PersonInImage+={person}")
-    if gps is None:
-        for tag in ("GPSLatitude", "GPSLatitudeRef", "GPSLongitude", "GPSLongitudeRef"):
-            args.append(f"-{tag}=")
-    else:
-        latitude, longitude = gps
-        args.extend((f"-GPSLatitude={abs(latitude)}", f"-GPSLatitudeRef={'S' if latitude < 0 else 'N'}", f"-GPSLongitude={abs(longitude)}", f"-GPSLongitudeRef={'W' if longitude < 0 else 'E'}"))
+    if "comment" in metadata:
+        set_or_delete("XMP-dc:Description", metadata["comment"])
+        set_or_delete("IPTC:Caption-Abstract", metadata["comment"])
+    if "place" in metadata:
+        set_or_delete("XMP-photoshop:City", metadata["place"])
+        set_or_delete("IPTC:City", metadata["place"])
+    if "people" in metadata:
+        people = _manual_metadata_people(metadata["people"])
+        if people:
+            # A single list assignment is essential here. ExifTool evaluates
+            # repeated += arguments against the original list, even when a
+            # clearing assignment appears earlier in the same command.
+            args.extend(("-sep", ", ", f"-XMP-iptcExt:PersonInImage={', '.join(people)}"))
+        else:
+            args.append("-XMP-iptcExt:PersonInImage=")
+    if "gps" in metadata:
+        gps = _manual_metadata_gps(metadata["gps"])
+        if gps is None:
+            for tag in ("GPSLatitude", "GPSLatitudeRef", "GPSLongitude", "GPSLongitudeRef"):
+                args.append(f"-{tag}=")
+        else:
+            latitude, longitude = gps
+            args.extend((f"-GPSLatitude={abs(latitude)}", f"-GPSLatitudeRef={'S' if latitude < 0 else 'N'}", f"-GPSLongitude={abs(longitude)}", f"-GPSLongitudeRef={'W' if longitude < 0 else 'E'}"))
+    if len(args) == 2:
+        return
     result = subprocess.run([*args, str(path)], capture_output=True, text=True, check=False)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or t("Metadaten konnten nicht gespeichert werden."))
+
+
 THUMBNAIL_SIZE = QSize(160, 120)
 THUMBNAIL_GRID_SIZE = QSize(190, 175)
 THUMBNAIL_SPACING = 14
@@ -980,6 +1015,17 @@ QWidget#informationPanel QLineEdit#manualMetadataField:focus,
 QWidget#informationPanel QTextEdit#manualMetadataField:focus {
     border-color: palette(highlight);
 }
+QWidget#informationPanel QPushButton#manualMetadataSaveButton {
+    min-height: 24px; max-height: 24px;
+    padding: 4px 11px;
+}
+QWidget#informationPanel QLabel#manualMetadataLabel {
+    font-size: 11px;
+}
+QWidget#informationPanel QToolButton#informationCloseButton {
+    min-width: 20px; max-width: 20px; min-height: 20px; max-height: 20px;
+    padding: 0; border-radius: 5px;
+}
 QWidget#centralwidget QWidget#pdfPageNavigation QPushButton {
     min-height: 20px; max-height: 20px;
     min-width: 22px; max-width: 22px;
@@ -1144,7 +1190,7 @@ QMenuBar::item:selected, QMenu::item:selected {{
 QMenu::item:disabled {{ color: {colors['muted']}; }}
 QPushButton {{
     background-color: {colors['button']}; color: {colors['text']};
-    border: 1px solid {colors['border']}; border-radius: 4px; padding: 5px 12px;
+    border-color: {colors['border']};
 }}
 QPushButton:hover {{ background-color: {colors['hover']}; }}
 QPushButton:pressed {{ background-color: {colors['selection']}; color: {colors['selection_text']}; }}
@@ -1170,8 +1216,7 @@ QWidget#informationPanel {{ background-color: {colors['panel']}; color: {colors[
 QWidget#informationPanel QScrollArea {{ background-color: {colors['panel']}; border: none; }}
 QWidget#informationPanel QLabel#informationPanelTitle {{ font-weight: 600; }}
 QWidget#informationPanel QToolButton#informationCloseButton {{
-    min-width: 20px; max-width: 20px; min-height: 20px; max-height: 20px;
-    padding: 0; border-radius: 5px; border-color: transparent; background: transparent;
+    border-color: transparent; background: transparent;
 }}
 QWidget#informationPanel QToolButton#informationCloseButton:hover {{ background-color: {colors['hover']}; }}
 QWidget#informationPanel QGroupBox#informationSection {{
@@ -1182,7 +1227,7 @@ QWidget#informationPanel QGroupBox#informationSection::title {{
 }}
 QWidget#informationPanel QLabel#informationFieldLabel {{ color: {colors['muted']}; font-weight: 400; }}
 QWidget#informationPanel QLabel#informationValueLabel {{ color: {colors['text']}; font-weight: 500; }}
-QWidget#informationPanel QLabel#manualMetadataLabel {{ color: {colors['muted']}; font-size: 11px; }}
+QWidget#informationPanel QLabel#manualMetadataLabel {{ color: {colors['muted']}; }}
 QWidget#informationPanel QLineEdit#manualMetadataField,
 QWidget#informationPanel QTextEdit#manualMetadataField {{
     background-color: {colors['button']}; color: {colors['text']};
@@ -1193,7 +1238,7 @@ QWidget#informationPanel QLineEdit#manualMetadataField:focus,
 QWidget#informationPanel QTextEdit#manualMetadataField:focus {{ border-color: {colors['selection']}; }}
 QWidget#informationPanel QLineEdit#manualMetadataField:disabled,
 QWidget#informationPanel QTextEdit#manualMetadataField:disabled {{ color: {colors['muted']}; }}
-QWidget#informationPanel QFrame#manualMetadataSeparator {{ background: {colors['border']}; max-height: 1px; }}
+QWidget#informationPanel QFrame#manualMetadataSeparator {{ background: {colors['border']}; }}
 QWidget#informationPanel QToolButton#allMetadataToggle {{
     padding: 2px 0; border: none; border-radius: 4px; background: transparent;
     text-align: left; font-weight: 600;
@@ -1980,6 +2025,125 @@ class ImageIndexTask(QRunnable):
             self.signals.failed.emit(str(error))
             return
         self.signals.finished.emit(indexed, self._cancelled.is_set())
+
+
+class ImageMetadataRefreshTask(QRunnable):
+    """Refresh metadata only for folders that are already in the image index."""
+    def __init__(self, database_path: Path | None = None,
+                 folders: list[tuple[Path, bool]] | None = None) -> None:
+        super().__init__()
+        self.database_path = database_path
+        self.folders = folders
+        self.signals = ImageIndexSignals()
+        self._cancelled = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+
+    def run(self) -> None:
+        try:
+            options = {} if self.folders is None else {"folders": self.folders}
+            count = refresh_indexed_metadata(
+                read_manual_image_metadata, path=self.database_path,
+                progress=self.signals.progress.emit,
+                cancelled=self._cancelled.is_set, **options,
+            )
+        except Exception as error:
+            self.signals.failed.emit(str(error))
+            return
+        self.signals.finished.emit(count, self._cancelled.is_set())
+
+
+class BatchMetadataSignals(QObject):
+    progress = Signal(int, int)
+    finished = Signal(object, object, bool)
+
+
+class BatchMetadataTask(QRunnable):
+    """Write selected JPEG metadata without blocking the GUI thread."""
+    def __init__(self, paths: list[Path], changes: dict[str, str]) -> None:
+        super().__init__()
+        self.paths = paths
+        self.changes = changes
+        self.signals = BatchMetadataSignals()
+        self._cancelled = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+
+    def run(self) -> None:
+        saved: list[tuple[Path, dict[str, str]]] = []
+        errors: list[tuple[Path, str]] = []
+        total = len(self.paths)
+        for path in self.paths:
+            if self._cancelled.is_set():
+                break
+            try:
+                write_manual_image_metadata(path, self.changes)
+                current = read_manual_image_metadata(path)
+                try:
+                    update_indexed_image(path, current)
+                except Exception:
+                    logging.exception("Batch metadata saved, but image index update failed for %s", path)
+                saved.append((path, current))
+            except Exception as error:
+                logging.exception("Could not save batch metadata for %s", path)
+                errors.append((path, str(error)))
+            self.signals.progress.emit(len(saved) + len(errors), total)
+        self.signals.finished.emit(saved, errors, self._cancelled.is_set())
+
+
+class MetadataBulkEditTask(QRunnable):
+    """Apply an explicitly confirmed person/place change to indexed JPEGs."""
+    def __init__(
+        self, paths: list[Path], kind: str, old_name: str,
+        new_name: str | None, database_path: Path | None = None,
+    ) -> None:
+        super().__init__()
+        self.paths = paths
+        self.kind = kind
+        self.old_name = old_name
+        self.new_name = new_name
+        self.database_path = database_path
+        self.signals = BatchMetadataSignals()
+        self._cancelled = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+
+    def run(self) -> None:
+        saved: list[tuple[Path, dict[str, str]]] = []
+        errors: list[tuple[Path, str]] = []
+        old_key = " ".join(self.old_name.split()).casefold()
+        for path in self.paths:
+            if self._cancelled.is_set():
+                break
+            try:
+                if not path.is_file() or path.suffix.lower() not in JPEG_EXTENSIONS:
+                    raise OSError(t("Datei fehlt oder ist kein JPG/JPEG."))
+                current = read_manual_image_metadata(path)
+                if self.kind == "people":
+                    people = []
+                    for person in _manual_metadata_people(current.get("people", "")):
+                        replacement = self.new_name if person.casefold() == old_key else person
+                        if replacement:
+                            people.append(replacement)
+                    updates = {"people": ", ".join(_manual_metadata_people(", ".join(people)))}
+                else:
+                    updates = {
+                        "place": (self.new_name or "")
+                        if " ".join(current.get("place", "").split()).casefold() == old_key
+                        else current.get("place", "")
+                    }
+                write_manual_image_metadata(path, updates)
+                refreshed = read_manual_image_metadata(path)
+                update_indexed_image(path, refreshed, path=self.database_path)
+                saved.append((path, refreshed))
+            except Exception as error:
+                logging.exception("Metadata database bulk edit failed for %s", path)
+                errors.append((path, str(error)))
+            self.signals.progress.emit(len(saved) + len(errors), len(self.paths))
+        self.signals.finished.emit(saved, errors, self._cancelled.is_set())
 
 
 class ThumbnailSignals(QObject):
@@ -3355,6 +3519,7 @@ class ImageViewer(QObject):
             tuple[str, int, int, int], dict[str, str]
         ] = {}
         self._image_metadata_by_path: dict[str, dict[str, str]] = {}
+        self._manual_metadata_overrides: dict[str, dict[str, str]] = {}
         self._all_metadata_cache: dict[tuple[str, int, int], dict[str, dict[str, str]]] = {}
         self._all_metadata_expanded = False
         self._file_sort_metadata: dict[str, tuple[int, int]] = {}
@@ -4226,8 +4391,6 @@ class ImageViewer(QObject):
     def _hide_bottom_control_bar(self) -> None:
         if (
             getattr(self, "_status_state", STATUS_READY) != STATUS_READY
-            or self._bottom_control_bar_active
-            or self.bottom_control_bar.underMouse()
         ):
             return
         self.status_bar.hide()
@@ -4236,9 +4399,17 @@ class ImageViewer(QObject):
         if (
             getattr(self, "_status_state", STATUS_READY) == STATUS_READY
             and self.status_bar.isVisible()
-            and not self._bottom_control_bar_active
         ):
             self.bottom_control_bar_hide_timer.start(BOTTOM_CONTROL_BAR_HIDE_DELAY_MS)
+
+    def _record_bottom_control_bar_activity(self) -> None:
+        """Show the controls for user input, never for internal UI updates."""
+        if getattr(self, "_fullscreen_mode", False) and self._pdf_document is not None:
+            return
+        self._bottom_control_bar_active = False
+        self._show_bottom_control_bar()
+        if getattr(self, "_status_state", STATUS_READY) == STATUS_READY:
+            self.bottom_control_bar_start_timer.start(BOTTOM_CONTROL_BAR_START_DELAY_MS)
 
     def _directory_loading_in_progress(self) -> bool:
         """Whether the current folder's scan or thumbnail work is unfinished."""
@@ -4293,14 +4464,6 @@ class ImageViewer(QObject):
             self.status_bar.hide()
             return
         if state == STATUS_READY and previous_state == STATUS_READY:
-            if (
-                self.status_bar.isVisible()
-                and not self.bottom_control_bar_start_timer.isActive()
-                and not self.bottom_control_bar_hide_timer.isActive()
-            ):
-                self.bottom_control_bar_start_timer.start(
-                    BOTTOM_CONTROL_BAR_START_DELAY_MS
-                )
             return
         self.bottom_control_bar_hide_timer.stop()
         if state == STATUS_READY:
@@ -4436,9 +4599,14 @@ class ImageViewer(QObject):
         self.fullscreen_quick_toggle.clicked.connect(self.fullscreen_action.trigger)
         layout.addWidget(self.fullscreen_quick_toggle)
 
-        self.window.menuBar().setCornerWidget(
+        menu_bar = self.window.menuBar()
+        menu_bar.setCornerWidget(
             quick_switches, Qt.Corner.TopRightCorner
         )
+        quick_switches.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
+        quick_switches.show()
         self._update_quick_switches_layout()
         self._sync_quick_switches()
 
@@ -4495,7 +4663,9 @@ class ImageViewer(QObject):
         panel_layout = QVBoxLayout(self.information_panel)
         panel_layout.setContentsMargins(10, 7, 8, 8)
         panel_layout.setSpacing(4)
-        header = QHBoxLayout()
+        header_widget = QWidget(self.information_panel)
+        header_widget.setFixedHeight(22)
+        header = QHBoxLayout(header_widget)
         header.setContentsMargins(2, 0, 0, 0)
         title = QLabel("Bildinformationen", self.information_panel)
         title.setObjectName("informationPanelTitle")
@@ -4511,7 +4681,7 @@ class ImageViewer(QObject):
         header.addWidget(title)
         header.addStretch(1)
         header.addWidget(close_button)
-        panel_layout.addLayout(header)
+        panel_layout.addWidget(header_widget)
 
         self._install_manual_metadata_editor(panel_layout)
 
@@ -4540,9 +4710,21 @@ class ImageViewer(QObject):
         layout.setContentsMargins(0, 1, 0, 2)
         layout.setSpacing(2)
         self.manual_metadata_section = section
+        self.manual_metadata_layout = layout
         self.manual_metadata_fields: dict[str, QLineEdit | QTextEdit] = {}
         self.manual_metadata_labels: dict[str, QLabel] = {}
         self.manual_metadata_placeholders: dict[str, str] = {}
+        self.batch_touched = {key: False for key in ("comment", "people", "place", "gps")}
+        self._manual_metadata_loading = False
+        self._batch_metadata_paths: list[Path] = []
+        self._batch_metadata_values: dict[Path, dict[str, str]] = {}
+        self._batch_metadata_mode = False
+        self._metadata_selection_snapshot: list[Path] = []
+        self._restoring_metadata_selection = False
+        self.batch_selection_label = QLabel(section)
+        self.batch_selection_label.setObjectName("batchSelectionLabel")
+        self.batch_selection_label.hide()
+        layout.addWidget(self.batch_selection_label)
         specifications = (
             ("comment", "Bemerkungen", "Bemerkung hinzufügen …", True),
             ("people", "Personen", "Personen hinzufügen …", False),
@@ -4570,10 +4752,9 @@ class ImageViewer(QObject):
             field.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             field.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
             self.manual_metadata_fields[key] = field
-            if isinstance(field, QTextEdit):
-                field.textChanged.connect(self._mark_manual_metadata_dirty)
-            else:
-                field.textChanged.connect(self._mark_manual_metadata_dirty)
+            field.textChanged.connect(
+                lambda *_, key=key: self._mark_manual_metadata_dirty(key)
+            )
             if multiline:
                 layout.addWidget(label)
                 layout.addWidget(field)
@@ -4587,19 +4768,19 @@ class ImageViewer(QObject):
                 layout.addLayout(row)
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 3, 0, 0)
-        self.manual_metadata_reset_button = QPushButton(t("Zurücksetzen"), section)
-        self.manual_metadata_reset_button.setMaximumHeight(24)
-        self.manual_metadata_reset_button.clicked.connect(self.clear_manual_metadata_fields)
         self.manual_metadata_save_button = QPushButton(t("Speichern"), section)
-        self.manual_metadata_save_button.setMaximumHeight(24)
+        self.manual_metadata_save_button.setObjectName("manualMetadataSaveButton")
+        self.manual_metadata_save_button.setFixedHeight(24)
         self.manual_metadata_save_button.clicked.connect(self._capture_manual_metadata)
-        buttons.addWidget(self.manual_metadata_reset_button)
+        buttons.addStretch(1)
         buttons.addWidget(self.manual_metadata_save_button)
         layout.addLayout(buttons)
         panel_layout.addWidget(section)
         separator = QFrame(self.information_panel)
         separator.setObjectName("manualMetadataSeparator")
         separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFixedHeight(1)
+        self.manual_metadata_separator = separator
         panel_layout.addWidget(separator)
         self._install_manual_metadata_completers()
 
@@ -4618,6 +4799,37 @@ class ImageViewer(QObject):
         assert isinstance(place, QLineEdit)
         place.setCompleter(self._place_completer)
         place.textEdited.connect(lambda text: self._place_completer.setModel(QStringListModel(suggest_places(text), self._place_completer)))
+        place.textChanged.connect(lambda *_: self._hide_place_gps_suggestion())
+        gps = self.manual_metadata_fields["gps"]
+        assert isinstance(gps, QLineEdit)
+        gps.installEventFilter(self)
+        gps.textChanged.connect(lambda *_: self._update_gps_map_button())
+
+        suggestion = QWidget(self.manual_metadata_section)
+        suggestion.setObjectName("placeGpsSuggestion")
+        suggestion_layout = QHBoxLayout(suggestion)
+        suggestion_layout.setContentsMargins(74, 0, 0, 0)
+        suggestion_layout.setSpacing(6)
+        self.place_gps_suggestion_label = QLabel(suggestion)
+        self.place_gps_suggestion_label.setObjectName("placeGpsSuggestionLabel")
+        self.place_gps_suggestion_apply_button = QPushButton(t("Übernehmen"), suggestion)
+        self.place_gps_suggestion_apply_button.setObjectName("placeGpsSuggestionApplyButton")
+        self.place_gps_suggestion_apply_button.clicked.connect(self._apply_place_gps_suggestion)
+        suggestion_layout.addWidget(self.place_gps_suggestion_label, 1)
+        suggestion_layout.addWidget(self.place_gps_suggestion_apply_button)
+        self.place_gps_suggestion = suggestion
+        suggestion.hide()
+        self.manual_metadata_layout.insertWidget(
+            self.manual_metadata_layout.count() - 1, suggestion
+        )
+        self.show_map_button = QPushButton(t("Karte"), self.manual_metadata_section)
+        self.show_map_button.setObjectName("showGpsMapButton")
+        self.show_map_button.setToolTip(t("GPS-Position auf Karte anzeigen"))
+        self.show_map_button.clicked.connect(self._show_gps_map)
+        self.manual_metadata_layout.insertWidget(
+            self.manual_metadata_layout.count() - 1, self.show_map_button
+        )
+        self._update_gps_map_button()
 
     def _update_people_completions(self, text: str) -> None:
         prefix = text.rsplit(",", 1)[-1].strip()
@@ -4634,17 +4846,28 @@ class ImageViewer(QObject):
         """Load a metadata mapping into the pinned editor without file access."""
         self.manual_metadata = {"comment": "", "people": "", "place": "", "gps": ""}
         self.manual_metadata.update(metadata or {})
-        for key, field in self.manual_metadata_fields.items():
-            value = self.manual_metadata[key]
-            if isinstance(field, QTextEdit):
-                field.setPlainText(value)
-            else:
-                field.setText(value)
+        self._manual_metadata_loading = True
+        try:
+            for key, field in self.manual_metadata_fields.items():
+                value = self.manual_metadata[key]
+                if isinstance(field, QTextEdit):
+                    field.setPlainText(value)
+                else:
+                    field.setText(value)
+                field.setPlaceholderText(t(self.manual_metadata_placeholders[key]))
+        finally:
+            self._manual_metadata_loading = False
+        self.batch_touched = {key: False for key in self.batch_touched}
         self.manual_metadata_dirty = False
         self.manual_metadata_save_button.setEnabled(False)
+        self._update_gps_map_button()
 
     def clear_manual_metadata_fields(self) -> None:
         """Discard unsaved editor values for the current image."""
+        if self._batch_metadata_mode:
+            paths, selected_count = self._selected_batch_jpegs()
+            self._load_batch_metadata_editor(paths, selected_count)
+            return
         self.load_manual_metadata_into_fields(self.manual_metadata)
 
     def set_manual_metadata_editable(self, editable: bool) -> None:
@@ -4655,20 +4878,246 @@ class ImageViewer(QObject):
                 Qt.FocusPolicy.StrongFocus if editable else Qt.FocusPolicy.NoFocus
             )
         self.manual_metadata_save_button.setEnabled(editable and self.manual_metadata_dirty)
-        self.manual_metadata_reset_button.setEnabled(editable)
 
-    def _mark_manual_metadata_dirty(self) -> None:
-        if self._manual_metadata_path is None:
+    def _mark_manual_metadata_dirty(self, key: str | None = None) -> None:
+        if self._manual_metadata_loading or self._manual_metadata_path is None:
             return
+        if self._batch_metadata_mode and key is not None:
+            self.batch_touched[key] = True
         self.manual_metadata_dirty = True
         self.manual_metadata_save_button.setEnabled(True)
 
+    @staticmethod
+    def _gps_text(latitude: float, longitude: float) -> str:
+        return f"{latitude:.6f}, {longitude:.6f}"
+
+    def _hide_place_gps_suggestion(self) -> None:
+        if hasattr(self, "place_gps_suggestion"):
+            self.place_gps_suggestion.hide()
+
+    def _gps_map_positions(self) -> list[tuple[float, float, int]]:
+        """Return deduplicated valid coordinates from the active image selection."""
+        values = (
+            self._batch_metadata_values.values()
+            if self._batch_metadata_mode else [self.collect_manual_metadata_from_fields()]
+        )
+        counts: dict[tuple[float, float], int] = {}
+        for metadata in values:
+            try:
+                coordinates = _manual_metadata_gps(metadata.get("gps", ""))
+            except ValueError:
+                coordinates = None
+            if coordinates is not None:
+                counts[coordinates] = counts.get(coordinates, 0) + 1
+        return [(latitude, longitude, count) for (latitude, longitude), count in counts.items()]
+
+    def _update_gps_map_button(self) -> None:
+        if hasattr(self, "show_map_button"):
+            self.show_map_button.setEnabled(bool(self._gps_map_positions()))
+
+    def _show_gps_map(self) -> None:
+        positions = self._gps_map_positions()
+        if not positions:
+            return
+        if QWebEngineView is None:
+            QMessageBox.warning(self.window, t("Karte"), t("Karte konnte nicht geladen werden."))
+            return
+        dialog = QDialog(self.window)
+        dialog.setWindowTitle(t("Karte"))
+        dialog.resize(900, 650)
+        dialog.setMinimumSize(520, 380)
+        layout = QVBoxLayout(dialog)
+        view = QWebEngineView(dialog)
+        view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        if QWebEngineSettings is not None:
+            view.settings().setAttribute(
+                QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls,
+                True,
+            )
+        view.page().profile().setHttpUserAgent(
+            f"{APP_NAME}/{APP_VERSION} (local image viewer; OpenStreetMap tiles)"
+        )
+        marker_data = json.dumps([
+            {"lat": latitude, "lng": longitude, "count": count}
+            for latitude, longitude, count in positions
+        ])
+        view.setHtml(f'''<!doctype html><html><head><meta charset="utf-8">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>html,body,#map{{height:100%;margin:0}}</style></head><body><div id="map"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script><script>
+const points={marker_data}; window.map=L.map('map'); const markers=[];
+L.tileLayer('https://tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+  maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
+}}).addTo(window.map);
+points.forEach(p=>markers.push(L.marker([p.lat,p.lng]).addTo(window.map).bindTooltip(p.count+' Bild'+(p.count===1?'':'er'))));
+if(markers.length===1) window.map.setView(markers[0].getLatLng(),13); else window.map.fitBounds(L.featureGroup(markers).getBounds(),{{padding:[25,25]}});
+new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementById('map'));
+</script></body></html>''')
+        view.loadFinished.connect(
+            lambda _ok: view.page().runJavaScript("window.map && window.map.invalidateSize();")
+        )
+        layout.addWidget(view, 1)
+        layout.addWidget(QLabel(t("{count} Positionen").format(count=len(positions)), dialog))
+        close = QPushButton(t("Schließen"), dialog)
+        close.clicked.connect(dialog.accept)
+        layout.addWidget(close)
+        dialog.exec()
+
+    def _refresh_place_gps_suggestion(self) -> None:
+        """Read current local place GPS anew whenever the GPS editor gains focus."""
+        place = self.manual_metadata_fields["place"]
+        assert isinstance(place, QLineEdit)
+        name = place.text().strip()
+        candidates: list[tuple[str, tuple[float, float]]] = []
+
+        def add_candidate(label: str, coordinates: tuple[float, float] | None) -> None:
+            if coordinates is not None and all(existing[1] != coordinates for existing in candidates):
+                candidates.append((label, coordinates))
+
+        try:
+            # The explicitly entered place has priority over image-derived data.
+            add_candidate(name, place_coordinates(name) if name else None)
+            if self._batch_metadata_mode:
+                for metadata in self._batch_metadata_values.values():
+                    image_place = metadata.get("place", "").strip()
+                    add_candidate(image_place, place_coordinates(image_place) if image_place else None)
+                for metadata in self._batch_metadata_values.values():
+                    try:
+                        coordinates = _manual_metadata_gps(metadata.get("gps", ""))
+                    except ValueError:
+                        coordinates = None
+                    add_candidate(metadata.get("place", "").strip() or t("Ohne Ortszuordnung"), coordinates)
+        except Exception:
+            logging.exception("Could not read local place coordinates")
+        if not candidates:
+            self._hide_place_gps_suggestion()
+            return
+        if len(candidates) > 1:
+            chooser = QDialog(self.window)
+            chooser.setObjectName("gpsCandidateDialog")
+            chooser.setWindowTitle(t("GPS-Koordinaten auswählen"))
+            chooser_layout = QVBoxLayout(chooser)
+            choices = QListWidget(chooser)
+            for label, coordinates in candidates:
+                item = QListWidgetItem(f"{label}\n{self._gps_text(*coordinates)}")
+                item.setData(Qt.ItemDataRole.UserRole, coordinates)
+                choices.addItem(item)
+            choices.setCurrentRow(0)
+            chooser_layout.addWidget(choices)
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel, chooser)
+            apply = buttons.addButton(t("Übernehmen"), QDialogButtonBox.ButtonRole.AcceptRole)
+            buttons.rejected.connect(chooser.reject)
+            apply.clicked.connect(chooser.accept)
+            choices.itemDoubleClicked.connect(lambda *_: chooser.accept())
+            chooser_layout.addWidget(buttons)
+            if chooser.exec() != QDialog.DialogCode.Accepted or choices.currentItem() is None:
+                return
+            self.place_gps_suggestion.setProperty(
+                "placeGpsCoordinates", choices.currentItem().data(Qt.ItemDataRole.UserRole)
+            )
+            self._apply_place_gps_suggestion()
+            return
+        name, coordinates = candidates[0]
+        self.place_gps_suggestion_label.setText(
+            t("Gespeichert für {place}: {gps}").format(
+                place=name, gps=self._gps_text(*coordinates)
+            )
+        )
+        self.place_gps_suggestion.setProperty("placeGpsCoordinates", coordinates)
+        self.place_gps_suggestion.show()
+
+    def _apply_place_gps_suggestion(self) -> None:
+        coordinates = self.place_gps_suggestion.property("placeGpsCoordinates")
+        if not coordinates:
+            return
+        gps = self.manual_metadata_fields["gps"]
+        assert isinstance(gps, QLineEdit)
+        gps.setText(self._gps_text(*coordinates))
+        # A button click moves focus away from the editor on some platforms.
+        # Keep the accepted value authoritative until the user saves or loads
+        # different metadata, regardless of focus transitions.
+        self.batch_touched["gps"] = True
+        self.manual_metadata_dirty = True
+        self.manual_metadata_save_button.setEnabled(True)
+        self._hide_place_gps_suggestion()
+
+    def _offer_place_coordinates_for_editor(self) -> bool:
+        """Offer, but never silently apply, coordinates known for a place."""
+        place = self.manual_metadata_fields["place"]
+        gps = self.manual_metadata_fields["gps"]
+        assert isinstance(place, QLineEdit) and isinstance(gps, QLineEdit)
+        name = place.text().strip()
+        if not name or gps.text().strip():
+            return False
+        try:
+            coordinates = place_coordinates(name)
+        except Exception:
+            logging.exception("Could not read local place coordinates")
+            return False
+        if coordinates is None:
+            return False
+        question = QMessageBox(self.window)
+        question.setIcon(QMessageBox.Icon.Question)
+        question.setWindowTitle(t("GPS-Koordinaten übernehmen"))
+        question.setText(
+            t("GPS-Koordinaten von {place} auf alle ausgewählten Bilder übernehmen?").format(place=name)
+            if self._batch_metadata_mode
+            else t("Gespeicherte GPS-Koordinaten für {place} übernehmen?").format(place=name)
+        )
+        no = question.addButton(t("Nein"), QMessageBox.ButtonRole.RejectRole)
+        apply = question.addButton(t("Übernehmen"), QMessageBox.ButtonRole.AcceptRole)
+        question.exec()
+        if question.clickedButton() is not apply:
+            return False
+        gps.setText(self._gps_text(*coordinates))
+        return True
+
+    def _resolve_place_gps_conflict(self, name: str, gps_text: str) -> bool | None:
+        """Return whether an explicit request permits replacing place GPS."""
+        try:
+            current = place_coordinates(name)
+            incoming = _manual_metadata_gps(gps_text)
+        except (ValueError, RuntimeError):
+            return False
+        if current is None or incoming is None or current == incoming:
+            return False
+        question = QMessageBox(self.window)
+        question.setIcon(QMessageBox.Icon.Warning)
+        question.setWindowTitle(t("GPS-Koordinaten unterscheiden sich"))
+        question.setText(
+            t("Für {place} sind bereits andere GPS-Koordinaten gespeichert.").format(place=name)
+        )
+        keep = question.addButton(
+            t("Bild-GPS beibehalten, Ortsdatenbank nicht ändern"),
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        replace = question.addButton(
+            t("Neue Koordinaten für {place} übernehmen").format(place=name),
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        cancel = question.addButton(t("Abbrechen"), QMessageBox.ButtonRole.DestructiveRole)
+        question.exec()
+        if question.clickedButton() is cancel:
+            return None
+        return question.clickedButton() is replace
+
     def _capture_manual_metadata(self) -> None:
         """Validate and persist standardized JPEG metadata through ExifTool."""
+        if self._batch_metadata_mode:
+            self._capture_batch_metadata()
+            return
         path = self.current_image
         if path is None or not path.is_file() or path.suffix.lower() not in JPEG_EXTENSIONS:
             return
         metadata = self.collect_manual_metadata_from_fields()
+        replace_place_coordinates = False
+        if metadata["place"].strip() and metadata["gps"].strip():
+            decision = self._resolve_place_gps_conflict(
+                metadata["place"].strip(), metadata["gps"]
+            )
+            if decision is None:
+                return
+            replace_place_coordinates = decision
         try:
             self.set_status(STATUS_BUSY, t("Bildinformationen werden gespeichert …"))
             write_manual_image_metadata(path, metadata)
@@ -4678,12 +5127,15 @@ class ImageViewer(QObject):
             QMessageBox.warning(self.window, t("Bildinformationen"), str(error))
             return
         self.load_manual_metadata_into_fields(saved)
+        self._update_manual_metadata_caches(path, saved)
         try:
             for person in _manual_metadata_people(metadata.get("people", "")):
                 upsert_person(person)
             latitude_longitude = _manual_metadata_gps(metadata.get("gps", ""))
             if metadata.get("place", "").strip():
                 upsert_place(metadata["place"], *(latitude_longitude or (None, None)))
+                if replace_place_coordinates and latitude_longitude is not None:
+                    set_place_coordinates(metadata["place"], *latitude_longitude)
         except Exception:
             logging.exception("Could not update local metadata suggestions")
         try:
@@ -4692,7 +5144,180 @@ class ImageViewer(QObject):
             logging.exception("JPEG metadata was saved, but its image-index entry could not be updated")
         self.set_status(STATUS_READY)
 
+    def _update_manual_metadata_caches(
+        self, path: Path, metadata: dict[str, str]
+    ) -> None:
+        """Replace cached per-image metadata with values freshly read from disk."""
+        resolved = self._resolved_sort_path(path)
+        previous = self._image_metadata_by_path.get(resolved, {})
+        self._metadata_cache = {
+            key: value for key, value in self._metadata_cache.items()
+            if key[0] != resolved
+        }
+        self._image_metadata_cache = {
+            key: value for key, value in self._image_metadata_cache.items()
+            if key[0] != resolved
+        }
+        self._all_metadata_cache = {
+            key: value for key, value in self._all_metadata_cache.items()
+            if key[0] != resolved
+        }
+        self._image_metadata_by_path[resolved] = {**previous, **metadata}
+        self._manual_metadata_overrides[resolved] = dict(metadata)
+
+    def _selected_batch_jpegs(self) -> tuple[list[Path], int]:
+        selected = self._selected_thumbnail_paths_in_display_order()
+        return ([path for path in selected if path.suffix.lower() in JPEG_EXTENSIONS], len(selected))
+
+    def _load_batch_metadata_editor(self, paths: list[Path], selected_count: int) -> None:
+        values: dict[Path, dict[str, str]] = {}
+        for path in paths:
+            try:
+                values[path] = read_manual_image_metadata(path)
+            except (OSError, RuntimeError, json.JSONDecodeError):
+                values[path] = {key: "" for key in self.manual_metadata_fields}
+        common: dict[str, str] = {}
+        mixed: set[str] = set()
+        for key in self.manual_metadata_fields:
+            field_values = {metadata.get(key, "") for metadata in values.values()}
+            if len(field_values) == 1:
+                common[key] = next(iter(field_values))
+            else:
+                common[key] = ""
+                mixed.add(key)
+        self._batch_metadata_paths = paths
+        self._batch_metadata_values = values
+        self._batch_metadata_mode = selected_count > 1
+        self._metadata_selection_snapshot = self._selected_thumbnail_paths_in_display_order()
+        self._manual_metadata_path = paths[0] if paths else None
+        self.load_manual_metadata_into_fields(common)
+        for key in mixed:
+            self.manual_metadata_fields[key].setPlaceholderText(t("Verschiedene Werte"))
+        if selected_count == len(paths):
+            label = t("{count} Bilder ausgewählt").format(count=selected_count)
+        else:
+            label = t("{supported} von {total} Dateien können bearbeitet werden").format(
+                supported=len(paths), total=selected_count
+            )
+        self.batch_selection_label.setText(label)
+        self.batch_selection_label.show()
+        self.set_manual_metadata_editable(bool(paths))
+        self._update_gps_map_button()
+
+    def _batch_changes(self) -> dict[str, str]:
+        values = self.collect_manual_metadata_from_fields()
+        return {key: values[key] for key, touched in self.batch_touched.items() if touched}
+
+    def _confirm_batch_metadata_changes(self, count: int, changes: dict[str, str]) -> bool:
+        dialog = QMessageBox(self.window)
+        dialog.setIcon(QMessageBox.Icon.Question)
+        dialog.setWindowTitle(t("Bildinformationen"))
+        dialog.setText(t("Bildinformationen für {count} Bilder ändern?").format(count=count))
+        labels = {"comment": "Bemerkungen", "people": "Personen", "place": "Aufnahmeort", "gps": "GPS"}
+        lines = []
+        for key, value in changes.items():
+            lines.append(f"{t(labels[key])}:\n{value or '—'}")
+        dialog.setInformativeText("\n\n".join(lines))
+        apply_button = dialog.addButton(t("Anwenden"), QMessageBox.ButtonRole.AcceptRole)
+        dialog.addButton(t("Abbrechen"), QMessageBox.ButtonRole.RejectRole)
+        dialog.exec()
+        return dialog.clickedButton() is apply_button
+
+    def _capture_batch_metadata(self) -> None:
+        changes = self._batch_changes()
+        if not changes or getattr(self, "_batch_metadata_task", None) is not None:
+            return
+        if "gps" in changes:
+            try:
+                _manual_metadata_gps(changes["gps"])
+            except ValueError as error:
+                QMessageBox.warning(self.window, t("Bildinformationen"), str(error))
+                return
+        paths = list(self._batch_metadata_paths)
+        if not self._confirm_batch_metadata_changes(len(paths), changes):
+            return
+        progress = QProgressDialog(t("Bildinformationen werden gespeichert …"), t("Abbrechen"), 0, len(paths), self.window)
+        progress.setWindowTitle(t("Bildinformationen"))
+        progress.setWindowModality(Qt.WindowModality.NonModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        task = BatchMetadataTask(paths, changes)
+        self._batch_metadata_task, self._batch_metadata_progress = task, progress
+        self.set_manual_metadata_editable(False)
+        self.set_status(STATUS_BUSY, t("Bildinformationen werden gespeichert …"))
+        task.signals.progress.connect(self._batch_metadata_progress_changed)
+        task.signals.finished.connect(self._batch_metadata_finished)
+        progress.canceled.connect(task.cancel)
+        progress.show()
+        self.thread_pool.start(task)
+
+    def _batch_metadata_progress_changed(self, current: int, total: int) -> None:
+        self._batch_metadata_progress.setValue(current)
+        self._batch_metadata_progress.setLabelText(
+            t("{current} von {total} Bildern").format(current=current, total=total)
+        )
+
+    def _batch_metadata_finished(self, saved, errors, cancelled: bool) -> None:
+        changes = self._batch_changes()
+        total = len(self._batch_metadata_task.paths)
+        self._batch_metadata_progress.close()
+        self._batch_metadata_task = self._batch_metadata_progress = None
+        try:
+            if "people" in changes:
+                for person in _manual_metadata_people(changes["people"]):
+                    upsert_person(person)
+            if changes.get("place", "").strip():
+                gps = _manual_metadata_gps(changes.get("gps", "")) if "gps" in changes else None
+                upsert_place(changes["place"], *(gps or (None, None)))
+        except Exception:
+            logging.exception("Could not update local batch metadata suggestions")
+        for path, metadata in saved:
+            self._update_manual_metadata_caches(path, metadata)
+        saved_count = len(saved)
+        complete = not cancelled and not errors and saved_count == total
+        if complete:
+            paths, selected_count = self._selected_batch_jpegs()
+            self._load_batch_metadata_editor(paths, selected_count)
+            # Loading already clears these states.  Keep the successful state
+            # transition explicit so a later selection change can never treat
+            # the applied batch operation as pending work.
+            self.manual_metadata_dirty = False
+            self.batch_touched = {key: False for key in self.batch_touched}
+            self.manual_metadata_save_button.setEnabled(False)
+        else:
+            # Successful files stay changed, but the edit remains pending for
+            # skipped/failed files. All operations are idempotent (including
+            # people-add through duplicate removal), so retrying is safe.
+            self.manual_metadata_dirty = bool(changes)
+            self.set_manual_metadata_editable(bool(self._batch_metadata_paths))
+            self.manual_metadata_save_button.setEnabled(bool(changes))
+        if errors:
+            summary = t("{count} Bilder gespeichert, {errors} Fehler.").format(count=saved_count, errors=len(errors))
+            detail = "\n".join(f"{path.name}: {error}" for path, error in errors)
+            QMessageBox.warning(self.window, t("Bildinformationen"), f"{summary}\n\n{detail}")
+            self.set_status(STATUS_ERROR, summary)
+        else:
+            summary = t("{saved} von {total} Bildern gespeichert.").format(saved=saved_count, total=total)
+            self.set_status(STATUS_READY, summary)
+
+    def _sync_manual_metadata_selection(self) -> None:
+        if not hasattr(self, "manual_metadata_fields"):
+            return
+        paths, selected_count = self._selected_batch_jpegs()
+        if selected_count > 1:
+            self._load_batch_metadata_editor(paths, selected_count)
+            return
+        self._batch_metadata_paths = []
+        self._batch_metadata_values = {}
+        self._batch_metadata_mode = False
+        self._metadata_selection_snapshot = self._selected_thumbnail_paths_in_display_order()
+        self.batch_selection_label.hide()
+        self._manual_metadata_path = None
+        self._refresh_manual_metadata_editor(self.current_image)
+
     def _refresh_manual_metadata_editor(self, path: Path | None) -> None:
+        if self._batch_metadata_mode:
+            return
         if path != self._manual_metadata_path:
             self._manual_metadata_path = path
             try:
@@ -4709,8 +5334,10 @@ class ImageViewer(QObject):
             field = self.manual_metadata_fields[key]
             field.setPlaceholderText(t(self.manual_metadata_placeholders[key]))
             field.setAccessibleName(t(source))
-        self.manual_metadata_reset_button.setText(t("Zurücksetzen"))
         self.manual_metadata_save_button.setText(t("Speichern"))
+        if self._batch_metadata_mode:
+            paths, selected_count = self._selected_batch_jpegs()
+            self._load_batch_metadata_editor(paths, selected_count)
 
     def _confirm_manual_metadata_navigation(self) -> bool:
         if not self.manual_metadata_dirty:
@@ -4766,7 +5393,11 @@ class ImageViewer(QObject):
     def _update_information_panel(self) -> None:
         if not self.information_panel.isVisible():
             return
-        self._refresh_manual_metadata_editor(self.current_image)
+        paths, selected_count = self._selected_batch_jpegs()
+        if selected_count > 1:
+            self._load_batch_metadata_editor(paths, selected_count)
+        else:
+            self._sync_manual_metadata_selection()
         self._clear_information_content()
         path = self.current_image
         if path is None or not path.is_file():
@@ -5402,16 +6033,32 @@ class ImageViewer(QObject):
         self.index_current_folder_action = QAction(t("Diesen Ordner in die Bildsuche aufnehmen …"), self.window)
         self.index_current_folder_action.setObjectName("indexCurrentFolderAction")
         self.index_current_folder_action.triggered.connect(self._show_index_current_folder_dialog)
+        self.refresh_index_metadata_action = QAction(
+            t("Metadaten aus Bildindex neu einlesen …"), self.window
+        )
+        self.refresh_index_metadata_action.setObjectName("refreshIndexMetadataAction")
+        self.refresh_index_metadata_action.triggered.connect(
+            lambda: self._start_index_metadata_refresh()
+        )
         self.search_images_action = QAction(t("Bilder suchen …"), self.window)
         self.search_images_action.setObjectName("searchImagesAction")
         self.search_images_action.triggered.connect(self._show_image_search_dialog)
         self.manage_image_index_action = QAction(t("Bildindex verwalten …"), self.window)
         self.manage_image_index_action.setObjectName("manageImageIndexAction")
         self.manage_image_index_action.triggered.connect(self._show_image_index_manager)
+        self.manage_metadata_database_action = QAction(
+            t("Metadaten-Datenbank verwalten …"), self.window
+        )
+        self.manage_metadata_database_action.setObjectName(
+            "manageMetadataDatabaseAction"
+        )
+        self.manage_metadata_database_action.triggered.connect(
+            self._show_metadata_database_manager
+        )
         self.end_image_search_action = QAction(t("Suche beenden"), self.window)
         self.end_image_search_action.triggered.connect(self._end_image_search)
         self.end_image_search_action.setVisible(False)
-        self.tools_menu.addActions((self.index_current_folder_action, self.search_images_action, self.manage_image_index_action, self.end_image_search_action))
+        self.tools_menu.addActions((self.index_current_folder_action, self.refresh_index_metadata_action, self.search_images_action, self.manage_image_index_action, self.manage_metadata_database_action, self.end_image_search_action))
 
         self.help_menu = self.window.menuBar().addMenu(t("Hilfe"))
         self.controls_help_action = QAction(
@@ -5469,6 +6116,9 @@ class ImageViewer(QObject):
     def _image_index_finished(self, count: int, cancelled: bool) -> None:
         self._image_index_progress.close()
         self._image_index_task = self._image_index_progress = None
+        reload_manager = getattr(self, "_reload_image_index_manager", None)
+        if reload_manager is not None:
+            reload_manager()
         self.set_status(STATUS_READY, t("Indexierung abgebrochen") if cancelled else t("{count} Bilder indexiert").format(count=count))
 
     def _image_index_failed(self, detail: str) -> None:
@@ -5477,22 +6127,67 @@ class ImageViewer(QObject):
         self._image_index_task = self._image_index_progress = None
         self.set_status(STATUS_ERROR, detail)
 
+    def _start_index_metadata_refresh(self, folders: list[tuple[Path, bool]] | None = None) -> None:
+        if getattr(self, "_index_metadata_refresh_task", None) is not None:
+            return
+        tracked_folders = folders if folders is not None else indexed_folders()
+        if not tracked_folders:
+            QMessageBox.information(
+                self.window, t("Bildindex"), t("Noch keine Ordner im Bildindex.")
+            )
+            return
+        progress = QProgressDialog(
+            t("Metadaten werden neu eingelesen …"), t("Abbrechen"), 0, 0, self.window
+        )
+        progress.setWindowTitle(t("Bildindex"))
+        progress.setWindowModality(Qt.WindowModality.NonModal)
+        progress.setMinimumDuration(0); progress.setAutoClose(False); progress.setAutoReset(False)
+        task = ImageMetadataRefreshTask(folders=folders)
+        self._index_metadata_refresh_task = task
+        self._index_metadata_refresh_progress = progress
+        self.set_status(STATUS_BUSY, t("Metadaten werden neu eingelesen …"))
+        task.signals.progress.connect(self._index_metadata_refresh_progress_changed)
+        task.signals.finished.connect(self._index_metadata_refresh_finished)
+        task.signals.failed.connect(self._index_metadata_refresh_failed)
+        progress.canceled.connect(task.cancel)
+        progress.show(); self.thread_pool.start(task)
+
+    def _index_metadata_refresh_progress_changed(self, current: int, total: int) -> None:
+        progress = self._index_metadata_refresh_progress
+        progress.setRange(0, max(0, total)); progress.setValue(current)
+        progress.setLabelText(t("{current} von {total} Bildern").format(current=current, total=total))
+
+    def _index_metadata_refresh_finished(self, count: int, cancelled: bool) -> None:
+        self._index_metadata_refresh_progress.close()
+        self._index_metadata_refresh_task = self._index_metadata_refresh_progress = None
+        reload_manager = getattr(self, "_reload_image_index_manager", None)
+        if reload_manager is not None:
+            reload_manager()
+        self.set_status(
+            STATUS_READY,
+            t("Metadaten-Neueinlesen abgebrochen") if cancelled else t("{count} Metadaten aktualisiert").format(count=count),
+        )
+
+    def _index_metadata_refresh_failed(self, detail: str) -> None:
+        self._index_metadata_refresh_progress.close()
+        self._index_metadata_refresh_task = self._index_metadata_refresh_progress = None
+        self.set_status(STATUS_ERROR, detail)
+
     def _show_image_index_manager(self) -> None:
-        dialog = QDialog(self.window); dialog.setWindowTitle(t("Bildindex verwalten …"))
+        dialog = QDialog(self.window); dialog.setWindowTitle(t("Bildindex verwalten …")); dialog.resize(800, 360)
         dialog.setObjectName("imageIndexManagerDialog")
         layout = QVBoxLayout(dialog); tree = QTreeWidget(dialog)
         tree.setObjectName("indexedFoldersTree")
         tree.setColumnCount(3); tree.setHeaderLabels((t("Ordner"), t("Unterordner"), t("Letzter Scan")))
-        folder_entries = indexed_folders()
-        for folder, recursive, last_scan in folder_entries:
-            item = QTreeWidgetItem((str(folder), t("Ja") if recursive else t("Nein"), last_scan))
-            item.setData(0, Qt.ItemDataRole.UserRole, (str(folder), recursive)); tree.addTopLevelItem(item)
-        if not folder_entries:
-            empty = QTreeWidgetItem((t("Noch keine Ordner im Bildindex."), "", ""))
-            empty.setFlags(Qt.ItemFlag.NoItemFlags); tree.addTopLevelItem(empty)
+        header = tree.header()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         layout.addWidget(tree)
-        row = QHBoxLayout(); update = QPushButton(t("Aktualisieren"), dialog)
-        update_all = QPushButton(t("Alle aktualisieren"), dialog)
+        row = QHBoxLayout(); update = QPushButton(t("Neu einlesen"), dialog)
+        update_all = QPushButton(t("Alle neu einlesen"), dialog)
+        update.setToolTip(t("Liest diesen Ordner erneut ein und synchronisiert die Bildmetadaten im Index."))
+        update_all.setToolTip(t("Liest alle im Bildindex eingetragenen Ordner erneut ein."))
         remove = QPushButton(t("Aus Index entfernen"), dialog); close = QPushButton(t("Schließen"), dialog)
         update.setObjectName("updateIndexedFolderButton")
         update_all.setObjectName("updateAllIndexedFoldersButton")
@@ -5500,17 +6195,41 @@ class ImageViewer(QObject):
         close.setObjectName("closeImageIndexManagerButton")
         for button in (update, update_all, remove, close): row.addWidget(button)
         layout.addLayout(row); close.clicked.connect(dialog.accept)
+        folder_entries: list[tuple[Path, bool, str]] = []
+
         def selected_folder():
             item = tree.currentItem(); return item.data(0, Qt.ItemDataRole.UserRole) if item else None
         def refresh_buttons():
             selected = selected_folder() is not None
             update.setEnabled(selected); remove.setEnabled(selected)
             update_all.setEnabled(bool(folder_entries))
+        def reload_folders():
+            current = selected_folder()
+            folder_entries[:] = indexed_folders()
+            tree.clear()
+            for folder, recursive, last_scan in folder_entries:
+                item = QTreeWidgetItem((str(folder), t("Ja") if recursive else t("Nein"), last_scan))
+                item.setData(0, Qt.ItemDataRole.UserRole, (str(folder), recursive))
+                tree.addTopLevelItem(item)
+            if not folder_entries:
+                empty = QTreeWidgetItem((t("Noch keine Ordner im Bildindex."), "", ""))
+                empty.setFlags(Qt.ItemFlag.NoItemFlags)
+                tree.addTopLevelItem(empty)
+            if current:
+                for index in range(tree.topLevelItemCount()):
+                    item = tree.topLevelItem(index)
+                    if item.data(0, Qt.ItemDataRole.UserRole) == current:
+                        tree.setCurrentItem(item)
+                        break
+            elif folder_entries:
+                tree.setCurrentItem(tree.topLevelItem(0))
+            refresh_buttons()
         tree.currentItemChanged.connect(lambda *_: refresh_buttons())
-        if folder_entries: tree.setCurrentItem(tree.topLevelItem(0))
-        refresh_buttons()
-        update.clicked.connect(lambda: self._start_image_indexing([(Path(value[0]), bool(value[1]))]) if (value := selected_folder()) else None)
-        update_all.clicked.connect(lambda: self._start_image_indexing([(folder, recursive) for folder, recursive, _ in indexed_folders()]))
+        self._reload_image_index_manager = reload_folders
+        dialog.finished.connect(lambda *_: setattr(self, "_reload_image_index_manager", None))
+        reload_folders()
+        update.clicked.connect(lambda: self._start_index_metadata_refresh([(Path(value[0]), bool(value[1]))]) if (value := selected_folder()) else None)
+        update_all.clicked.connect(lambda: self._start_index_metadata_refresh())
         def remove_selected():
             value = selected_folder()
             if not value: return
@@ -5520,6 +6239,394 @@ class ImageViewer(QObject):
             folder_entries[:] = [entry for entry in folder_entries if entry[0] != Path(value[0])]
             refresh_buttons()
         remove.clicked.connect(remove_selected); dialog.exec()
+
+    def _show_metadata_database_manager(self) -> None:
+        dialog = QDialog(self.window)
+        dialog.setObjectName("metadataDatabaseManagerDialog")
+        dialog.setWindowTitle(t("Metadaten-Datenbank verwalten"))
+        dialog.resize(680, 430)
+        layout = QVBoxLayout(dialog)
+        tabs = QTabWidget(dialog)
+        tabs.setObjectName("metadataDatabaseTabs")
+        controls: dict[str, tuple[QTreeWidget, QPushButton, QPushButton, QPushButton]] = {}
+        gps_edit_buttons: dict[str, QPushButton] = {}
+        for kind, title in (("people", "Personen"), ("places", "Orte")):
+            page = QWidget(tabs)
+            page_layout = QVBoxLayout(page)
+            tree = QTreeWidget(page)
+            tree.setObjectName(f"{kind}MetadataTree")
+            if kind == "people":
+                tree.setHeaderLabels((t("Name"), t("Bilder"), t("Zuletzt verwendet")))
+            else:
+                tree.setHeaderLabels((t("Ort"), t("Bilder"), t("GPS"), t("Zuletzt verwendet")))
+            header = tree.header()
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            for column in range(1, tree.columnCount()):
+                header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+            tree.setRootIsDecorated(False)
+            tree.setAlternatingRowColors(True)
+            header = tree.header()
+            header.setSectionsClickable(True)
+            header.setSortIndicatorShown(True)
+            sort_state = {"column": None, "ascending": True}
+
+            def sort_tree(column: int, toggle: bool = True, *, target=tree, state=sort_state,
+                          metadata_kind=kind) -> None:
+                ascending = (
+                    column != state["column"] or not state["ascending"]
+                    if toggle else state["ascending"]
+                )
+                state.update(column=column, ascending=ascending)
+                items = [target.takeTopLevelItem(0) for _ in range(target.topLevelItemCount())]
+                def sort_key(item: QTreeWidgetItem):
+                    if column == 1:
+                        return int(item.data(1, Qt.ItemDataRole.UserRole) or 0)
+                    if metadata_kind == "people" and column == 2:
+                        return float(item.data(2, Qt.ItemDataRole.UserRole) or float("-inf"))
+                    return item.text(column).casefold()
+                for item in sorted(items, key=sort_key, reverse=not ascending):
+                    target.addTopLevelItem(item)
+                target.header().setSortIndicator(
+                    column,
+                    Qt.SortOrder.AscendingOrder if ascending else Qt.SortOrder.DescendingOrder,
+                )
+
+            header.sectionClicked.connect(sort_tree)
+            tree._metadata_sort_handler = sort_tree
+            tree._metadata_sort_state = sort_state
+            page_layout.addWidget(tree)
+            row = QHBoxLayout()
+            show_images = QPushButton(t("Bilder anzeigen"), page)
+            rename = QPushButton(t("Umbenennen"), page)
+            delete = QPushButton(t("Löschen"), page)
+            show_images.setObjectName(f"show{kind.title()}ImagesButton")
+            rename.setObjectName(f"rename{kind.title()}MetadataButton")
+            delete.setObjectName(f"delete{kind.title()}MetadataButton")
+            row.addWidget(show_images); row.addWidget(rename)
+            if kind == "places":
+                gps_edit = QPushButton(t("GPS bearbeiten"), page)
+                gps_edit.setObjectName("editPlaceGpsButton")
+                gps_edit.setEnabled(False)
+                gps_edit_buttons[kind] = gps_edit
+                row.addWidget(gps_edit)
+            row.addWidget(delete); row.addStretch(1)
+            page_layout.addLayout(row)
+            tabs.addTab(page, t(title))
+            controls[kind] = tree, show_images, rename, delete
+        layout.addWidget(tabs)
+        database_label = QLabel(
+            f"{t('Datenbank')}: {metadata_database_path()}", dialog
+        )
+        database_label.setObjectName("metadataDatabasePathLabel")
+        database_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(database_label)
+        close = QPushButton(t("Schließen"), dialog)
+        close.setObjectName("closeMetadataDatabaseManagerButton")
+        close.clicked.connect(dialog.accept)
+        close_row = QHBoxLayout(); close_row.addStretch(1); close_row.addWidget(close)
+        layout.addLayout(close_row)
+
+        def refresh(kind: str) -> None:
+            tree, show_images, rename, delete = controls[kind]
+            tree.clear()
+            for entry in metadata_entries(kind):
+                if kind == "people":
+                    columns = (
+                        str(entry["name"]), str(entry["indexed_count"]),
+                        str(entry["last_used_at"] or ""),
+                    )
+                else:
+                    latitude, longitude = entry["latitude"], entry["longitude"]
+                    coordinates = "—" if latitude is None or longitude is None else f"{latitude:.6f}, {longitude:.6f}"
+                    columns = (
+                        str(entry["name"]), str(entry["indexed_count"]), coordinates,
+                        str(entry["last_used_at"] or ""),
+                    )
+                item = QTreeWidgetItem(columns)
+                item.setData(0, Qt.ItemDataRole.UserRole, entry)
+                item.setData(1, Qt.ItemDataRole.UserRole, int(entry["indexed_count"]))
+                if kind == "people":
+                    try:
+                        last_used_sort_value = datetime.fromisoformat(
+                            str(entry["last_used_at"] or "")
+                        ).timestamp()
+                    except ValueError:
+                        last_used_sort_value = float("-inf")
+                    item.setData(2, Qt.ItemDataRole.UserRole, last_used_sort_value)
+                if entry.get("hidden"):
+                    item.setForeground(0, QBrush(QColor("#888888")))
+                tree.addTopLevelItem(item)
+            sort_state = tree._metadata_sort_state
+            if sort_state["column"] is not None:
+                tree._metadata_sort_handler(sort_state["column"], False)
+            tree.resizeColumnToContents(0)
+            selected = tree.currentItem() is not None
+            show_images.setEnabled(selected and int(tree.currentItem().data(0, Qt.ItemDataRole.UserRole)["indexed_count"]) > 0)
+            rename.setEnabled(selected); delete.setEnabled(selected)
+            if kind == "places":
+                gps_edit_buttons[kind].setEnabled(selected)
+
+        def selected(kind: str):
+            item = controls[kind][0].currentItem()
+            return item.data(0, Qt.ItemDataRole.UserRole) if item else None
+
+        def show_selected_images(kind: str) -> None:
+            entry = selected(kind)
+            if not entry:
+                return
+            paths = search_images(
+                person=str(entry["name"]) if kind == "people" else "",
+                place=str(entry["name"]) if kind == "places" else "",
+            )
+            if not paths:
+                QMessageBox.information(dialog, t("Bilder anzeigen"), t("Keine indexierten Bilder gefunden."))
+                return
+            dialog.accept()
+            self._show_image_search_results(paths)
+            self.set_status(
+                STATUS_READY,
+                f"{t('Person' if kind == 'people' else 'Aufnahmeort')}: {entry['name']}",
+            )
+
+        def rename_selected(kind: str) -> None:
+            entry = selected(kind)
+            if not entry:
+                return
+            rename_dialog = QDialog(dialog)
+            rename_dialog.setWindowTitle(t("Person umbenennen") if kind == "people" else t("Ort umbenennen"))
+            rename_layout = QVBoxLayout(rename_dialog)
+            form = QFormLayout()
+            form.addRow(t("Alter Name"), QLabel(str(entry["name"]), rename_dialog))
+            new_name = QLineEdit(str(entry["name"]), rename_dialog)
+            new_name.setObjectName("metadataNewNameField")
+            form.addRow(t("Neuer Name"), new_name)
+            rename_layout.addLayout(form)
+            database_only = QRadioButton(t("Nur in Vorschlagsdatenbank ändern"), rename_dialog)
+            update_files = QRadioButton(t("Zusätzlich in allen indexierten JPG-Dateien ändern"), rename_dialog)
+            database_only.setChecked(True)
+            rename_layout.addWidget(database_only); rename_layout.addWidget(update_files)
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel, rename_dialog)
+            accept = buttons.addButton(t("Umbenennen"), QDialogButtonBox.ButtonRole.AcceptRole)
+            buttons.rejected.connect(rename_dialog.reject); accept.clicked.connect(rename_dialog.accept)
+            rename_layout.addWidget(buttons)
+            if rename_dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            target = " ".join(new_name.text().split())
+            if not target or target == entry["name"]:
+                return
+            conflict = next(
+                (candidate for candidate in metadata_entries(kind)
+                 if candidate["id"] != entry["id"]
+                 and " ".join(str(candidate["name"]).split()).casefold() == target.casefold()),
+                None,
+            )
+            merge = False
+            if conflict is not None:
+                merge_dialog = QDialog(dialog)
+                merge_dialog.setObjectName("metadataMergeDialog")
+                merge_dialog.setWindowTitle(
+                    t("Personen zusammenführen") if kind == "people" else t("Orte zusammenführen")
+                )
+                merge_layout = QVBoxLayout(merge_dialog)
+                source_count = len(indexed_metadata_paths(kind, str(entry["name"])))
+                target_count = len(indexed_metadata_paths(kind, str(conflict["name"])))
+                merge_layout.addWidget(QLabel(f"{t('Quelle')}: {entry['name']}"))
+                merge_layout.addWidget(QLabel(f"{t('Ziel')}: {conflict['name']}"))
+                merge_layout.addWidget(QLabel(
+                    t("Betroffene Bilder: {source} Quelle, {target} Ziel").format(
+                        source=source_count, target=target_count
+                    )
+                ))
+                merge_database_only = QRadioButton(t("Nur Datenbank/Index zusammenführen"), merge_dialog)
+                merge_update_files = QRadioButton(t("Zusätzlich JPG-Dateien aktualisieren"), merge_dialog)
+                merge_database_only.setChecked(True)
+                merge_layout.addWidget(merge_database_only); merge_layout.addWidget(merge_update_files)
+                merge_buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel, merge_dialog)
+                merge_accept = merge_buttons.addButton(t("Zusammenführen"), QDialogButtonBox.ButtonRole.AcceptRole)
+                merge_buttons.rejected.connect(merge_dialog.reject); merge_accept.clicked.connect(merge_dialog.accept)
+                merge_layout.addWidget(merge_buttons)
+                if merge_dialog.exec() != QDialog.DialogCode.Accepted:
+                    return
+                merge = True
+                update_files.setChecked(merge_update_files.isChecked())
+            paths = indexed_metadata_paths(kind, str(entry["name"]))
+            if update_files.isChecked() and paths:
+                question = QMessageBox(dialog)
+                question.setIcon(QMessageBox.Icon.Warning)
+                question.setWindowTitle(t("Indexierte JPG-Dateien ändern"))
+                question.setText(
+                    t("{old} wird in {count} indexierten Bildern durch {new} ersetzt.").format(
+                        old=entry["name"], count=len(paths), new=target
+                    )
+                )
+                apply_button = question.addButton(
+                    t("{count} Bilder ändern").format(count=len(paths)),
+                    QMessageBox.ButtonRole.AcceptRole,
+                )
+                question.addButton(t("Abbrechen"), QMessageBox.ButtonRole.RejectRole)
+                question.exec()
+                if question.clickedButton() is not apply_button:
+                    return
+                self._start_metadata_bulk_edit(
+                    paths, kind, str(entry["name"]), target,
+                    lambda: (rename_metadata_entry(kind, int(entry["id"]), target, merge=merge), refresh(kind)),
+                )
+                return
+            try:
+                rename_metadata_entry(kind, int(entry["id"]), target, merge=merge)
+            except (ValueError, FileExistsError) as error:
+                QMessageBox.warning(dialog, t("Metadaten-Datenbank"), str(error))
+                return
+            refresh(kind)
+
+        def delete_selected(kind: str) -> None:
+            entry = selected(kind)
+            if not entry:
+                return
+            paths = indexed_metadata_paths(kind, str(entry["name"]))
+            question = QMessageBox(dialog)
+            question.setIcon(QMessageBox.Icon.Warning)
+            question.setWindowTitle(t("Löschen"))
+            if paths:
+                question.setText(
+                    t("{name} wird noch in {count} indexierten Bildern verwendet.").format(
+                        name=entry["name"], count=len(paths)
+                    )
+                )
+            else:
+                question.setText(
+                    t("{name} aus der Vorschlagsdatenbank ausblenden?").format(name=entry["name"])
+                )
+            hide_button = question.addButton(t("Nur aus Vorschlägen ausblenden"), QMessageBox.ButtonRole.AcceptRole)
+            remove_button = None
+            if paths:
+                remove_button = question.addButton(
+                    t("Aus allen indexierten Bildern entfernen …"),
+                    QMessageBox.ButtonRole.DestructiveRole,
+                )
+            question.addButton(t("Abbrechen"), QMessageBox.ButtonRole.RejectRole)
+            question.exec()
+            if question.clickedButton() is hide_button:
+                hide_metadata_entry(kind, int(entry["id"])); refresh(kind); return
+            if remove_button is None or question.clickedButton() is not remove_button:
+                return
+            confirm = QMessageBox.question(
+                dialog, t("Indexierte JPG-Dateien ändern"),
+                t("{count} indexierte Bilder wirklich ändern?").format(count=len(paths)),
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
+            self._start_metadata_bulk_edit(
+                paths, kind, str(entry["name"]), None,
+                lambda: (hide_metadata_entry(kind, int(entry["id"])), refresh(kind)),
+            )
+
+        def edit_place_gps() -> None:
+            entry = selected("places")
+            if not entry:
+                return
+            gps_dialog = QDialog(dialog)
+            gps_dialog.setObjectName("editPlaceGpsDialog")
+            gps_dialog.setWindowTitle(t("GPS bearbeiten"))
+            form = QFormLayout(gps_dialog)
+            form.addRow(t("Ort"), QLabel(str(entry["name"]), gps_dialog))
+            latitude = QLineEdit("" if entry["latitude"] is None else f"{entry['latitude']:.6f}", gps_dialog)
+            longitude = QLineEdit("" if entry["longitude"] is None else f"{entry['longitude']:.6f}", gps_dialog)
+            latitude.setObjectName("placeLatitudeField")
+            longitude.setObjectName("placeLongitudeField")
+            form.addRow(t("Breitengrad"), latitude)
+            form.addRow(t("Längengrad"), longitude)
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel, gps_dialog)
+            clear = buttons.addButton(t("GPS löschen"), QDialogButtonBox.ButtonRole.DestructiveRole)
+            save = buttons.addButton(t("Speichern"), QDialogButtonBox.ButtonRole.AcceptRole)
+            form.addRow(buttons)
+            buttons.rejected.connect(gps_dialog.reject)
+            clear.clicked.connect(lambda: (latitude.clear(), longitude.clear(), gps_dialog.accept()))
+            save.clicked.connect(gps_dialog.accept)
+            if gps_dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            try:
+                text = f"{latitude.text().strip()}, {longitude.text().strip()}" if latitude.text().strip() or longitude.text().strip() else ""
+                coordinates = _manual_metadata_gps(text)
+                set_place_coordinates(str(entry["name"]), *(coordinates or (None, None)))
+            except ValueError as error:
+                QMessageBox.warning(dialog, t("GPS bearbeiten"), str(error))
+                return
+            refresh("places")
+
+        for kind, (tree, show_images, rename, delete) in controls.items():
+            tree.currentItemChanged.connect(
+                lambda *_args, kind=kind: (
+                    controls[kind][1].setEnabled(controls[kind][0].currentItem() is not None and int(controls[kind][0].currentItem().data(0, Qt.ItemDataRole.UserRole)["indexed_count"]) > 0),
+                    controls[kind][2].setEnabled(controls[kind][0].currentItem() is not None),
+                    controls[kind][3].setEnabled(controls[kind][0].currentItem() is not None),
+                )
+            )
+            show_images.clicked.connect(lambda _checked=False, kind=kind: show_selected_images(kind))
+            tree.itemDoubleClicked.connect(lambda _item, _column, kind=kind: show_selected_images(kind))
+            rename.clicked.connect(lambda _checked=False, kind=kind: rename_selected(kind))
+            delete.clicked.connect(lambda _checked=False, kind=kind: delete_selected(kind))
+            refresh(kind)
+            if tree.topLevelItemCount():
+                tree.setCurrentItem(tree.topLevelItem(0))
+        controls["places"][0].currentItemChanged.connect(
+            lambda *_: gps_edit_buttons["places"].setEnabled(
+                controls["places"][0].currentItem() is not None
+            )
+        )
+        gps_edit_buttons["places"].clicked.connect(edit_place_gps)
+        dialog.exec()
+
+    def _start_metadata_bulk_edit(
+        self, paths: list[Path], kind: str, old_name: str,
+        new_name: str | None, finalize: Callable[[], object],
+    ) -> None:
+        if not paths or getattr(self, "_metadata_bulk_task", None) is not None:
+            return
+        database = metadata_database_path()
+        if database.is_file():
+            try:
+                shutil.copy2(database, database.with_suffix(database.suffix + ".bak"))
+            except OSError:
+                logging.exception("Could not back up metadata database")
+        progress = QProgressDialog(t("Bildinformationen werden gespeichert …"), t("Abbrechen"), 0, len(paths), self.window)
+        progress.setWindowTitle(t("Metadaten-Datenbank"))
+        progress.setWindowModality(Qt.WindowModality.NonModal)
+        progress.setMinimumDuration(0); progress.setAutoClose(False)
+        task = MetadataBulkEditTask(paths, kind, old_name, new_name)
+        self._metadata_bulk_task = task
+        self._metadata_bulk_progress = progress
+        self._metadata_bulk_finalize = finalize
+        task.signals.progress.connect(self._metadata_bulk_progress_changed)
+        task.signals.finished.connect(self._metadata_bulk_finished)
+        progress.canceled.connect(task.cancel)
+        progress.show(); self.thread_pool.start(task)
+
+    def _metadata_bulk_progress_changed(self, current: int, total: int) -> None:
+        self._metadata_bulk_progress.setValue(current)
+        self._metadata_bulk_progress.setLabelText(
+            t("{current} von {total} Bildern").format(current=current, total=total)
+        )
+
+    def _metadata_bulk_finished(self, saved, errors, cancelled: bool) -> None:
+        total = len(self._metadata_bulk_task.paths)
+        self._metadata_bulk_progress.close()
+        finalize = self._metadata_bulk_finalize
+        self._metadata_bulk_task = self._metadata_bulk_progress = None
+        self._metadata_bulk_finalize = None
+        for path, metadata in saved:
+            self._update_manual_metadata_caches(path, metadata)
+        if not cancelled and not errors and len(saved) == total:
+            finalize()
+        summary = t("{count} Bilder geändert, {errors} Fehler.").format(
+            count=len(saved), errors=len(errors)
+        )
+        self.set_status(STATUS_ERROR if errors else STATUS_READY, summary)
+        if errors:
+            QMessageBox.warning(
+                self.window, t("Metadaten-Datenbank"),
+                summary + "\n\n" + "\n".join(f"{path.name}: {error}" for path, error in errors),
+            )
 
     def _show_image_search_dialog(self) -> None:
         dialog = QDialog(self.window); dialog.setWindowTitle(t("Bilder suchen …"))
@@ -6625,6 +7732,10 @@ class ImageViewer(QObject):
             self._image_metadata_by_path[new_resolved] = (
                 self._image_metadata_by_path.pop(old_resolved)
             )
+        if old_resolved in self._manual_metadata_overrides:
+            self._manual_metadata_overrides[new_resolved] = (
+                self._manual_metadata_overrides.pop(old_resolved)
+            )
         if old_resolved in self._recording_date_cache:
             self._recording_date_cache[new_resolved] = (
                 self._recording_date_cache.pop(old_resolved)
@@ -7142,6 +8253,7 @@ class ImageViewer(QObject):
                 if key[0] != resolved_path
             }
             self._image_metadata_by_path.pop(resolved_path, None)
+            self._manual_metadata_overrides.pop(resolved_path, None)
 
         successful_paths = {
             path.resolve(strict=False) for _row, path in successful
@@ -8411,6 +9523,8 @@ class ImageViewer(QObject):
         self._completed_jobs += 1
         try:
             self._metadata_cache[metadata_key] = tooltip
+            manual_override = self._manual_metadata_overrides.get(metadata_key[0], {})
+            metadata = {**metadata, **manual_override}
             self._image_metadata_cache[metadata_key] = metadata
             self._image_metadata_by_path[metadata_key[0]] = metadata
             self._recording_date_cache[metadata_key[0]] = (
@@ -8507,6 +9621,33 @@ class ImageViewer(QObject):
 
     def _selection_changed(self) -> None:
         self._update_view_actions()
+        if not self.information_panel.isVisible() or self._restoring_metadata_selection:
+            return
+        selected = self._selected_thumbnail_paths_in_display_order()
+        if self.manual_metadata_dirty and selected != self._metadata_selection_snapshot:
+            dialog = QMessageBox(self.window)
+            dialog.setIcon(QMessageBox.Icon.Warning)
+            dialog.setWindowTitle(t("Bildinformationen"))
+            dialog.setText(t("Die Bildinformationen wurden geändert."))
+            save = dialog.addButton(t("Speichern"), QMessageBox.ButtonRole.AcceptRole)
+            discard = dialog.addButton(t("Verwerfen"), QMessageBox.ButtonRole.DestructiveRole)
+            dialog.addButton(t("Abbrechen"), QMessageBox.ButtonRole.RejectRole)
+            dialog.exec()
+            clicked = dialog.clickedButton()
+            if clicked is discard:
+                self.manual_metadata_dirty = False
+            else:
+                self._restoring_metadata_selection = True
+                try:
+                    self._restore_thumbnail_selection(
+                        self._metadata_selection_snapshot, self.current_image
+                    )
+                finally:
+                    self._restoring_metadata_selection = False
+                if clicked is save:
+                    self._capture_manual_metadata()
+                return
+        self._sync_manual_metadata_selection()
 
     def _add_rotation_context_submenu(
         self, context_menu: QMenu, image_path: Path | None
@@ -9830,6 +10971,12 @@ class ImageViewer(QObject):
 
     def eventFilter(self, watched, event) -> bool:
         if (
+            hasattr(self, "manual_metadata_fields")
+            and watched is self.manual_metadata_fields.get("gps")
+            and event.type() == QEvent.Type.FocusIn
+        ):
+            self._refresh_place_gps_suggestion()
+        if (
             hasattr(self, "pdf_thumbnail_viewport")
             and watched is self.pdf_thumbnail_viewport
             and event.type() == QEvent.Type.Resize
@@ -9860,13 +11007,12 @@ class ImageViewer(QObject):
         if watched in getattr(self, "_bottom_control_bar_watch_widgets", ()):
             if watched is self.window and event.type() == QEvent.Type.Resize:
                 self._update_bottom_control_bar_layout()
-            if event.type() in (QEvent.Type.Enter, QEvent.Type.MouseMove):
-                global_position = (
-                    event.globalPosition().toPoint()
-                    if event.type() == QEvent.Type.MouseMove
-                    else QCursor.pos()
-                )
+            if event.type() == QEvent.Type.MouseMove:
+                global_position = event.globalPosition().toPoint()
                 self._update_bottom_control_bar_visibility(global_position)
+                self._record_bottom_control_bar_activity()
+            elif event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.KeyPress):
+                self._record_bottom_control_bar_activity()
             elif event.type() == QEvent.Type.Leave:
                 self._bottom_control_bar_active = False
                 self._schedule_bottom_control_bar_hide()

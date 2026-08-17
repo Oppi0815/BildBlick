@@ -2,6 +2,32 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.23.0
+
+### Bildinformationen / Stapelbearbeitung
+
+- Mehrfachauswahl für JPG/JPEG-Bildinformationen mit bearbeitbaren Bemerkungen,
+  Personen, Aufnahmeort und GPS; nur bewusst bearbeitete Felder werden angewendet.
+- Personenlisten können direkt ersetzt oder bereinigt werden; der Bildindex wird
+  nach Metadatenänderungen unmittelbar synchronisiert.
+
+### Metadaten-Datenbank und GPS
+
+- Personen und Orte lassen sich unter Werkzeuge verwalten, sortieren,
+  umbenennen, ausblenden und direkt in Bildern anzeigen.
+- Orte können lokale GPS-Koordinaten speichern; GPS-Vorschläge funktionieren
+  auch in der Mehrfachauswahl und überschreiben vorhandene Werte nicht still.
+- Der Bildindex kann gezielt oder vollständig erneut eingelesen werden.
+
+### Karte und Oberfläche
+
+- GPS-Positionen von Einzelbildern und Mehrfachauswahlen werden als
+  zusammengefasste Marker auf einer OpenStreetMap/Leaflet-Karte angezeigt.
+- Der Kartendialog passt Marker und Größe automatisch an; die Karte bleibt eine
+  reine Anzeige ohne Metadatenänderungen.
+- Bildinformationen sind in allen Themes geometrisch vereinheitlicht; die
+  untere Bedienleiste blendet nach Inaktivität wieder korrekt aus.
+
 ## 1.22.0
 
 ### Bildindex
