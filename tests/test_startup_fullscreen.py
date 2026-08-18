@@ -139,7 +139,8 @@ def test_compact_navigation_replaces_the_old_preview_layout(tmp_path: Path):
     application, viewer, image_path = _viewer_with_image(tmp_path)
 
     controls = viewer.thumbnail_size_slider.parentWidget()
-    assert controls.objectName() == "thumbnailSizeControls"
+    assert controls.objectName() == "thumbnailSizeAdjustControls"
+    assert controls.parentWidget().objectName() == "thumbnailSizeControls"
     assert viewer.bottom_control_bar.isAncestorOf(viewer.previous_button)
     assert viewer.bottom_control_bar.isAncestorOf(viewer.next_button)
     assert viewer.bottom_control_bar.isAncestorOf(viewer.file_name_label)

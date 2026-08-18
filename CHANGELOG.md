@@ -2,6 +2,34 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.24.0
+
+### Gesichtserkennung
+
+- Lokale YuNet-Gesichtserkennung und SFace-Wiedererkennung ohne Cloudzugriff.
+- Sicherheitsbewusste, personenbezogene Vorschläge im roten Face-Workflow und
+  ein grüner Face-Overlay-Toggle mit bekannten Namen, `Name?` und `Face N`.
+- Sequenzielle Ja/Nein-Bestätigung; neue Face-Referenzen entstehen nur nach
+  ausdrücklicher Bestätigung und bestehen einen Qualitätsfilter.
+- Referenzverwaltung für vorhandene Personen und Gesichter.
+
+### Ordnerscan
+
+- Gesichter in ganzen Ordnern suchen, optional einschließlich Unterordnern,
+  im Hintergrund mit Fortschritt, Abbruch und konsistenten Teilergebnissen.
+- Bekannte, unsichere und unbekannte Treffer sowie Complete-Linkage-Clustering
+  unbekannter Gesichter mit Batch-Bestätigung.
+- Bestätigte Personen werden bewusst in JPG-Personenmetadaten gespeichert und
+  anschließend mit dem Bildindex synchronisiert.
+
+### Metadaten und Oberfläche
+
+- Personen aus gespeicherten Bildinformationen dienen als klar gekennzeichneter
+  Hinweis: ein Gesicht plus eine Bildperson ergibt einen `Name?`-Vorschlag.
+- Vollbild-Detailtexte sind besser lesbar; Tooltips und der Thumbnail-Regler
+  bleiben im Vollbild ausgeblendet.
+- Overlay-, Cache- und Initialisierungslogik weiter stabilisiert.
+
 ## 1.23.0
 
 ### Bildinformationen / Stapelbearbeitung

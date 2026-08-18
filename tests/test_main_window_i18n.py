@@ -50,9 +50,36 @@ def test_main_menu_reuses_existing_actions_in_their_new_groups(tmp_path):
     assert viewer.parent_folder_action in viewer.go_to_menu.actions()
     assert viewer.compare_images_action in viewer.tools_menu.actions()
     assert viewer.find_duplicates_action in viewer.tools_menu.actions()
+    assert viewer.detect_faces_action in viewer.tools_menu.actions()
+    assert not viewer.detect_faces_action.isEnabled()
+    assert viewer.face_detect_button.toolTip() == "Gesichtserkennung"
+    assert not viewer.face_detect_button.isEnabled()
+    assert viewer.face_detect_button.size() == viewer.information_toggle_button.size()
+    assert viewer.face_overlay_button.toolTip() == "Gesichter anzeigen"
+    assert viewer.face_overlay_button.size() == viewer.face_detect_button.size()
+    assert viewer.face_overlay_button.text() == viewer.face_detect_button.text()
     assert viewer.slideshow_menu.menuAction() in viewer.view_menu.actions()
     assert viewer.information_toggle_action in viewer.view_menu.actions()
 
+    viewer.window.close()
+    application.processEvents()
+
+
+def test_face_action_exists_before_view_action_update_and_tracks_single_jpeg(tmp_path):
+    application, viewer = _viewer(tmp_path)
+    image_path = tmp_path / "single.jpg"
+    image_path.write_bytes(b"test")
+    item = QListWidgetItem("single")
+    item.setData(Qt.ItemDataRole.UserRole, str(image_path))
+    viewer.thumbnail_list.addItem(item)
+    item.setSelected(True)
+    viewer.current_image = image_path
+    viewer.original_image = QImage(20, 20, QImage.Format.Format_RGB32)
+    viewer._update_view_actions()
+    assert viewer.detect_faces_action.isEnabled()
+    viewer.current_image = tmp_path / "document.pdf"
+    viewer._update_view_actions()
+    assert not viewer.detect_faces_action.isEnabled()
     viewer.window.close()
     application.processEvents()
 

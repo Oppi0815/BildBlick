@@ -12,7 +12,7 @@ import threading
 from time import perf_counter
 from io import BytesIO
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cmp_to_key
 from pathlib import Path
 from typing import Callable, TypeVar
@@ -59,6 +59,7 @@ from PySide6.QtGui import (
     QDesktopServices,
     QDrag,
     QFileOpenEvent,
+    QFont,
     QIcon,
     QImage,
     QImageReader,
@@ -93,8 +94,10 @@ from PySide6.QtWidgets import (
     QFileSystemModel,
     QFormLayout,
     QGroupBox,
+    QInputDialog,
     QHeaderView,
     QGraphicsOpacityEffect,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -116,6 +119,8 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSplitter,
     QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QStyle,
     QStyleOptionMenuItem,
     QStyleOptionViewItem,
@@ -132,11 +137,18 @@ from PySide6.QtWidgets import (
 
 from duplicate_finder import DuplicateFinderDialog
 from metadata_database import (
+    add_face_reference,
+    delete_face_references,
+    face_reference_entries,
+    face_reference_owner,
+    face_reference_vectors,
+    find_person_id,
     hide_metadata_entry,
     indexed_metadata_paths,
     metadata_database_path,
     metadata_entries,
     place_coordinates,
+    person_id_for_name,
     rename_metadata_entry,
     set_place_coordinates,
     suggest_people,
@@ -144,6 +156,8 @@ from metadata_database import (
     upsert_person,
     upsert_place,
 )
+from face_recognition import REFERENCE_OUTLIER_WARNING_THRESHOLD, analyze as analyze_faces, suggest as suggest_face, supported as face_supported
+from face_folder_scan import FolderScanResult, FolderScanTask, ScanFace, UnknownFaceCluster
 from image_index import (
     index_folder, indexed_folders, refresh_indexed_metadata, remove_indexed_folder, search_images,
     update_indexed_image,
@@ -177,11 +191,45 @@ from i18n import LANGUAGES, LanguageManager, t
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.23.0"
+APP_VERSION = "1.24.0"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 LOGGER = logging.getLogger(__name__)
+FACE_AUTO_REFERENCE_MIN_CONFIDENCE = 0.80
+FACE_OVERLAY_FONT_PIXEL_SIZE = 12
+FACE_SUGGESTION_SFACE = "SFACE"
+FACE_SUGGESTION_IMAGE_METADATA = "IMAGE_METADATA"
+FACE_SUGGESTION_CONFIRMED = "CONFIRMED"
+FACE_SUGGESTION_UNKNOWN = "UNKNOWN"
 
 _DialogResult = TypeVar("_DialogResult")
+
+
+def paint_face_overlays(
+    scaled_image: QImage,
+    original_size: QSize,
+    overlays: list[tuple],
+    color: str = "#ff2020",
+    line_width: int = 3,
+) -> None:
+    """Paint face boxes and labels in stable viewer pixels, never photo pixels."""
+    if not overlays or original_size.width() <= 0 or original_size.height() <= 0:
+        return
+    painter = QPainter(scaled_image)
+    painter.setPen(QPen(QColor(color), line_width))
+    font = QFont(painter.font())
+    # Point fonts use image DPI; an explicit pixel size keeps a 9500px source
+    # photograph and a small source visually identical in the viewer.
+    font.setPixelSize(FACE_OVERLAY_FONT_PIXEL_SIZE)
+    font.setWeight(QFont.Weight.Normal)
+    painter.setFont(font)
+    scale_x = scaled_image.width() / original_size.width()
+    scale_y = scaled_image.height() / original_size.height()
+    baseline = FACE_OVERLAY_FONT_PIXEL_SIZE + 3
+    for label, x, y, width, height in overlays:
+        rect = QRect(round(x * scale_x), round(y * scale_y), round(width * scale_x), round(height * scale_y))
+        painter.drawRect(rect)
+        painter.drawText(rect.x() + 4, rect.y() + baseline, str(label))
+    painter.end()
 
 
 def should_auto_enter_pdf_preview(image_path: Path | None) -> bool:
@@ -1999,6 +2047,46 @@ class ImageIndexSignals(QObject):
     failed = Signal(str)
 
 
+class FaceRecognitionSignals(QObject):
+    finished = Signal(object, object, str)
+    failed = Signal(str, str)
+
+
+@dataclass
+class FaceOverlaySession:
+    """Per-image, transient confirmation state for the green overlay mode."""
+    results: list[tuple]
+    pending: dict[int, str] = field(default_factory=dict)
+    pending_sources: dict[int, str] = field(default_factory=dict)
+    confirmed: dict[int, str] = field(default_factory=dict)
+    suggestion_sources: dict[int, str] = field(default_factory=dict)
+    rejected: set[int] = field(default_factory=set)
+    pending_order: list[int] = field(default_factory=list)
+    current_pending_index: int = 0
+
+    def next_pending_number(self) -> int | None:
+        while self.current_pending_index < len(self.pending_order):
+            number = self.pending_order[self.current_pending_index]
+            if number not in self.confirmed and number not in self.rejected:
+                return number
+            self.current_pending_index += 1
+        return None
+
+
+class FaceRecognitionTask(QRunnable):
+    def __init__(self, path: Path, generation: int) -> None:
+        super().__init__(); self.path = path; self.generation = generation; self.signals = FaceRecognitionSignals()
+
+    def run(self) -> None:
+        try:
+            faces, timings = analyze_faces(self.path)
+            refs = {key: (name, [__import__('numpy').frombuffer(value, dtype=__import__('numpy').float32).copy() for value in values]) for key, (name, values) in face_reference_vectors().items()}
+            results = [(face, *suggest_face(face.embedding, refs)) for face in faces]
+            self.signals.finished.emit(results, timings, str(self.path))
+        except Exception as error:
+            self.signals.failed.emit(str(error), str(self.path))
+
+
 class ImageIndexTask(QRunnable):
     def __init__(self, folders: list[tuple[Path, bool]], database_path: Path | None = None) -> None:
         super().__init__()
@@ -2091,6 +2179,54 @@ class BatchMetadataTask(QRunnable):
                 errors.append((path, str(error)))
             self.signals.progress.emit(len(saved) + len(errors), total)
         self.signals.finished.emit(saved, errors, self._cancelled.is_set())
+
+
+class FolderFaceSaveSignals(QObject):
+    progress = Signal(int, int, str)
+    finished = Signal(object, object, int, int, int, int, bool)
+
+
+class FolderFaceSaveTask(QRunnable):
+    """Persist a user-approved folder-face plan through the normal metadata API."""
+    def __init__(self, assignments: dict[Path, list[str]], references: list[ScanFace]) -> None:
+        super().__init__(); self.assignments = assignments; self.references = references
+        self.signals = FolderFaceSaveSignals(); self._cancelled = threading.Event()
+
+    def cancel(self) -> None: self._cancelled.set()
+
+    def run(self) -> None:
+        saved: list[tuple[Path, dict[str, str]]] = []; errors: list[tuple[Path, str]] = []; references_saved = 0; references_existing = 0; references_skipped_quality = 0
+        paths = sorted(self.assignments, key=lambda item: str(item).casefold())
+        for index, path in enumerate(paths, 1):
+            if self._cancelled.is_set(): break
+            try:
+                current = read_manual_image_metadata(path)
+                people = _manual_metadata_people(current.get("people", "") + ", " + ", ".join(self.assignments[path]))
+                write_manual_image_metadata(path, {"people": ", ".join(people)})
+                refreshed = read_manual_image_metadata(path)
+                for name in people: upsert_person(name)
+                # update_indexed_image is intentionally a no-op for images
+                # outside an indexed folder.
+                try:
+                    update_indexed_image(path, refreshed)
+                except Exception:
+                    logging.exception("JPEG saved but folder-face index sync failed for %s", path)
+                saved.append((path, refreshed))
+                for face in [face for face in self.references if face.path == path]:
+                    if not face.confirmed_name: continue
+                    if face.face.embedding is None or face.face.confidence < FACE_AUTO_REFERENCE_MIN_CONFIDENCE:
+                        references_skipped_quality += 1; continue
+                    person_id = person_id_for_name(face.confirmed_name)
+                    owner = face_reference_owner(str(path), face.face.number)
+                    if owner and owner.casefold() != face.confirmed_name.casefold():
+                        references_existing += 1; continue
+                    if add_face_reference(person_id, face.face.embedding.astype("float32").tobytes(), str(path), face.face.number, face.face.confidence): references_saved += 1
+                    else: references_existing += 1
+            except Exception as error:
+                logging.exception("Could not save confirmed folder faces for %s", path); errors.append((path, str(error)))
+            self.signals.progress.emit(index, len(paths), str(path))
+        assignments_saved = sum(len(self.assignments[path]) for path, _metadata in saved)
+        self.signals.finished.emit(saved, errors, assignments_saved, references_saved, references_existing, references_skipped_quality, self._cancelled.is_set())
 
 
 class MetadataBulkEditTask(QRunnable):
@@ -3032,6 +3168,13 @@ class ComparisonImageView(QWidget):
             Qt.AspectRatioMode.IgnoreAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
+        if self._face_overlay_boxes and self.original_image.width() and self.original_image.height():
+            scaled_image = scaled_image.copy()
+            paint_face_overlays(
+                scaled_image, self.original_image.size(),
+                [(f"Face {number}", x, y, width, height) for number, x, y, width, height in self._face_overlay_boxes],
+                color="#e2b13c", line_width=2,
+            )
         self.image_label.resize(scaled_size)
         self.image_label.setPixmap(QPixmap.fromImage(scaled_image))
         if self._zoom_mode == "fit":
@@ -3308,6 +3451,191 @@ QSplitter::handle {{ background-color: {colors['border']}; width: 3px; }}
         )
 
 
+class FolderFaceResultsDialog(QDialog):
+    """Editable, deliberately non-persistent view of a folder scan result."""
+
+    def __init__(self, result: FolderScanResult, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.result = result
+        self.setWindowTitle(t("Gesichtserkennung – Ordnerergebnisse"))
+        self.resize(1040, 700)
+        self._pixmap_cache: dict[int, QPixmap] = {}
+        layout = QVBoxLayout(self)
+        self.tabs = QTabWidget(self); layout.addWidget(self.tabs)
+        self.known_tab = self._make_known_tab(); self.uncertain_tab = self._make_uncertain_tab(); self.unknown_tab = self._make_unknown_tab()
+        self.tabs.addTab(self.known_tab, t("Bekannte Personen"))
+        self.tabs.addTab(self.uncertain_tab, t("Unsicher"))
+        self.tabs.addTab(self.unknown_tab, t("Unbekannte Gruppen"))
+        self.summary = QLabel(self); layout.addWidget(self.summary)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel, self)
+        self.next_button = buttons.addButton(t("Weiter"), QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons.rejected.connect(self.reject); self.next_button.clicked.connect(self.accept); layout.addWidget(buttons)
+        self._refresh_all()
+
+    def _make_list(self) -> QListWidget:
+        view = QListWidget(self)
+        view.setViewMode(QListWidget.ViewMode.IconMode); view.setResizeMode(QListWidget.ResizeMode.Adjust)
+        view.setIconSize(QSize(144, 112)); view.setGridSize(QSize(164, 178))
+        view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        return view
+
+    def _make_known_tab(self) -> QWidget:
+        page = QWidget(self); row = QHBoxLayout(page)
+        self.known_people = QListWidget(page); self.known_people.setMinimumWidth(210)
+        self.known_faces = self._make_list(); side = QVBoxLayout(); side.addWidget(self.known_faces)
+        actions = QHBoxLayout()
+        self.confirm_known_button = QPushButton(t("Bestätigen"), page); self.confirm_known_button.setEnabled(False); self.confirm_known_button.clicked.connect(self._confirm_known); actions.addWidget(self.confirm_known_button)
+        for text, handler in ((t("Andere Person …"), self._assign_other_known), (t("Unbekannt"), self._unknown_known), (t("Ignorieren"), self._ignore_known)):
+            button = QPushButton(text, page); button.clicked.connect(handler); actions.addWidget(button)
+        all_button = QPushButton(t("Alle Vorschläge für diese Person bestätigen"), page); all_button.clicked.connect(self._confirm_all_known)
+        side.addLayout(actions); side.addWidget(all_button); row.addWidget(self.known_people); row.addLayout(side, 1)
+        self.known_people.currentItemChanged.connect(lambda *_: self._populate_known_faces())
+        self.known_faces.itemSelectionChanged.connect(lambda: self.confirm_known_button.setEnabled(bool(self.known_faces.selectedItems())))
+        return page
+
+    def _make_uncertain_tab(self) -> QWidget:
+        page = QWidget(self); layout = QVBoxLayout(page); self.uncertain_faces = self._make_list(); layout.addWidget(self.uncertain_faces)
+        row = QHBoxLayout()
+        self.confirm_uncertain_button = QPushButton(t("Besten Vorschlag bestätigen"), page); self.confirm_uncertain_button.setEnabled(False); self.confirm_uncertain_button.clicked.connect(self._confirm_uncertain); row.addWidget(self.confirm_uncertain_button)
+        for text, handler in ((t("Andere Person …"), self._assign_other_uncertain), (t("Unbekannt"), self._unknown_uncertain), (t("Ignorieren"), self._ignore_uncertain)):
+            button = QPushButton(text, page); button.clicked.connect(handler); row.addWidget(button)
+        self.uncertain_faces.itemSelectionChanged.connect(lambda: self.confirm_uncertain_button.setEnabled(bool(self.uncertain_faces.selectedItems())))
+        layout.addLayout(row); return page
+
+    def _make_unknown_tab(self) -> QWidget:
+        page = QWidget(self); row = QHBoxLayout(page); self.clusters = QListWidget(page); self.clusters.setMinimumWidth(245)
+        right = QVBoxLayout(); self.cluster_details = QLabel(page); self.cluster_faces = self._make_list(); right.addWidget(self.cluster_details); right.addWidget(self.cluster_faces)
+        actions = QHBoxLayout()
+        for text, handler in ((t("Bestehende Person zuweisen …"), self._assign_cluster), (t("Gruppe ignorieren"), self._ignore_cluster), (t("Aus Gruppe entfernen"), self._remove_cluster_faces)):
+            button = QPushButton(text, page); button.clicked.connect(handler); actions.addWidget(button)
+        right.addLayout(actions); row.addWidget(self.clusters); row.addLayout(right, 1)
+        self.clusters.currentItemChanged.connect(lambda *_: self._populate_cluster_faces()); return page
+
+    def _selected(self, view: QListWidget) -> list[ScanFace]:
+        return [item.data(Qt.ItemDataRole.UserRole) for item in view.selectedItems()]
+
+    def _face_icon(self, face: ScanFace) -> QPixmap:
+        key = id(face)
+        if key not in self._pixmap_cache:
+            crop = face.face.display_crop
+            if crop is None or not crop.size: return QPixmap()
+            rgb = crop[:, :, ::-1].copy()
+            image = QImage(rgb.data, rgb.shape[1], rgb.shape[0], rgb.strides[0], QImage.Format.Format_RGB888).copy()
+            self._pixmap_cache[key] = QPixmap.fromImage(image).scaled(144, 112, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        return self._pixmap_cache[key]
+
+    def _add_faces(self, view: QListWidget, faces: list[ScanFace], detail: Callable[[ScanFace], str]) -> None:
+        view.clear()
+        # Icons are made only for the currently displayed page, and retained in
+        # a small cache so tab changes do not continually convert pixels.
+        for face in faces:
+            item = QListWidgetItem(QIcon(self._face_icon(face)), detail(face)); item.setData(Qt.ItemDataRole.UserRole, face)
+            if face.ignored: item.setForeground(QColor("#888888"))
+            view.addItem(item)
+
+    def _refresh_all(self) -> None:
+        current_name = self.known_people.currentItem().data(Qt.ItemDataRole.UserRole) if self.known_people.currentItem() else None
+        self.known_people.clear()
+        groups: dict[tuple[int | None, str], list[ScanFace]] = {}
+        for face in self.result.known_faces:
+            if face.ignored: continue
+            key = (face.suggested_person_id, face.suggested_name or t("Unbekannt")); groups.setdefault(key, []).append(face)
+        for key, faces in sorted(groups.items(), key=lambda item: (-len(item[1]), item[0][1].casefold())):
+            item = QListWidgetItem(f"{key[1]}    {len(faces)}"); item.setData(Qt.ItemDataRole.UserRole, key); self.known_people.addItem(item)
+            if key == current_name: self.known_people.setCurrentItem(item)
+        if self.known_people.currentItem() is None and self.known_people.count(): self.known_people.setCurrentRow(0)
+        self._populate_known_faces()
+        self._add_faces(self.uncertain_faces, self.result.uncertain_faces, lambda f: f"{f.path.name}\nFace {f.face.number}\n{f.suggested_name or '–'} {f.top3_mean or 0:.3f}\nMargin {f.margin or 0:.3f}")
+        selected_cluster = self.clusters.currentItem().data(Qt.ItemDataRole.UserRole) if self.clusters.currentItem() else None
+        self.clusters.clear()
+        for cluster in sorted(self.result.unknown_clusters, key=lambda item: -len(item.faces)):
+            item = QListWidgetItem(f"{t('Gruppe')} {cluster.cluster_id} – {len(cluster.faces)} {t('Gesichter')}"); item.setData(Qt.ItemDataRole.UserRole, cluster); self.clusters.addItem(item)
+            if cluster is selected_cluster: self.clusters.setCurrentItem(item)
+        if self.clusters.currentItem() is None and self.clusters.count(): self.clusters.setCurrentRow(0)
+        self._populate_cluster_faces(); self._refresh_summary()
+
+    def _populate_known_faces(self) -> None:
+        item = self.known_people.currentItem()
+        if not item: self.known_faces.clear(); return
+        person_id, name = item.data(Qt.ItemDataRole.UserRole)
+        faces = [f for f in self.result.known_faces if f.suggested_person_id == person_id and f.suggested_name == name]
+        self._add_faces(self.known_faces, faces, lambda f: f"{f.path.name}\nFace {f.face.number}\n{f.top3_mean or 0:.3f}")
+
+    def _populate_cluster_faces(self) -> None:
+        item = self.clusters.currentItem()
+        if not item: self.cluster_faces.clear(); self.cluster_details.clear(); return
+        cluster: UnknownFaceCluster = item.data(Qt.ItemDataRole.UserRole)
+        warning = "\n⚠ " + t("Diese Gruppe enthält mehrere Gesichter aus demselben Bild.") if cluster.same_image_warning else ""
+        self.cluster_details.setText(f"{t('Anzahl:')} {len(cluster.faces)}   {t('Mittlere Ähnlichkeit:')} {cluster.mean_similarity or 0:.3f}   {t('Minimum:')} {cluster.min_similarity or 0:.3f}   {t('Nächste externe Ähnlichkeit:')} {cluster.nearest_external_similarity or 0:.3f}{warning}")
+        self._add_faces(self.cluster_faces, cluster.faces, lambda f: f"{f.path.name}\nFace {f.face.number}" + (f"\n★ {t('Repräsentant')}" if f is cluster.representative_face else ""))
+
+    def _set_confirmed(self, faces: list[ScanFace], person_id: int | None, name: str | None) -> None:
+        for face in faces:
+            face.confirmed_person_id, face.confirmed_name, face.ignored = person_id, name, False
+            if face.status == "UNKNOWN":
+                face.status = "ASSIGNED"; face.cluster = None
+        for cluster in self.result.unknown_clusters:
+            cluster.faces[:] = [face for face in cluster.faces if face.status == "UNKNOWN"]
+        self.result.unknown_clusters[:] = [cluster for cluster in self.result.unknown_clusters if cluster.faces]
+        self._refresh_all()
+
+    def _choose_person(self) -> tuple[int | None, str] | None:
+        names = suggest_people("")
+        value, accepted = QInputDialog.getItem(self, t("Andere Person …"), t("Person:"), names, 0, True)
+        if not accepted or not value.strip(): return None
+        # No people-table mutation in Phase 2.  A typed future name therefore
+        # stays a temporary label until the explicit Phase-3 commit.
+        name = value.strip(); return find_person_id(name), name
+
+    def _confirm_known(self) -> None:
+        faces = self._selected(self.known_faces)
+        if faces: self._set_confirmed(faces, faces[0].suggested_person_id, faces[0].suggested_name)
+    def _confirm_all_known(self) -> None:
+        item = self.known_people.currentItem()
+        if item:
+            key = item.data(Qt.ItemDataRole.UserRole)
+            self._set_confirmed([f for f in self.result.known_faces if (f.suggested_person_id, f.suggested_name) == key], *key)
+    def _assign_other_known(self) -> None:
+        choice = self._choose_person(); faces = self._selected(self.known_faces)
+        if choice and faces: self._set_confirmed(faces, *choice)
+    def _unknown_known(self) -> None: self._make_unknown(self._selected(self.known_faces))
+    def _ignore_known(self) -> None: self._ignore(self._selected(self.known_faces))
+    def _confirm_uncertain(self) -> None:
+        faces = self._selected(self.uncertain_faces)
+        if faces: self._set_confirmed(faces, faces[0].suggested_person_id, faces[0].suggested_name)
+    def _assign_other_uncertain(self) -> None:
+        choice = self._choose_person(); faces = self._selected(self.uncertain_faces)
+        if choice and faces: self._set_confirmed(faces, *choice)
+    def _unknown_uncertain(self) -> None: self._make_unknown(self._selected(self.uncertain_faces))
+    def _ignore_uncertain(self) -> None: self._ignore(self._selected(self.uncertain_faces))
+    def _ignore(self, faces: list[ScanFace]) -> None:
+        for face in faces: face.ignored = True
+        self._refresh_all()
+    def _make_unknown(self, faces: list[ScanFace]) -> None:
+        for face in faces:
+            face.status = "UNKNOWN"; face.confirmed_person_id = None; face.confirmed_name = None; face.cluster = None
+        self._refresh_all()
+    def _assign_cluster(self) -> None:
+        choice = self._choose_person(); item = self.clusters.currentItem()
+        if choice and item: self._set_confirmed(item.data(Qt.ItemDataRole.UserRole).faces, *choice)
+    def _ignore_cluster(self) -> None:
+        item = self.clusters.currentItem()
+        if item: self._ignore(item.data(Qt.ItemDataRole.UserRole).faces)
+    def _remove_cluster_faces(self) -> None:
+        selected = self._selected(self.cluster_faces)
+        if not selected: return
+        for face in selected: face.cluster = None
+        for cluster in self.result.unknown_clusters:
+            cluster.faces[:] = [face for face in cluster.faces if face not in selected]
+        self.result.unknown_clusters[:] = [cluster for cluster in self.result.unknown_clusters if cluster.faces]
+        self._refresh_all()
+    def _refresh_summary(self) -> None:
+        confirmed = sum(bool(face.confirmed_name) and not face.ignored for face in self.result.faces)
+        ignored = sum(face.ignored for face in self.result.faces)
+        unknown = sum(face.status == "UNKNOWN" and not face.confirmed_name and not face.ignored for face in self.result.faces)
+        self.summary.setText(f"{t('Bilder analysiert:')} {self.result.images_processed}    {t('Gesichter erkannt:')} {self.result.faces_total}    {t('Bestätigt:')} {confirmed}    {t('Unbekannt:')} {unknown}    {t('Ignoriert:')} {ignored}")
+
+
 class ImageViewer(QObject):
     folder_changed = Signal(object)
 
@@ -3452,6 +3780,14 @@ class ImageViewer(QObject):
         self._apply_thumbnail_position(save=False)
         self.current_directory: Path | None = None
         self.current_image: Path | None = None
+        self._face_generation = 0
+        self._face_tasks: list[FaceRecognitionTask] = []
+        self._face_overlay_tasks: list[FaceRecognitionTask] = []
+        self._face_overlay_mode = False
+        self._face_overlay_cache: dict[Path, list[tuple]] = {}
+        self._folder_face_tasks: list[FolderScanTask] = []
+        self._face_results: list[tuple] = []
+        self._face_overlay_boxes: list[tuple[int, int, int, int, int]] = []
         self._search_mode = False
         self._search_return_directory: Path | None = None
         self._search_return_image: Path | None = None
@@ -4246,7 +4582,13 @@ class ImageViewer(QObject):
         ):
             navigation_layout.removeWidget(widget)
 
-        self.thumbnail_size_decrease_button = QToolButton(controls)
+        self.thumbnail_size_controls = QWidget(controls)
+        self.thumbnail_size_controls.setObjectName("thumbnailSizeAdjustControls")
+        thumbnail_size_layout = QHBoxLayout(self.thumbnail_size_controls)
+        thumbnail_size_layout.setContentsMargins(0, 0, 0, 0)
+        thumbnail_size_layout.setSpacing(6)
+
+        self.thumbnail_size_decrease_button = QToolButton(self.thumbnail_size_controls)
         self.thumbnail_size_decrease_button.setObjectName(
             "thumbnailSizeDecreaseButton"
         )
@@ -4255,7 +4597,9 @@ class ImageViewer(QObject):
         self.thumbnail_size_decrease_button.setAutoRaise(True)
         self.thumbnail_size_decrease_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
-        self.thumbnail_size_slider = QSlider(Qt.Orientation.Horizontal, controls)
+        self.thumbnail_size_slider = QSlider(
+            Qt.Orientation.Horizontal, self.thumbnail_size_controls
+        )
         self.thumbnail_size_slider.setObjectName("thumbnailSizeSlider")
         self.thumbnail_size_slider.setToolTip("Größe der Vorschaubilder")
         self.thumbnail_size_slider.setRange(0, thumbnail_size_slider_maximum())
@@ -4268,7 +4612,7 @@ class ImageViewer(QObject):
             thumbnail_size_slider_value(self._thumbnail_pixels)
         )
 
-        self.thumbnail_size_increase_button = QToolButton(controls)
+        self.thumbnail_size_increase_button = QToolButton(self.thumbnail_size_controls)
         self.thumbnail_size_increase_button.setObjectName(
             "thumbnailSizeIncreaseButton"
         )
@@ -4277,10 +4621,10 @@ class ImageViewer(QObject):
         self.thumbnail_size_increase_button.setAutoRaise(True)
         self.thumbnail_size_increase_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
-        controls_layout.addWidget(self.thumbnail_size_decrease_button)
-        controls_layout.addWidget(self.thumbnail_size_slider)
-        controls_layout.addWidget(self.thumbnail_size_increase_button)
-        controls_layout.addSpacing(8)
+        thumbnail_size_layout.addWidget(self.thumbnail_size_decrease_button)
+        thumbnail_size_layout.addWidget(self.thumbnail_size_slider)
+        thumbnail_size_layout.addWidget(self.thumbnail_size_increase_button)
+        controls_layout.addWidget(self.thumbnail_size_controls)
         controls_layout.addWidget(self.previous_button)
         controls_layout.addWidget(self.file_name_label, 1)
         controls_layout.addWidget(self.next_button)
@@ -4356,7 +4700,52 @@ class ImageViewer(QObject):
         separator.setObjectName("bottomBarSeparator")
         separator.setFixedWidth(1)
         layout.addWidget(separator)
-        self.information_toggle_button.setFixedSize(24, 24)
+        self.face_suggestion_widget = QWidget(bottom_bar)
+        self.face_suggestion_widget.setObjectName("faceSuggestionControls")
+        self.face_suggestion_widget.setMinimumWidth(240)
+        suggestion_layout = QHBoxLayout(self.face_suggestion_widget)
+        suggestion_layout.setContentsMargins(4, 0, 4, 0)
+        suggestion_layout.setSpacing(6)
+        self.face_suggestion_label = QLabel(self.face_suggestion_widget)
+        self.face_suggestion_label.setMinimumWidth(145)
+        self.face_suggestion_yes_button = QPushButton(t("Ja"), self.face_suggestion_widget)
+        self.face_suggestion_no_button = QPushButton(t("Nein"), self.face_suggestion_widget)
+        self.face_suggestion_yes_button.setFixedHeight(20)
+        self.face_suggestion_no_button.setFixedHeight(20)
+        self.face_suggestion_yes_button.setMinimumWidth(34)
+        self.face_suggestion_no_button.setMinimumWidth(42)
+        compact_suggestion_button_style = "font-size: 11px; font-weight: normal; padding: 0 7px;"
+        self.face_suggestion_yes_button.setStyleSheet(compact_suggestion_button_style)
+        self.face_suggestion_no_button.setStyleSheet(compact_suggestion_button_style)
+        self.face_suggestion_yes_button.clicked.connect(self._confirm_current_face_suggestion)
+        self.face_suggestion_no_button.clicked.connect(self._reject_current_face_suggestion)
+        suggestion_layout.addWidget(self.face_suggestion_label)
+        suggestion_layout.addWidget(self.face_suggestion_yes_button)
+        suggestion_layout.addWidget(self.face_suggestion_no_button)
+        self.face_suggestion_widget.hide()
+        layout.addWidget(self.face_suggestion_widget)
+        self.face_overlay_button = QToolButton(bottom_bar)
+        self.face_overlay_button.setObjectName("faceOverlayButton")
+        self.face_overlay_button.setText("☺")
+        self.face_overlay_button.setToolTip(t("Gesichter anzeigen"))
+        self.face_overlay_button.setAccessibleName(t("Gesichter anzeigen"))
+        self.face_overlay_button.setCheckable(True)
+        self.face_overlay_button.setFixedSize(24, 24)
+        self.face_overlay_button.setEnabled(False)
+        self.face_overlay_button.setStyleSheet("QToolButton { color: white; background: #259b45; border: 1px solid #167333; border-radius: 12px; font-size: 17px; font-weight: normal; padding: 0; } QToolButton:hover { background: #1d8439; } QToolButton:checked { background: #167333; border: 2px solid #9be7af; }")
+        self.face_overlay_button.toggled.connect(self._set_face_overlay_mode)
+        layout.addWidget(self.face_overlay_button)
+        self.face_detect_button = QToolButton(bottom_bar)
+        self.face_detect_button.setObjectName("faceDetectButton")
+        self.face_detect_button.setText("☺")
+        self.face_detect_button.setToolTip(t("Gesichtserkennung"))
+        self.face_detect_button.setAccessibleName(t("Gesichter erkennen"))
+        self.face_detect_button.setFixedSize(24, 24)
+        self.face_detect_button.setEnabled(False)
+        # Scope styling to the button so QToolTip keeps the global, neutral style.
+        self.face_detect_button.setStyleSheet("QToolButton { color: white; background: #f01420; border: 1px solid #c70c16; border-radius: 12px; font-size: 17px; font-weight: normal; padding: 0; } QToolButton:hover { background: #d80f1a; }")
+        layout.addWidget(self.face_detect_button)
+        self.information_toggle_button.setFixedSize(self.face_detect_button.size())
         layout.addWidget(self.information_toggle_button)
         self.status_bar.addWidget(bottom_bar, 1)
         self._bottom_control_bar_active = False
@@ -5128,6 +5517,14 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
             return
         self.load_manual_metadata_into_fields(saved)
         self._update_manual_metadata_caches(path, saved)
+        # Recognition results contain only biometric data, but their displayed
+        # interpretation also depends on the saved people list.  A former
+        # UNKNOWN session must therefore never survive a metadata save.
+        self._face_overlay_cache.pop(path, None)
+        LOGGER.info(
+            "Face overlay cache invalidated after metadata save: path=%s people=%r",
+            path, saved.get("people", ""),
+        )
         try:
             for person in _manual_metadata_people(metadata.get("people", "")):
                 upsert_person(person)
@@ -5143,6 +5540,8 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
         except Exception:
             logging.exception("JPEG metadata was saved, but its image-index entry could not be updated")
         self.set_status(STATUS_READY)
+        if self._face_overlay_mode:
+            self._ensure_face_overlay_for_current_image()
 
     def _update_manual_metadata_caches(
         self, path: Path, metadata: dict[str, str]
@@ -5518,6 +5917,8 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
     def _show_information_panel(self) -> None:
         self.information_panel.show()
         self._update_information_panel()
+        if self._fullscreen_mode:
+            self._set_fullscreen_tooltips_enabled(False)
         self.information_toggle_button.setChecked(True)
         self._sync_quick_switches()
         self._schedule_image_render()
@@ -5598,6 +5999,15 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
 
     def _create_application_menus(self) -> None:
         self.file_menu = self.window.menuBar().addMenu(t("Datei"))
+        # Created before the first _update_view_actions() call below.  The
+        # action is added to the tools menu later, once that menu exists.
+        self.detect_faces_action = QAction(t("Gesichter erkennen"), self.window)
+        self.detect_faces_action.setObjectName("detectFacesAction")
+        self.detect_faces_action.triggered.connect(self._start_face_detection)
+        self.face_detect_button.clicked.connect(self.detect_faces_action.trigger)
+        self.hide_face_markers_action = QAction(t("Gesichtsmarkierungen ausblenden"), self.window)
+        self.hide_face_markers_action.triggered.connect(self._hide_face_markers)
+        self.hide_face_markers_action.setEnabled(False)
         self.rename_image_action = QAction(t("Umbenennen …"), self.window)
         self.rename_image_action.setShortcut(QKeySequence("F2"))
         self.rename_image_action.setShortcutContext(
@@ -6021,6 +6431,16 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
 
         self.tools_menu = self.window.menuBar().addMenu(t("Werkzeuge"))
         self.tools_menu.addAction(self.compare_images_action)
+        self.tools_menu.addSeparator()
+        self.tools_menu.addAction(self.detect_faces_action)
+        self.tools_menu.addAction(self.hide_face_markers_action)
+        self.scan_faces_in_folder_action = QAction(t("Gesichter im Ordner suchen …"), self.window)
+        self.scan_faces_in_folder_action.setObjectName("scanFacesInFolderAction")
+        self.scan_faces_in_folder_action.triggered.connect(self._start_folder_face_scan)
+        self.tools_menu.addAction(self.scan_faces_in_folder_action)
+        self.manage_face_references_action = QAction(t("Gesichtsreferenzen verwalten …"), self.window)
+        self.manage_face_references_action.triggered.connect(self._show_face_reference_manager)
+        self.tools_menu.addAction(self.manage_face_references_action)
         self.tools_menu.addSeparator()
         self.find_duplicates_action = QAction(
             t("Doppelte Bilder finden …"), self.window
@@ -6743,6 +7163,16 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
         self._update_print_action_state()
         self.multi_print_action.setEnabled(bool(self._all_thumbnail_image_paths()))
         self.compare_images_action.setEnabled(True)
+        self.detect_faces_action.setEnabled(
+            image_loaded
+            and self.current_image is not None
+            and face_supported(self.current_image)
+            and len(self._selected_image_paths()) == 1
+        )
+        if hasattr(self, "face_detect_button"):
+            self.face_detect_button.setEnabled(self.detect_faces_action.isEnabled())
+        if hasattr(self, "face_overlay_button"):
+            self.face_overlay_button.setEnabled(image_loaded and self.current_image is not None and face_supported(self.current_image))
         self.select_all_action.setEnabled(self.thumbnail_list.count() > 0)
 
     def _update_print_action_state(self) -> None:
@@ -7144,6 +7574,11 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
             application.setStyleSheet(
                 color_scheme_stylesheet(colors)
             )
+            # A theme change is an explicit user interaction.  Keep the
+            # status/control bar visible while the refreshed palette settles,
+            # rather than allowing a stale auto-hide timer to hide it midway.
+            if hasattr(self, "bottom_control_bar_hide_timer"):
+                self._record_bottom_control_bar_activity()
 
     def _style_message_box(self, dialog: QMessageBox) -> None:
         self._restore_slideshow_cursor()
@@ -9647,7 +10082,26 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
                 if clicked is save:
                     self._capture_manual_metadata()
                 return
+        if len(selected) > 1:
+            # Let the busy indicator paint before synchronous metadata reads.
+            # A generation token makes rapid Ctrl/Shift selection changes safe.
+            generation = getattr(self, "_metadata_selection_generation", 0) + 1
+            self._metadata_selection_generation = generation
+            self.set_status(STATUS_BUSY, t("Bildinformationen werden geladen …"))
+            QTimer.singleShot(
+                0, lambda: self._finish_batch_metadata_selection(generation)
+            )
+            return
         self._sync_manual_metadata_selection()
+
+    def _finish_batch_metadata_selection(self, generation: int) -> None:
+        if generation != getattr(self, "_metadata_selection_generation", 0):
+            return
+        try:
+            self._sync_manual_metadata_selection()
+        finally:
+            if generation == getattr(self, "_metadata_selection_generation", 0):
+                self.set_status(STATUS_READY)
 
     def _add_rotation_context_submenu(
         self, context_menu: QMenu, image_path: Path | None
@@ -9954,6 +10408,11 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
         self._update_bottom_control_bar_layout()
 
     def _load_current_image(self) -> None:
+        self._face_generation += 1
+        self._face_overlay_boxes = []
+        self._hide_face_suggestion_controls()
+        if hasattr(self, "hide_face_markers_action"):
+            self.hide_face_markers_action.setEnabled(False)
         self._hide_zoom_indicator()
         if self.current_image is None:
             self._exif_oriented_image = QImage()
@@ -10026,6 +10485,8 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
         self._zoom_mode = "fit"
         self._render_current_image()
         self.set_status(STATUS_READY)
+        if self._face_overlay_mode:
+            self._ensure_face_overlay_for_current_image()
 
     def _render_pdf_page(
         self,
@@ -10687,6 +11148,482 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
         self._style_message_box(dialog)
         dialog.exec()
 
+    def _show_face_reference_manager(self) -> None:
+        dialog = QDialog(self.window); dialog.setWindowTitle(t("Gesichtsreferenzen verwalten") + " — BildBlick"); dialog.resize(780, 440)
+        layout = QVBoxLayout(dialog); table = QTableWidget(dialog); table.setColumnCount(6)
+        table.setHorizontalHeaderLabels([t("Person"), t("Quelle"), t("Gesicht"), t("Confidence"), t("Erstellt"), t("Status")])
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows); table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
+        def refresh():
+            entries = face_reference_entries(); table.setRowCount(len(entries))
+            for row, entry in enumerate(entries):
+                values = (entry["name"], entry["source_image_path"], str(entry["source_face_index"]), f"{entry['detection_confidence']:.2f}", entry["created_at"], t("Quelldatei nicht verfügbar") if not Path(entry["source_image_path"]).is_file() else "")
+                for column, value in enumerate(values): table.setItem(row, column, QTableWidgetItem(value))
+                table.item(row, 0).setData(Qt.ItemDataRole.UserRole, entry["id"])
+            table.resizeColumnsToContents()
+        add = QPushButton(t("Referenz hinzufügen …"), dialog); add.setEnabled(False)
+        delete = QPushButton(t("Ausgewählte löschen"), dialog)
+        def add_reference():
+            rows = table.selectionModel().selectedRows()
+            if not rows: return
+            person_item = table.item(rows[0].row(), 0); person_name = person_item.text(); entries = face_reference_entries()
+            person_id = next(entry["person_id"] for entry in entries if entry["id"] == person_item.data(Qt.ItemDataRole.UserRole))
+            filename, _filter = QFileDialog.getOpenFileName(dialog, t("Referenz hinzufügen …"), str(self.current_image.parent if self.current_image else Path.home()), "JPEG (*.jpg *.jpeg *.JPG *.JPEG)")
+            if not filename: return
+            try:
+                self.set_status(STATUS_BUSY, t("Gesichter werden erkannt …")); faces, _timings = analyze_faces(Path(filename)); self.set_status(STATUS_READY)
+            except Exception as error:
+                self.set_status(STATUS_READY); QMessageBox.warning(dialog, t("Referenz hinzufügen …"), str(error)); return
+            if not faces:
+                QMessageBox.information(dialog, t("Referenz hinzufügen …"), t("In diesem Bild wurde kein Gesicht erkannt.")); return
+            picker = QDialog(dialog); picker.setWindowTitle(t("Neue Gesichtsreferenz für: {person}").format(person=person_name)); picker.resize(620, 360); picker_layout = QVBoxLayout(picker)
+            picker_layout.addWidget(QLabel(t("Welches Gesicht gehört zu {person}?").format(person=person_name), picker)); choices = QListWidget(picker); choices.setViewMode(QListWidget.ViewMode.IconMode); choices.setIconSize(QSize(160, 160)); choices.setGridSize(QSize(180, 215)); choices.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+            for face in faces:
+                crop = face.display_crop
+                if crop is None or not crop.size: continue
+                rgb = crop[:, :, ::-1].copy(); image = QImage(rgb.data, rgb.shape[1], rgb.shape[0], rgb.strides[0], QImage.Format.Format_RGB888).copy()
+                item = QListWidgetItem(QPixmap.fromImage(image).scaled(160, 160, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation), f"Face {face.number}\nErkennung: {face.confidence:.2f}")
+                item.setData(Qt.ItemDataRole.UserRole, face.number); choices.addItem(item)
+            similarity = QLabel(picker); warning = QLabel(picker); warning.setStyleSheet("color: #d97706; font-weight: 600;")
+            stored = face_reference_vectors().get(person_id, (person_name, []))[1]
+            vectors = [__import__("numpy").frombuffer(value, dtype=__import__("numpy").float32) for value in stored]
+            if not vectors: similarity.setText(t("Dies wird die erste Gesichtsreferenz für {person}.").format(person=person_name))
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel, picker); save = buttons.button(QDialogButtonBox.StandardButton.Save); save.setText(t("Als Referenz speichern")); save.setEnabled(False)
+            def update_choice():
+                save.setEnabled(choices.currentItem() is not None)
+                warning.setText("")
+                if not vectors or choices.currentItem() is None: return
+                selected_face = next(face for face in faces if face.number == choices.currentItem().data(Qt.ItemDataRole.UserRole)); np = __import__("numpy"); query = selected_face.embedding
+                scores = sorted((float(np.dot(query, vector) / (np.linalg.norm(query) * np.linalg.norm(vector))) for vector in vectors), reverse=True)
+                similarity.setText(t("Beste Übereinstimmung:") + f" {scores[0]:.3f}\n" + t("Top-3-Mittel:") + f" {sum(scores[:3]) / min(3, len(scores)):.3f} ({len(scores)} Referenz(en))")
+                if len(scores) >= 2 and scores[0] < REFERENCE_OUTLIER_WARNING_THRESHOLD: warning.setText(t("Dieses Gesicht passt nur schwach zu den vorhandenen Referenzen. Bitte prüfen Sie die Auswahl."))
+            choices.itemSelectionChanged.connect(update_choice); picker_layout.addWidget(choices); picker_layout.addWidget(similarity); picker_layout.addWidget(warning); buttons.accepted.connect(picker.accept); buttons.rejected.connect(picker.reject); picker_layout.addWidget(buttons)
+            if picker.exec() != QDialog.DialogCode.Accepted: return
+            selected = choices.currentItem()
+            if selected is None: return
+            face = next(face for face in faces if face.number == selected.data(Qt.ItemDataRole.UserRole)); owner = face_reference_owner(str(Path(filename)), face.number)
+            if owner and owner.casefold() != person_name.casefold(): QMessageBox.warning(dialog, t("Referenz hinzufügen …"), t("Dieses Gesicht ist bereits als Referenz für {person} gespeichert.").format(person=owner)); return
+            if not add_face_reference(person_id, face.embedding.astype("float32").tobytes(), str(Path(filename)), face.number, face.confidence): QMessageBox.information(dialog, t("Referenz hinzufügen …"), t("Diese Gesichtsreferenz ist bereits vorhanden.")); return
+            refresh()
+        def remove():
+            ids = [table.item(index.row(), 0).data(Qt.ItemDataRole.UserRole) for index in table.selectionModel().selectedRows()]
+            if not ids: return
+            if QMessageBox.question(dialog, t("Gesichtsreferenzen verwalten"), t("{count} Gesichtsreferenzen löschen?").format(count=len(ids)), QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes) == QMessageBox.StandardButton.Yes:
+                delete_face_references(ids); refresh()
+        delete.clicked.connect(remove); add.clicked.connect(add_reference); table.itemSelectionChanged.connect(lambda: add.setEnabled(bool(table.selectionModel().selectedRows())))
+        layout.addWidget(table); row = QHBoxLayout(); row.addWidget(add); row.addWidget(delete); layout.addLayout(row)
+        layout.addWidget(QLabel(t("Gesichtsreferenzen werden ausschließlich lokal gespeichert."), dialog))
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, dialog); buttons.rejected.connect(dialog.reject); layout.addWidget(buttons); refresh(); dialog.exec()
+
+    def _start_folder_face_scan(self) -> None:
+        """Start a read-only folder scan; persistence is intentionally Phase 3."""
+        folder = QFileDialog.getExistingDirectory(
+            self.window, t("Gesichter im Ordner suchen …"),
+            str(self.current_directory or Path.home()),
+        )
+        if not folder:
+            return
+        options = QDialog(self.window); options.setWindowTitle(t("Gesichter im Ordner suchen …"))
+        layout = QVBoxLayout(options); layout.addWidget(QLabel(Path(folder).name, options))
+        recursive = QCheckBox(t("Unterordner einbeziehen"), options); layout.addWidget(recursive)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, options)
+        buttons.accepted.connect(options.accept); buttons.rejected.connect(options.reject); layout.addWidget(buttons)
+        if options.exec() != QDialog.DialogCode.Accepted:
+            return
+        progress = QDialog(self.window); progress.setWindowTitle(t("Gesichter im Ordner suchen …")); progress.setModal(True); progress.setMinimumWidth(520)
+        box = QVBoxLayout(progress); phase = QLabel(progress); current = QLabel(progress); counts = QLabel(progress); cancel = QPushButton(t("Abbrechen"), progress)
+        box.addWidget(phase); box.addWidget(current); box.addWidget(counts); box.addWidget(cancel)
+        task = FolderScanTask(Path(folder), recursive.isChecked()); self._folder_face_tasks.append(task)
+        def update(kind, number, total, path, faces, known, uncertain, unknown, errors):
+            labels = {"DISCOVERY": t("Ordner wird durchsucht"), "ANALYZE": t("Bilder werden analysiert"), "CLUSTER": t("Unbekannte Gesichter werden gruppiert")}
+            phase.setText(labels.get(kind, kind)); current.setText(f"{t('Bild')} {number} {t('von')} {total}\n{path}")
+            counts.setText(f"{t('Gesichter:')} {faces}    {t('Bekannt:')} {known}    {t('Unsicher:')} {uncertain}    {t('Unbekannt:')} {unknown}    {t('Fehler:')} {errors}")
+        def cleanup():
+            self._folder_face_tasks = [item for item in self._folder_face_tasks if item is not task]
+            progress.close()
+        def completed(result: FolderScanResult):
+            cleanup(); self._show_folder_face_results(result)
+        def cancelled(result: FolderScanResult):
+            cleanup()
+            text = t("Scan abgebrochen – {processed} von {total} Bildern wurden analysiert.").format(processed=result.images_processed, total=result.images_total)
+            message = QMessageBox(self.window); message.setWindowTitle(t("Gesichter im Ordner suchen …")); message.setText(text)
+            discard = message.addButton(t("Ergebnisse verwerfen"), QMessageBox.ButtonRole.RejectRole)
+            show = message.addButton(t("Teilergebnisse anzeigen"), QMessageBox.ButtonRole.AcceptRole)
+            message.exec()
+            if message.clickedButton() is show: self._show_folder_face_results(result)
+        def failed(message: str):
+            cleanup(); QMessageBox.warning(self.window, t("Gesichter im Ordner suchen …"), message)
+        task.signals.progress.connect(update); task.signals.finished.connect(completed); task.signals.cancelled.connect(cancelled); task.signals.error.connect(failed); cancel.clicked.connect(task.cancel); progress.rejected.connect(task.cancel)
+        self.thread_pool.start(task); progress.exec()
+
+    def _show_folder_face_results(self, result: FolderScanResult) -> None:
+        # Reject/Cancel discards only the mutable, in-memory assignments.
+        dialog = FolderFaceResultsDialog(result, self.window)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._pending_folder_face_result = result
+            self._show_folder_face_save_summary(result)
+
+    def _folder_face_save_plan(self, result: FolderScanResult) -> tuple[dict[Path, list[str]], list[ScanFace]]:
+        assignments: dict[Path, list[str]] = {}
+        references: list[ScanFace] = []
+        for face in result.faces:
+            if face.ignored or not face.confirmed_name:
+                continue
+            names = assignments.setdefault(face.path, [])
+            if face.confirmed_name.casefold() not in {name.casefold() for name in names}:
+                names.append(face.confirmed_name)
+            # The user explicitly confirmed this identity.  Whether it is a
+            # usable learning sample is decided independently in the worker.
+            references.append(face)
+        return assignments, references
+
+    def _show_folder_face_save_summary(self, result: FolderScanResult) -> None:
+        assignments, references = self._folder_face_save_plan(result)
+        confirmed = sum(bool(face.confirmed_name) and not face.ignored for face in result.faces)
+        ignored = sum(face.ignored for face in result.faces)
+        unknown = sum(face.status == "UNKNOWN" and not face.confirmed_name and not face.ignored for face in result.faces)
+        dialog = QDialog(self.window); dialog.setWindowTitle(t("Gesichtserkennung – Abschluss")); layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(
+            f"{t('Bilder analysiert:')} {result.images_processed}\n"
+            f"{t('Gesichter erkannt:')} {result.faces_total}\n"
+            f"{t('Bestätigte Personenzuordnungen:')} {confirmed}\n"
+            f"{t('Bilder mit neuen Personenangaben:')} {len(assignments)}\n"
+            f"{t('Unbekannt:')} {unknown}\n{t('Ignoriert:')} {ignored}", dialog
+        ))
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel, dialog)
+        save = buttons.addButton(t("Änderungen speichern"), QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons.rejected.connect(dialog.reject); save.clicked.connect(dialog.accept); layout.addWidget(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted and assignments:
+            self._start_folder_face_save(assignments, references)
+
+    def _start_folder_face_save(self, assignments: dict[Path, list[str]], references: list[ScanFace]) -> None:
+        progress = QProgressDialog(t("Personen werden gespeichert …"), t("Abbrechen"), 0, len(assignments), self.window)
+        progress.setWindowTitle(t("Personen werden gespeichert …")); progress.setWindowModality(Qt.WindowModality.WindowModal); progress.setAutoClose(False)
+        task = FolderFaceSaveTask(assignments, references); self._folder_face_tasks.append(task)
+        self.set_status(STATUS_BUSY, t("Personen werden gespeichert …"))
+        def update(current: int, total: int, path: str) -> None:
+            progress.setMaximum(total); progress.setValue(current); progress.setLabelText(f"{t('Personen werden gespeichert …')}\n{t('Bild')} {current} {t('von')} {total}\n{Path(path).name}")
+        def done(saved, errors, assignments_saved, references_saved, references_existing, references_skipped_quality, cancelled):
+            self._folder_face_tasks = [item for item in self._folder_face_tasks if item is not task]
+            progress.close(); self.set_status(STATUS_READY)
+            for path, metadata in saved:
+                self._update_manual_metadata_caches(path, metadata)
+                if path == self.current_image: self.load_manual_metadata_into_fields(metadata)
+            message = f"{t('Erfolgreich gespeichert:')} {len(saved)} {t('Bilder')}\n{t('Fehler:')} {len(errors)}\n{t('Neue Personen-Zuordnungen:')} {assignments_saved}\n{t('Neue Face-Referenzen gelernt:')} {references_saved}\n{t('Bereits vorhandene Referenzen:')} {references_existing}\n{t('Wegen Qualität nicht gelernt:')} {references_skipped_quality}"
+            if errors: message += "\n\n" + "\n".join(f"{path.name}: {error}" for path, error in errors)
+            QMessageBox.information(self.window, t("Gesichtserkennung – Abschluss"), message)
+        task.signals.progress.connect(update); task.signals.finished.connect(done); progress.canceled.connect(task.cancel)
+        self.thread_pool.start(task); progress.show()
+
+    def _start_face_detection(self) -> None:
+        self._hide_face_suggestion_controls()
+        paths = self._selected_image_paths()
+        LOGGER.info("Face workflow requested: path=%s selected=%d action_enabled=%s cache=%s active_tasks=%d", self.current_image, len(paths), self.detect_faces_action.isEnabled(), bool(self.current_image in self._face_overlay_cache if self.current_image else False), len(self._face_tasks))
+        if len(paths) != 1 or self.current_image is None or paths[0] != self.current_image:
+            QMessageBox.information(self.window, t("Gesichter erkennen"), t("Bitte ein einzelnes Bild auswählen.")); return
+        if not face_supported(self.current_image):
+            QMessageBox.information(self.window, t("Gesichter erkennen"), t("Gesichter können nur in JPG/JPEG erkannt werden.")); return
+        self._face_image_people = self._face_people_from_metadata()
+        self._face_generation += 1; generation = self._face_generation; self.set_status(STATUS_BUSY, t("Gesichter werden erkannt …"))
+        cached = self._face_overlay_cache.get(self.current_image)
+        if cached is not None:
+            LOGGER.info("Face workflow uses cached analysis for %s", self.current_image)
+            self._face_detection_finished(generation, cached.results, {}, self.current_image)
+            return
+        task = FaceRecognitionTask(self.current_image, generation)
+        LOGGER.info("Face workflow starts detection for %s", self.current_image)
+        self._face_tasks.append(task)  # Keep Python/Qt signal objects alive until completion.
+        task.signals.finished.connect(lambda results, timings, path: self._face_detection_finished(generation, results, timings, Path(path)))
+        task.signals.failed.connect(lambda error, path: self._face_detection_failed(generation, error, Path(path)))
+        self.thread_pool.start(task)
+
+    def _face_people_from_metadata(self) -> list[str]:
+        """Read saved people for the current JPG through the shared metadata API.
+
+        The information panel can temporarily show a cached editor value.  Face
+        suggestions must instead use the same persisted PersonInImage data that
+        will still exist after reopening an unindexed image.
+        """
+        path = self.current_image
+        panel_value = (
+            self.manual_metadata_fields["people"].text()
+            if hasattr(self, "manual_metadata_fields") else ""
+        )
+        cache_value = ""
+        if path is not None:
+            cache_value = self._image_metadata_by_path.get(
+                self._resolved_sort_path(path), {}
+            ).get("people", "")
+        saved_value = None
+        if path is not None and path.is_file() and path.suffix.lower() in JPEG_EXTENSIONS:
+            try:
+                saved_value = read_manual_image_metadata(path).get("people", "")
+            except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
+                LOGGER.warning("Could not read saved face people for %s: %s", path, error)
+        source_value = panel_value if saved_value is None else saved_value
+        people = _manual_metadata_people(source_value)
+        LOGGER.info(
+            "Face image people: path=%s panel=%r cache=%r jpg=%r normalized=%r",
+            path, panel_value, cache_value, saved_value, people,
+        )
+        return people
+
+    def _face_detection_failed(self, generation: int, error: str, path: Path) -> None:
+        self._face_tasks = [task for task in self._face_tasks if task.path != path]
+        if generation != self._face_generation or path != self.current_image: return
+        LOGGER.exception("Face detection failed for %s: %s", path, error)
+        self.set_status(STATUS_READY)
+        QMessageBox.warning(self.window, t("Gesichter erkennen"), t("Gesichtserkennung konnte nicht abgeschlossen werden.") + "\n" + error)
+
+    def _face_detection_finished(self, generation: int, results: list[tuple], timings: dict, path: Path) -> None:
+        self._face_tasks = [task for task in self._face_tasks if task.path != path]
+        if generation != self._face_generation or path != self.current_image:
+            LOGGER.info("Face workflow drops stale result: path=%s generation=%d current_generation=%d current_path=%s", path, generation, self._face_generation, self.current_image)
+            return
+        self._face_results = results
+        self._face_overlay_cache[path] = FaceOverlaySession(results)
+        LOGGER.info("Face detection %s: %d faces, detection=%.3fs embedding=%.3fs", path, len(results), timings.get("detection", 0), timings.get("embedding", 0))
+        for face, ranked, uncertain in results:
+            best = ranked[0] if ranked else None
+            second = ranked[1] if len(ranked) > 1 else None
+            margin = None if not best or not second else best["top3_mean"] - second["top3_mean"]
+            LOGGER.info("Face %s: best=%s best_similarity=%s top3=%s second=%s margin=%s threshold=%.2f ui=%s", face.number, best and best["name"], best and best["best_similarity"], best and best["top3_mean"], second and second["name"], margin, 0.55, "unknown" if uncertain else "suggestion")
+        self._face_overlay_boxes = [(f"Face {face.number}", *face.box) for face, _ranked, _uncertain in results]
+        self.hide_face_markers_action.setEnabled(bool(results)); self._render_current_image(); self.set_status(STATUS_READY, t("{count} Gesichter erkannt").format(count=len(results)))
+        if results:
+            LOGGER.info("Face workflow opens dialog for %s with %d faces", path, len(results))
+            self._show_face_suggestions(results, timings)
+        else:
+            LOGGER.info("Face workflow completed for %s without faces", path)
+            QMessageBox.information(self.window, t("Gesichter erkennen"), t("In diesem Bild wurden keine Gesichter erkannt."))
+
+    def _hide_face_markers(self) -> None:
+        self._face_overlay_boxes = []; self.hide_face_markers_action.setEnabled(False); self._render_current_image()
+
+    def _set_face_overlay_mode(self, enabled: bool) -> None:
+        """Toggle the non-invasive overlay-only recognition mode."""
+        self._face_overlay_mode = enabled
+        if not enabled:
+            self._face_overlay_cache.clear()
+            self._hide_face_suggestion_controls()
+            self._hide_face_markers()
+            return
+        self._record_bottom_control_bar_activity()
+        self._ensure_face_overlay_for_current_image()
+
+    def _ensure_face_overlay_for_current_image(self) -> None:
+        path = self.current_image
+        if not self._face_overlay_mode or path is None or not face_supported(path):
+            return
+        cached = self._face_overlay_cache.get(path)
+        LOGGER.info(
+            "Face overlay requested: path=%s cache=%s image_people=%r",
+            path, cached is not None, self._face_people_from_metadata(),
+        )
+        if cached is not None:
+            self._show_face_overlay_results(path, cached)
+            return
+        if any(task.path == path for task in self._face_overlay_tasks):
+            return
+        self.set_status(STATUS_BUSY, t("Gesichter werden erkannt …"))
+        task = FaceRecognitionTask(path, self._face_generation)
+        self._face_overlay_tasks.append(task)
+        task.signals.finished.connect(lambda results, timings, result_path: self._face_overlay_finished(results, Path(result_path)))
+        task.signals.failed.connect(lambda error, result_path: self._face_overlay_failed(error, Path(result_path)))
+        self.thread_pool.start(task)
+
+    def _show_face_overlay_results(self, path: Path, session: FaceOverlaySession) -> None:
+        if not self._face_overlay_mode or path != self.current_image:
+            return
+        image_people = self._face_people_from_metadata()
+        current_people = {name.casefold() for name in image_people}
+        LOGGER.info(
+            "Face overlay results: path=%s faces=%d image_people=%r",
+            path, len(session.results), image_people,
+        )
+        if not session.pending_order:
+            for face, ranked, uncertain in sorted(session.results, key=lambda item: item[0].number):
+                if ranked and not uncertain:
+                    name = ranked[0]["name"]
+                    if name.casefold() in current_people:
+                        session.confirmed[face.number] = name
+                        session.suggestion_sources[face.number] = FACE_SUGGESTION_CONFIRMED
+                    else:
+                        session.pending[face.number] = name
+                        session.pending_sources[face.number] = FACE_SUGGESTION_SFACE
+                        session.suggestion_sources[face.number] = FACE_SUGGESTION_SFACE
+                        session.pending_order.append(face.number)
+                else:
+                    session.suggestion_sources.setdefault(face.number, FACE_SUGGESTION_UNKNOWN)
+            # Metadata is only a non-biometric hint when the image itself is
+            # unambiguous: one detected face and one listed person.  It is
+            # deliberately never used to assign a face in a group photo.
+            if (
+                len(session.results) == 1
+                and len(current_people) == 1
+                and not session.pending_order
+                and not session.confirmed
+            ):
+                face, ranked, _uncertain = session.results[0]
+                if not ranked or uncertain:
+                    name = self._face_people_from_metadata()[0]
+                    session.pending[face.number] = name
+                    session.pending_sources[face.number] = FACE_SUGGESTION_IMAGE_METADATA
+                    session.suggestion_sources[face.number] = FACE_SUGGESTION_IMAGE_METADATA
+                    session.pending_order.append(face.number)
+        labels = []
+        for face, ranked, uncertain in session.results:
+            label = f"Face {face.number}"
+            if face.number in session.confirmed:
+                label = session.confirmed[face.number]
+            elif face.number in session.pending and face.number not in session.rejected:
+                label = session.pending[face.number] + "?"
+            labels.append((label, *face.box))
+        self._face_overlay_boxes = labels
+        for face, ranked, uncertain in session.results:
+            candidate = ranked[0] if ranked else None
+            LOGGER.info(
+                "Face overlay decision: path=%s face=%d candidate=%r score=%r uncertain=%s source=%s status=%s text=%r",
+                path, face.number,
+                candidate.get("name") if candidate else None,
+                candidate.get("top3_mean") if candidate else None,
+                uncertain,
+                session.suggestion_sources.get(face.number, FACE_SUGGESTION_UNKNOWN),
+                "CONFIRMED" if face.number in session.confirmed else "PENDING" if face.number in session.pending else "UNKNOWN",
+                next(label for label, x, y, width, height in labels if (x, y, width, height) == face.box),
+            )
+        self.hide_face_markers_action.setEnabled(bool(labels))
+        self._render_current_image()
+        self.set_status(STATUS_READY, t("{count} Gesichter erkannt").format(count=len(labels)))
+        self._update_face_suggestion_controls(path, session)
+
+    def _face_overlay_finished(self, results: list[tuple], path: Path) -> None:
+        self._face_overlay_tasks = [task for task in self._face_overlay_tasks if task.path != path]
+        session = FaceOverlaySession(results)
+        self._face_overlay_cache[path] = session
+        self._show_face_overlay_results(path, session)
+
+    def _face_overlay_failed(self, error: str, path: Path) -> None:
+        self._face_overlay_tasks = [task for task in self._face_overlay_tasks if task.path != path]
+        LOGGER.warning("Overlay-only face recognition failed for %s: %s", path, error)
+        if path == self.current_image:
+            self._face_overlay_boxes = []; self._hide_face_suggestion_controls(); self._render_current_image(); self.set_status(STATUS_READY, t("Gesichter konnten nicht angezeigt werden"))
+
+    def _hide_face_suggestion_controls(self) -> None:
+        if hasattr(self, "face_suggestion_widget"):
+            self.face_suggestion_widget.hide()
+
+    def _update_face_suggestion_controls(self, path: Path, session: FaceOverlaySession) -> None:
+        if path != self.current_image or not self._face_overlay_mode:
+            self._hide_face_suggestion_controls(); return
+        number = session.next_pending_number()
+        if number is None:
+            self._hide_face_suggestion_controls(); return
+        name = session.pending[number]
+        self.face_suggestion_label.setText(f"Face {number} – {name}?    {session.current_pending_index + 1}/{len(session.pending_order)}")
+        self.face_suggestion_widget.show()
+
+    def _current_face_suggestion(self) -> tuple[Path, FaceOverlaySession, int] | None:
+        path = self.current_image
+        session = self._face_overlay_cache.get(path) if path else None
+        number = session.next_pending_number() if session else None
+        return (path, session, number) if path is not None and session is not None and number is not None else None
+
+    def _confirm_current_face_suggestion(self) -> None:
+        current = self._current_face_suggestion()
+        if current is None: return
+        path, session, number = current; name = session.pending[number]
+        session.confirmed[number] = name
+        session.suggestion_sources[number] = FACE_SUGGESTION_CONFIRMED
+        session.current_pending_index += 1
+        # Same normal single-image save path: field, JPEG, suggestions, index.
+        people = self._face_people_from_metadata()
+        if name.casefold() not in {person.casefold() for person in people}: people.append(name)
+        self.manual_metadata_fields["people"].setText(", ".join(people)); self.manual_metadata_dirty = True; self.manual_metadata_save_button.setEnabled(True)
+        face = next(face for face, _ranked, _uncertain in session.results if face.number == number)
+        if face.embedding is not None and face.confidence >= FACE_AUTO_REFERENCE_MIN_CONFIDENCE:
+            owner = face_reference_owner(str(path), number)
+            if not owner or owner.casefold() == name.casefold():
+                add_face_reference(person_id_for_name(name), face.embedding.astype("float32").tobytes(), str(path), number, face.confidence)
+        self._capture_manual_metadata()
+        self._show_face_overlay_results(path, session)
+
+    def _reject_current_face_suggestion(self) -> None:
+        current = self._current_face_suggestion()
+        if current is None: return
+        path, session, number = current
+        session.rejected.add(number)
+        session.suggestion_sources[number] = FACE_SUGGESTION_UNKNOWN
+        session.current_pending_index += 1
+        self._show_face_overlay_results(path, session)
+
+    def _show_face_suggestions(self, results: list[tuple], timings: dict) -> None:
+        dialog = QDialog(self.window); dialog.setWindowTitle(t("Gesichter erkennen")); dialog.setMinimumWidth(410)
+        layout = QVBoxLayout(dialog); layout.addWidget(QLabel(t("Gesichter erkannt: {count}").format(count=len(results))))
+        image_people = getattr(self, "_face_image_people", [])
+        layout.addWidget(QLabel(t("Personen laut Bildinformationen:") + " " + (", ".join(image_people) if image_people else t("Keine"))))
+        choices: list[tuple[object, QComboBox]] = []
+        for face, ranked, uncertain in results:
+            box = QGroupBox(f"{t('Gesicht')} {face.number} von {len(results)}", dialog); form = QFormLayout(box)
+            sface_proposal = ranked[0]["name"] if ranked and not uncertain else None
+            metadata_proposal = (
+                image_people[0]
+                if len(results) == 1 and len(image_people) == 1 and not sface_proposal
+                else None
+            )
+            proposal = sface_proposal or metadata_proposal or "(keiner)"
+            similarity = "–" if uncertain or not ranked else f"{ranked[0]['top3_mean']:.3f}"
+            form.addRow(t("Vorschlag:"), QLabel(proposal, box)); form.addRow(t("Ähnlichkeit:"), QLabel(similarity, box))
+            if metadata_proposal:
+                form.addRow(QLabel(t("Vorschlag aus Bildinformationen"), box))
+            combo = QComboBox(box); combo.setEditable(True); combo.addItem(t("Unbekannt"), "")
+            # Existing image metadata comes first, but never preselects a face.
+            for name in image_people: combo.addItem(name, name)
+            remaining = [name for name in suggest_people("") if name.casefold() not in {item.casefold() for item in image_people}]
+            if remaining:
+                combo.insertSeparator(combo.count())
+                for name in remaining: combo.addItem(name, name)
+            if sface_proposal or metadata_proposal:
+                combo.setCurrentText(sface_proposal or metadata_proposal)
+            form.addRow(t("Person:"), combo)
+            combo.setToolTip(t("Bestätigte geeignete Gesichter werden als Referenz für spätere Erkennung gelernt."))
+            actions = QHBoxLayout(); skip = QPushButton(t("Überspringen"), box); unknown = QPushButton(t("Unbekannt"), box); new = QPushButton(t("Neue Person …"), box)
+            skip.clicked.connect(lambda _=False, combo=combo: combo.setCurrentIndex(0))
+            unknown.clicked.connect(lambda _=False, combo=combo: combo.setCurrentIndex(0))
+            def add_new(_=False, combo=combo):
+                name, accepted = QInputDialog.getText(dialog, t("Neue Person"), t("Person:"))
+                if accepted and name.strip(): combo.setCurrentText(name.strip())
+            new.clicked.connect(add_new); actions.addWidget(skip); actions.addWidget(unknown); actions.addWidget(new); form.addRow(actions)
+            layout.addWidget(box); choices.append((face, combo))
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, dialog)
+        buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject); layout.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            self._hide_face_markers(); return
+        selected: list[tuple[object, str]] = []
+        for face, combo in choices:
+            name = combo.currentText().strip()
+            if name and name != t("Unbekannt"): selected.append((face, name))
+        if not selected:
+            self._hide_face_markers(); return
+        names: list[str] = []
+        overlay = []
+        for face, name in selected:
+            person = person_id_for_name(name)
+            if face.embedding is not None and face.confidence >= FACE_AUTO_REFERENCE_MIN_CONFIDENCE:
+                owner = face_reference_owner(str(self.current_image), face.number)
+                if not owner or owner.casefold() == name.casefold():
+                    add_face_reference(person, face.embedding.astype("float32").tobytes(), str(self.current_image), face.number, face.confidence)
+            if name.casefold() not in {item.casefold() for item in names}: names.append(name)
+            overlay.append((name, *face.box))
+        existing = self.manual_metadata_fields.get("people").text() if hasattr(self, "manual_metadata_fields") else ""
+        people = [item.strip() for item in existing.split(",") if item.strip()]
+        for name in names:
+            if name.casefold() not in {item.casefold() for item in people}: people.append(name)
+        if hasattr(self, "manual_metadata_fields"):
+            self.manual_metadata_fields["people"].setText(", ".join(people)); self.manual_metadata_dirty = True; self.manual_metadata_save_button.setEnabled(True)
+        self._face_overlay_boxes = overlay; self._render_current_image()
+        # Reuse the sole normal metadata-save path (ExifTool, suggestions and index sync).
+        self._capture_manual_metadata()
+
     def _render_current_image(self) -> None:
         self._image_render_pending = False
         if self.original_image.isNull():
@@ -10721,6 +11658,9 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
+        if self._face_overlay_boxes and self.original_image.width() and self.original_image.height():
+            scaled_image = scaled_image.copy()
+            paint_face_overlays(scaled_image, self.original_image.size(), self._face_overlay_boxes)
         self.image_label.resize(scaled_size)
         self.image_label.setPixmap(QPixmap.fromImage(scaled_image))
         if self._zoom_mode == "fit":
@@ -10819,15 +11759,23 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
         self.zoom_indicator.hide()
 
     def _show_fullscreen_tooltip(self, global_position) -> None:
-        if (
-            not self._fullscreen_mode
-            or self._pdf_document is not None
-            or self._fullscreen_tooltip_visible
-        ):
+        """Fullscreen intentionally stays free of hover tooltip overlays."""
+        return
+
+    def _set_fullscreen_tooltips_enabled(self, enabled: bool) -> None:
+        """Temporarily remove ordinary widget tooltips only in fullscreen."""
+        if not enabled:
+            QToolTip.hideText()
+            stored = getattr(self, "_fullscreen_tooltip_texts", {})
+            for widget in self.window.findChildren(QWidget):
+                if widget.toolTip() and widget not in stored:
+                    stored[widget] = widget.toolTip()
+                    widget.setToolTip("")
+            self._fullscreen_tooltip_texts = stored
             return
-        self._fullscreen_tooltip_visible = True
-        QToolTip.showText(global_position, FULLSCREEN_TOOLTIP, self.window)
-        self.fullscreen_tooltip_timer.start(FULLSCREEN_TOOLTIP_DURATION)
+        for widget, tooltip in getattr(self, "_fullscreen_tooltip_texts", {}).items():
+            widget.setToolTip(tooltip)
+        self._fullscreen_tooltip_texts = {}
 
     def _hide_fullscreen_tooltip(self) -> None:
         QToolTip.hideText()
@@ -10878,6 +11826,11 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
         self._normal_right_splitter_sizes = self.right_splitter.sizes()
         self._normal_window_style = self.window.styleSheet()
         self._normal_image_style = self.image_label.styleSheet()
+        self._normal_information_panel_style = self.information_panel.styleSheet()
+        self._normal_file_name_style = self.file_name_label.styleSheet()
+        self._normal_thumbnail_size_controls_hidden = (
+            self.thumbnail_size_controls.isHidden()
+        )
 
         central_layout = self.window.centralWidget().layout()
         if central_layout is not None:
@@ -10892,6 +11845,10 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
         self.bottom_control_bar_start_timer.stop()
         self.bottom_control_bar.hide()
         self.status_bar.hide()
+        # The thumbnail size control has no use while the thumbnail pane is
+        # hidden.  Hide its complete container so neither the +/- icons nor a
+        # layout gap remain in the fullscreen control bar.
+        self.thumbnail_size_controls.hide()
         if self._pdf_document is not None:
             self._detach_pdf_page_navigation()
         self._update_pdf_page_navigation()
@@ -10902,6 +11859,22 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
         self.right_splitter.setSizes([0, max(1, self.right_splitter.width())])
         self.window.setStyleSheet("background-color: black;")
         self.image_label.setStyleSheet("background-color: black;")
+        self.information_panel.setStyleSheet("""
+            QWidget#informationPanel { background-color: #000000; color: #ffffff; }
+            QWidget#informationPanel QLabel, QWidget#informationPanel QGroupBox,
+            QWidget#informationPanel QCheckBox { color: #ffffff; }
+            QWidget#informationPanel QGroupBox#informationSection,
+            QWidget#informationPanel QLabel#informationFieldLabel,
+            QWidget#informationPanel QLabel#informationValueLabel,
+            QWidget#informationPanel QLabel#informationEmptyLabel { color: #ffffff; }
+            QWidget#informationPanel QGroupBox#informationSection::title { color: #ffffff; }
+            QWidget#informationPanel QToolButton { color: #ffffff; }
+            QWidget#informationPanel QLineEdit, QWidget#informationPanel QTextEdit,
+            QWidget#informationPanel QComboBox { background-color: #ffffff; color: #1f1f1f; }
+            QWidget#informationPanel QComboBox QAbstractItemView { background-color: #ffffff; color: #1f1f1f; }
+        """)
+        self.file_name_label.setStyleSheet("color: #ffffff;")
+        self._set_fullscreen_tooltips_enabled(False)
         self.window.showFullScreen()
         # Qt can restore child visibility during the fullscreen transition.
         # Reassert the PDF-only fullscreen contract after that event cycle.
@@ -10914,8 +11887,6 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
         if self._pdf_document is not None:
             self._show_pdf_fullscreen_navigation_hint()
             QTimer.singleShot(0, self._position_pdf_fullscreen_navigation_hint)
-        else:
-            self._show_fullscreen_tooltip(QCursor.pos())
         self._position_slideshow_overlays()
         self._restart_slideshow_cursor_timer()
 
@@ -10933,6 +11904,9 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
         self._sync_quick_switches()
         self.window.setStyleSheet(self._normal_window_style)
         self.image_label.setStyleSheet(self._normal_image_style)
+        self.information_panel.setStyleSheet(self._normal_information_panel_style)
+        self.file_name_label.setStyleSheet(self._normal_file_name_style)
+        self._set_fullscreen_tooltips_enabled(True)
         central_layout = self.window.centralWidget().layout()
         if central_layout is not None and self._normal_central_margins is not None:
             central_layout.setContentsMargins(*self._normal_central_margins)
@@ -10941,6 +11915,10 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
             self.directory_panel.show()
             self._apply_thumbnail_position(save=False)
         self._show_bottom_control_bar()
+        self.thumbnail_size_controls.setVisible(
+            not self._normal_thumbnail_size_controls_hidden
+        )
+        self._update_bottom_control_bar_layout()
         self.bottom_control_bar_start_timer.start(BOTTOM_CONTROL_BAR_START_DELAY_MS)
         self._restore_pdf_page_navigation_to_layout()
         self._update_pdf_page_navigation()

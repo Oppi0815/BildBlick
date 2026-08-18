@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def metadata_database_path() -> Path:
@@ -76,6 +76,19 @@ def initialize_metadata_database(connection_or_path: sqlite3.Connection | Path |
                     f"ALTER TABLE {table} ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0"
                 )
         connection.execute("PRAGMA user_version = 3")
+    if version < 4:
+        connection.executescript("""
+            CREATE TABLE IF NOT EXISTS face_models (id INTEGER PRIMARY KEY CHECK(id=1),
+              detector_model TEXT NOT NULL, recognition_model TEXT NOT NULL,
+              embedding_dimension INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS face_references (id INTEGER PRIMARY KEY,
+              person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+              embedding BLOB NOT NULL, source_image_path TEXT NOT NULL,
+              source_face_index INTEGER NOT NULL, detection_confidence REAL NOT NULL,
+              quality REAL NULL, created_at TEXT NOT NULL,
+              UNIQUE(person_id, source_image_path, source_face_index));
+        """)
+        connection.execute("PRAGMA user_version = 4")
     connection.commit()
     if owns_connection:
         connection.close()
@@ -105,6 +118,61 @@ def _upsert(table: str, name: str, latitude: float | None = None, longitude: flo
 
 def upsert_person(name: str, path: Path | None = None) -> None:
     _upsert("people", name, path=path)
+
+
+def person_id_for_name(name: str, path: Path | None = None) -> int:
+    """Return the existing/local person id, creating the suggested person if needed."""
+    _upsert("people", name, path=path)
+    with _connection(path) as connection:
+        return int(connection.execute("SELECT id FROM people WHERE normalized_name=?", (_normalized(name),)).fetchone()[0])
+
+
+def find_person_id(name: str, path: Path | None = None) -> int | None:
+    """Return an existing people-table id without changing the database."""
+    with _connection(path) as connection:
+        row = connection.execute(
+            "SELECT id FROM people WHERE normalized_name=?", (_normalized(name),)
+        ).fetchone()
+    return int(row[0]) if row is not None else None
+
+
+def face_reference_vectors(path: Path | None = None) -> dict[int, tuple[str, list[bytes]]]:
+    with _connection(path) as connection:
+        rows = connection.execute("SELECT p.id,p.name,r.embedding FROM people p JOIN face_references r ON r.person_id=p.id ORDER BY p.id,r.id").fetchall()
+    result: dict[int, tuple[str, list[bytes]]] = {}
+    for row in rows:
+        result.setdefault(row["id"], (row["name"], []))[1].append(row["embedding"])
+    return result
+
+
+def add_face_reference(person_id: int, embedding: bytes, source_image_path: str, source_face_index: int, confidence: float, quality: float | None = None, path: Path | None = None) -> bool:
+    now = datetime.now(timezone.utc).isoformat()
+    with _connection(path) as connection:
+        cursor = connection.execute("""INSERT OR IGNORE INTO face_references
+            (person_id,embedding,source_image_path,source_face_index,detection_confidence,quality,created_at)
+            VALUES (?,?,?,?,?,?,?)""", (person_id, embedding, source_image_path, source_face_index, confidence, quality, now))
+    return cursor.rowcount == 1
+
+
+def face_reference_entries(path: Path | None = None) -> list[dict]:
+    with _connection(path) as connection:
+        rows = connection.execute("""SELECT r.id,r.person_id,p.name,r.source_image_path,r.source_face_index,
+          r.detection_confidence,r.quality,r.created_at FROM face_references r JOIN people p ON p.id=r.person_id
+          ORDER BY p.name COLLATE NOCASE,r.created_at DESC""").fetchall()
+    return [dict(row) for row in rows]
+
+
+def delete_face_references(ids: list[int], path: Path | None = None) -> int:
+    if not ids: return 0
+    with _connection(path) as connection:
+        cursor = connection.executemany("DELETE FROM face_references WHERE id=?", [(value,) for value in ids])
+    return cursor.rowcount
+
+
+def face_reference_owner(source_image_path: str, source_face_index: int, path: Path | None = None) -> str | None:
+    with _connection(path) as connection:
+        row = connection.execute("SELECT p.name FROM face_references r JOIN people p ON p.id=r.person_id WHERE r.source_image_path=? AND r.source_face_index=? LIMIT 1", (source_image_path, source_face_index)).fetchone()
+    return None if row is None else str(row["name"])
 
 
 def upsert_place(name: str, latitude: float | None = None, longitude: float | None = None, path: Path | None = None) -> None:

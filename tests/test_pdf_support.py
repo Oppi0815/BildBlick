@@ -344,7 +344,7 @@ def test_pdf_fullscreen_navigation_hint_only_shows_for_pdfs_and_reappears(tmp_pa
         application.processEvents()
 
 
-def test_pdf_fullscreen_suppresses_native_image_tooltips_but_images_keep_them(
+def test_fullscreen_suppresses_native_image_tooltips_for_pdfs_and_images(
     tmp_path: Path, monkeypatch
 ):
     application, viewer = _viewer(tmp_path)
@@ -386,7 +386,7 @@ def test_pdf_fullscreen_suppresses_native_image_tooltips_but_images_keep_them(
         viewer._enter_fullscreen()
         tooltip_event = QEvent(QEvent.Type.ToolTip)
         assert viewer.eventFilter(viewer.image_label, tooltip_event) is True
-        assert viewer._fullscreen_tooltip_visible is True
+        assert viewer._fullscreen_tooltip_visible is False
     finally:
         viewer._leave_fullscreen()
         viewer.window.close()

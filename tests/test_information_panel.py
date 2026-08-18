@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 from PySide6.QtCore import QEvent, QItemSelectionModel, QPoint, QThread, QThreadPool, QTimer, Qt
-from PySide6.QtGui import QPalette
+from PySide6.QtGui import QImage, QPalette
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFormLayout, QGroupBox, QLabel, QPushButton,
@@ -202,6 +202,38 @@ def test_the_information_panel_handles_all_color_schemes(tmp_path):
         assert viewer.information_panel.isVisible()
         viewer._hide_information_panel()
     viewer.window.close()
+
+
+def test_fullscreen_information_panel_uses_white_text_and_restores_theme_style(tmp_path):
+    application, viewer = _viewer(tmp_path)
+    original_style = viewer.information_panel.styleSheet()
+    original_file_style = viewer.file_name_label.styleSheet()
+    original_tooltip = viewer.information_toggle_button.toolTip()
+    original_thumbnail_value = viewer.thumbnail_size_slider.value()
+    try:
+        viewer.original_image = QImage(200, 100, QImage.Format.Format_RGB32)
+        viewer._show_information_panel()
+        for scheme in ("System", *COLOR_SCHEMES):
+            viewer._color_scheme = scheme; viewer._apply_color_scheme()
+            viewer._enter_fullscreen(); application.processEvents()
+            style = viewer.information_panel.styleSheet()
+            assert "background-color: #000000" in style
+            assert "color: #ffffff" in style
+            assert "QGroupBox#informationSection" in style
+            assert "QLineEdit" in style and "color: #1f1f1f" in style
+            assert "color: #ffffff" in viewer.file_name_label.styleSheet()
+            assert viewer.information_toggle_button.toolTip() == ""
+            assert viewer.thumbnail_size_controls.isHidden()
+            assert viewer.thumbnail_size_slider.value() == original_thumbnail_value
+            viewer._leave_fullscreen(); application.processEvents()
+            assert viewer.information_panel.styleSheet() == original_style
+            assert viewer.file_name_label.styleSheet() == original_file_style
+            assert viewer.information_toggle_button.toolTip() == original_tooltip
+            assert not viewer.thumbnail_size_controls.isHidden()
+            assert viewer.thumbnail_size_slider.value() == original_thumbnail_value
+    finally:
+        if viewer._fullscreen_mode: viewer._leave_fullscreen()
+        viewer.window.close()
 
 
 def test_pinned_manual_metadata_editor_is_editable_for_jpeg_and_not_scrolled(tmp_path):

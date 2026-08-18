@@ -24,7 +24,7 @@ def test_index_migrates_and_searches_metadata(tmp_path):
     assert search_images(person="Ingeborg", place="Steyerberg", path=database) == [first]
     assert search_images(comment="HONDA", path=database) == [first]
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
 def test_progress_cancel_remove_and_direct_update_leave_files_untouched(tmp_path):
