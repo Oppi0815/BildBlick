@@ -4,7 +4,7 @@ Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
 ## 1.24.2
 
-### macOS / Netzwerk
+### Fehlerbehebung
 
 - „Netzwerkort verbinden …“ verwendet auf macOS den Finder statt des nur unter
   Linux verfügbaren GIO/GVFS und übergibt keine Zugangsdaten an BildBlick.
@@ -12,6 +12,12 @@ Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
   und merkt sich die zuletzt verwendete Netzwerkadresse lokal.
 - Bis zu sechs eingehängte Netzwerkorte werden im Netzwerkbereich direkt ohne
   Scrollen angezeigt.
+- GPS-Kandidatendialog öffnet sich nach Übernehmen oder Abbrechen nicht mehr
+  erneut durch die Qt-Fokus-Rückgabe.
+- „Abbrechen“ im GPS-Kandidatendialog beendet den aktuellen Vorgang zuverlässig
+  ohne Änderung der Bildinformationen.
+- Programmatische GPS-Übernahmen lösen keine erneute Kandidatensuche aus.
+- Vollbild- und Dialog-Fokusübergänge weiter stabilisiert.
 
 ## 1.24.1
 

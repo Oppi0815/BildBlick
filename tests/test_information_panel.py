@@ -366,6 +366,60 @@ def test_mixed_batch_gps_stays_editable_and_can_accept_place_suggestion(tmp_path
         viewer.window.close()
 
 
+def test_gps_candidate_cancel_is_not_reopened_by_dialog_focus_return(tmp_path, monkeypatch):
+    path = _image(tmp_path / "gps-cancel.jpg")
+    monkeypatch.setattr("bildbetrachter.place_coordinates", lambda _: (52.123456, 9.654321))
+    application, viewer = _viewer(tmp_path)
+    try:
+        viewer.current_image = path
+        viewer._show_information_panel()
+        viewer.load_manual_metadata_into_fields({"place": "Steyerberg"})
+        viewer._batch_metadata_mode = True
+        viewer._batch_metadata_values = {
+            path: {"place": "Steyerberg", "gps": "52.2, 9.2"},
+        }
+        gps = viewer.manual_metadata_fields["gps"]
+        QTimer.singleShot(0, lambda: next(
+            dialog for dialog in application.topLevelWidgets()
+            if isinstance(dialog, QDialog) and dialog.objectName() == "gpsCandidateDialog" and dialog.isVisible()
+        ).reject())
+        viewer.eventFilter(gps, QEvent(QEvent.Type.FocusIn))
+        assert gps.text() == ""
+        # This is the FocusIn emitted by Qt when the modal dialog returns.
+        viewer.eventFilter(gps, QEvent(QEvent.Type.FocusIn))
+        assert not any(
+            isinstance(dialog, QDialog) and dialog.objectName() == "gpsCandidateDialog" and dialog.isVisible()
+            for dialog in application.topLevelWidgets()
+        )
+        application.processEvents()
+        # A later deliberate focus is a new operation and may prompt again.
+        QTimer.singleShot(0, lambda: next(
+            dialog for dialog in application.topLevelWidgets()
+            if isinstance(dialog, QDialog) and dialog.objectName() == "gpsCandidateDialog" and dialog.isVisible()
+        ).reject())
+        viewer.eventFilter(gps, QEvent(QEvent.Type.FocusIn))
+    finally:
+        viewer.window.close()
+
+
+def test_applying_gps_candidate_blocks_programmatic_field_signals(tmp_path, monkeypatch):
+    path = _image(tmp_path / "gps-apply.jpg")
+    application, viewer = _viewer(tmp_path)
+    try:
+        viewer.current_image = path
+        viewer._show_information_panel()
+        gps = viewer.manual_metadata_fields["gps"]
+        emitted = []
+        gps.textChanged.connect(emitted.append)
+        viewer.place_gps_suggestion.setProperty("placeGpsCoordinates", (52.123456, 9.654321))
+        viewer._apply_place_gps_suggestion()
+        assert gps.text() == "52.123456, 9.654321"
+        assert emitted == []
+        assert viewer.manual_metadata_dirty
+    finally:
+        viewer.window.close()
+
+
 def test_gps_map_uses_deduplicated_batch_coordinates(tmp_path, monkeypatch):
     paths = [_image(tmp_path / f"map-{index}.jpg") for index in range(3)]
     values = {

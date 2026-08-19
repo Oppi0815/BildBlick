@@ -5136,6 +5136,13 @@ class ImageViewer(QObject):
         self._batch_metadata_mode = False
         self._metadata_selection_snapshot: list[Path] = []
         self._restoring_metadata_selection = False
+        # A modal candidate picker temporarily takes focus away from the GPS
+        # editor.  Qt restores it when the picker closes, which is not a new
+        # user request to show the picker again.
+        self._gps_candidate_dialog_active = False
+        self._gps_candidate_prompt_generation = 0
+        self._gps_candidate_prompted_generation = -1
+        self._suppress_gps_candidate_focus_return = False
         self.batch_selection_label = QLabel(section)
         self.batch_selection_label.setObjectName("batchSelectionLabel")
         self.batch_selection_label.hide()
@@ -5219,6 +5226,12 @@ class ImageViewer(QObject):
         assert isinstance(gps, QLineEdit)
         gps.installEventFilter(self)
         gps.textChanged.connect(lambda *_: self._update_gps_map_button())
+        gps.textChanged.connect(
+            lambda text: logging.debug("GPS editor textChanged: %r", text)
+        )
+        gps.editingFinished.connect(
+            lambda: logging.debug("GPS editor editingFinished (focus=%r)", self.window.focusWidget())
+        )
 
         suggestion = QWidget(self.manual_metadata_section)
         suggestion.setObjectName("placeGpsSuggestion")
@@ -5378,7 +5391,13 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
         layout.addWidget(close)
         dialog.exec()
 
-    def _refresh_place_gps_suggestion(self) -> None:
+    def _clear_gps_candidate_dialog_guard(self) -> None:
+        """Finish a candidate-picker operation after Qt processed focus return."""
+        self._gps_candidate_dialog_active = False
+        self._suppress_gps_candidate_focus_return = False
+        logging.debug("GPS candidate dialog guard released")
+
+    def _refresh_place_gps_suggestion(self, generation: int | None = None) -> None:
         """Read current local place GPS anew whenever the GPS editor gains focus."""
         place = self.manual_metadata_fields["place"]
         assert isinstance(place, QLineEdit)
@@ -5404,10 +5423,25 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
                     add_candidate(metadata.get("place", "").strip() or t("Ohne Ortszuordnung"), coordinates)
         except Exception:
             logging.exception("Could not read local place coordinates")
+        logging.debug(
+            "GPS candidate calculation: place=%r batch=%s candidates=%s generation=%s",
+            name, self._batch_metadata_mode, candidates, generation,
+        )
         if not candidates:
             self._hide_place_gps_suggestion()
             return
         if len(candidates) > 1:
+            if self._gps_candidate_dialog_active:
+                logging.debug("GPS candidate dialog suppressed: dialog is already active")
+                return
+            if generation is None:
+                self._gps_candidate_prompt_generation += 1
+                generation = self._gps_candidate_prompt_generation
+            if generation == self._gps_candidate_prompted_generation:
+                logging.debug("GPS candidate dialog suppressed: generation %s already prompted", generation)
+                return
+            self._gps_candidate_dialog_active = True
+            self._gps_candidate_prompted_generation = generation
             chooser = QDialog(self.window)
             chooser.setObjectName("gpsCandidateDialog")
             chooser.setWindowTitle(t("GPS-Koordinaten auswählen"))
@@ -5425,7 +5459,14 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
             apply.clicked.connect(chooser.accept)
             choices.itemDoubleClicked.connect(lambda *_: chooser.accept())
             chooser_layout.addWidget(buttons)
-            if chooser.exec() != QDialog.DialogCode.Accepted or choices.currentItem() is None:
+            logging.debug("GPS candidate dialog opened: generation=%s", generation)
+            result = chooser.exec()
+            logging.debug("GPS candidate dialog result: %s", result)
+            # Keep the guard set through the next event-loop turn.  That turn
+            # contains the FocusIn Qt sends while returning focus from exec().
+            self._suppress_gps_candidate_focus_return = True
+            QTimer.singleShot(0, self._clear_gps_candidate_dialog_guard)
+            if result != QDialog.DialogCode.Accepted or choices.currentItem() is None:
                 return
             self.place_gps_suggestion.setProperty(
                 "placeGpsCoordinates", choices.currentItem().data(Qt.ItemDataRole.UserRole)
@@ -5447,7 +5488,11 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
             return
         gps = self.manual_metadata_fields["gps"]
         assert isinstance(gps, QLineEdit)
-        gps.setText(self._gps_text(*coordinates))
+        # Applying a choice is programmatic; do not feed its textChanged
+        # signal back into metadata/focus-driven UI work.
+        with QSignalBlocker(gps):
+            gps.setText(self._gps_text(*coordinates))
+        logging.debug("GPS field updated from candidate: %s", gps.text())
         # A button click moves focus away from the editor on some platforms.
         # Keep the accepted value authoritative until the user saves or loads
         # different metadata, regardless of focus transitions.
@@ -12052,12 +12097,30 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
             self.status_bar.hide()
 
     def eventFilter(self, watched, event) -> bool:
-        if (
-            hasattr(self, "manual_metadata_fields")
-            and watched is self.manual_metadata_fields.get("gps")
-            and event.type() == QEvent.Type.FocusIn
-        ):
-            self._refresh_place_gps_suggestion()
+        if hasattr(self, "manual_metadata_fields") and watched is self.manual_metadata_fields.get("gps"):
+            if event.type() == QEvent.Type.FocusOut:
+                logging.debug("GPS editor focusOut: reason=%s", getattr(event, "reason", lambda: None)())
+            elif event.type() == QEvent.Type.FocusIn:
+                logging.debug(
+                    "GPS editor focusIn: reason=%s active=%s suppress-return=%s",
+                    getattr(event, "reason", lambda: None)(), self._gps_candidate_dialog_active,
+                    self._suppress_gps_candidate_focus_return,
+                )
+                if self._gps_candidate_dialog_active or self._suppress_gps_candidate_focus_return:
+                    logging.debug("GPS candidate trigger suppressed after dialog focus return")
+                else:
+                    self._gps_candidate_prompt_generation += 1
+                    self._refresh_place_gps_suggestion(self._gps_candidate_prompt_generation)
+            elif (
+                event.type() == QEvent.Type.MouseButtonPress
+                and self.manual_metadata_fields["gps"].hasFocus()
+            ):
+                # Clicking an already focused editor is an explicit new user
+                # action; no FocusIn follows in that case.
+                self._suppress_gps_candidate_focus_return = False
+                self._gps_candidate_prompt_generation += 1
+                logging.debug("GPS editor clicked while focused; generation=%s", self._gps_candidate_prompt_generation)
+                self._refresh_place_gps_suggestion(self._gps_candidate_prompt_generation)
         if (
             hasattr(self, "pdf_thumbnail_viewport")
             and watched is self.pdf_thumbnail_viewport
