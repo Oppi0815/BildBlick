@@ -191,7 +191,7 @@ from i18n import LANGUAGES, LanguageManager, t
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.24.0"
+APP_VERSION = "1.24.1"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 LOGGER = logging.getLogger(__name__)
 FACE_AUTO_REFERENCE_MIN_CONFIDENCE = 0.80
@@ -3794,6 +3794,9 @@ class ImageViewer(QObject):
         self.manual_metadata = {"comment": "", "people": "", "place": "", "gps": ""}
         self._manual_metadata_path: Path | None = None
         self.manual_metadata_dirty = False
+        self._pending_metadata_navigation_target: Path | None = None
+        self._pending_metadata_navigation_restore_paths: list[Path] | None = None
+        self._cancelled_metadata_navigation_target: Path | None = None
         self._pdf_document = None
         self._pdf_link_model = QPdfLinkModel(self.window)
         self._pdf_page = 0
@@ -5756,6 +5759,48 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
             self.clear_manual_metadata_fields()
             return True
         return False
+
+    def _abort_manual_metadata_navigation(self) -> None:
+        """Atomically reject one image-selection attempt without losing edits."""
+        if self._pending_metadata_navigation_target is not None:
+            self._cancelled_metadata_navigation_target = (
+                self._pending_metadata_navigation_target
+            )
+            # A QListWidget click emits currentItemChanged and
+            # itemSelectionChanged separately.  Keep the cancellation token
+            # through both synchronous callbacks, then release it for the next
+            # deliberate user navigation attempt.
+        self._pending_metadata_navigation_target = None
+        self._restore_metadata_navigation_selection()
+        # QListWidget may apply the original current-item change only after its
+        # signal returns.  Reapply the snapshot on the next event-loop turn so
+        # the visual selection and current_image cannot diverge.
+        QTimer.singleShot(0, self._finish_aborted_metadata_navigation)
+
+    def _restore_metadata_navigation_selection(self) -> None:
+        restore_paths = self._pending_metadata_navigation_restore_paths or self._metadata_selection_snapshot
+        self._restoring_metadata_selection = True
+        try:
+            # Both the current item and the selected items change on a normal
+            # thumbnail click.  Blocking both senders prevents the restoration
+            # itself from becoming a second navigation attempt.
+            with QSignalBlocker(self.thumbnail_list), QSignalBlocker(
+                self.thumbnail_list.selectionModel()
+            ):
+                self._restore_thumbnail_selection(
+                    restore_paths, self.current_image
+                )
+        finally:
+            self._restoring_metadata_selection = False
+        self._update_navigation_buttons()
+
+    def _finish_aborted_metadata_navigation(self) -> None:
+        self._restore_metadata_navigation_selection()
+        self._clear_cancelled_metadata_navigation()
+
+    def _clear_cancelled_metadata_navigation(self) -> None:
+        self._cancelled_metadata_navigation_target = None
+        self._pending_metadata_navigation_restore_paths = None
 
     def _clear_information_content(self) -> None:
         while self.information_content_layout.count() > 1:
@@ -7862,7 +7907,7 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
                 and item_path.resolve(strict=False) == current_path.resolve(strict=False)
             ):
                 self.thumbnail_list.setCurrentItem(
-                    item, QItemSelectionModel.SelectionFlag.NoUpdate
+                    item, QItemSelectionModel.SelectionFlag.Current
                 )
 
     def _start_thumbnail_drag(self, source_paths: list[Path] | None = None) -> bool:
@@ -10030,10 +10075,27 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
         if item is None:
             self._update_navigation_buttons()
             return
-        if not self._confirm_manual_metadata_navigation():
-            with QSignalBlocker(self.thumbnail_list):
-                self.thumbnail_list.setCurrentItem(_previous_item)
+        target_path = Path(item.data(Qt.ItemDataRole.UserRole))
+        cancelled_target = self._cancelled_metadata_navigation_target
+        if (
+            cancelled_target is not None
+            and target_path.resolve(strict=False) == cancelled_target.resolve(strict=False)
+        ):
+            # itemSelectionChanged can run before the currentItemChanged event
+            # caused by the same click.  Consume that late event exactly once.
+            self._abort_manual_metadata_navigation()
             return
+        self._pending_metadata_navigation_target = target_path
+        self._pending_metadata_navigation_restore_paths = (
+            [Path(_previous_item.data(Qt.ItemDataRole.UserRole))]
+            if _previous_item is not None
+            else list(self._metadata_selection_snapshot)
+        )
+        if not self._confirm_manual_metadata_navigation():
+            self._abort_manual_metadata_navigation()
+            return
+        self._pending_metadata_navigation_target = None
+        self._pending_metadata_navigation_restore_paths = None
         self.current_image = Path(item.data(Qt.ItemDataRole.UserRole))
         self._set_file_name_text(self.current_image.name)
         self._load_current_image()
@@ -10058,30 +10120,30 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
         self._update_view_actions()
         if not self.information_panel.isVisible() or self._restoring_metadata_selection:
             return
+        if self._cancelled_metadata_navigation_target is not None:
+            # Consume the companion selection signal from an already rejected
+            # current-item change.  The QTimer in the abort helper clears this
+            # token before any subsequent user gesture can be processed.
+            self._abort_manual_metadata_navigation()
+            return
         selected = self._selected_thumbnail_paths_in_display_order()
         if self.manual_metadata_dirty and selected != self._metadata_selection_snapshot:
-            dialog = QMessageBox(self.window)
-            dialog.setIcon(QMessageBox.Icon.Warning)
-            dialog.setWindowTitle(t("Bildinformationen"))
-            dialog.setText(t("Die Bildinformationen wurden geändert."))
-            save = dialog.addButton(t("Speichern"), QMessageBox.ButtonRole.AcceptRole)
-            discard = dialog.addButton(t("Verwerfen"), QMessageBox.ButtonRole.DestructiveRole)
-            dialog.addButton(t("Abbrechen"), QMessageBox.ButtonRole.RejectRole)
-            dialog.exec()
-            clicked = dialog.clickedButton()
-            if clicked is discard:
-                self.manual_metadata_dirty = False
-            else:
-                self._restoring_metadata_selection = True
-                try:
-                    self._restore_thumbnail_selection(
-                        self._metadata_selection_snapshot, self.current_image
-                    )
-                finally:
-                    self._restoring_metadata_selection = False
-                if clicked is save:
-                    self._capture_manual_metadata()
+            # A single current item is handled by _thumbnail_selected.  Keeping
+            # this signal for batch-only changes avoids two dialogs for one
+            # ordinary thumbnail click.
+            if len(selected) <= 1:
                 return
+            self._pending_metadata_navigation_target = (
+                selected[0] if len(selected) == 1 else None
+            )
+            self._pending_metadata_navigation_restore_paths = list(
+                self._metadata_selection_snapshot
+            )
+            if not self._confirm_manual_metadata_navigation():
+                self._abort_manual_metadata_navigation()
+                return
+            self._pending_metadata_navigation_target = None
+            self._pending_metadata_navigation_restore_paths = None
         if len(selected) > 1:
             # Let the busy indicator paint before synchronous metadata reads.
             # A generation token makes rapid Ctrl/Shift selection changes safe.

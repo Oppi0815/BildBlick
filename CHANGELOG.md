@@ -2,6 +2,18 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.24.1
+
+### Fehlerbehebung
+
+- Fehler beim Bildwechsel mit ungespeicherten Bildinformationen behoben.
+- „Abbrechen“ beendet den Bildwechsel jetzt zuverlässig und erhält die noch
+  nicht gespeicherten Eingaben.
+- „Verwerfen“ verwirft die Änderungen und wechselt anschließend zum
+  gewünschten Bild.
+- „Speichern“ wechselt erst nach erfolgreicher Speicherung.
+- Doppelte Dialogauslösung durch konkurrierende Qt-Auswahlsignale behoben.
+
 ## 1.24.0
 
 ### Gesichtserkennung

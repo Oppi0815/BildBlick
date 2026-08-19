@@ -465,7 +465,13 @@ def test_pdf_thumbnail_background_queue_completes_without_overwriting_navigation
             pos=viewer.pdf_thumbnail_bar.visualItemRect(page_two).center(),
         )
         assert viewer._pdf_page == 1
-        QTest.qWait(350)
+        # Rendering is deliberately queued in the GUI event loop.  Waiting a
+        # fixed 350 ms is scheduler-dependent on slower CI machines, so wait
+        # for the observable completion condition instead.
+        for _ in range(40):
+            if len(viewer._pdf_thumbnail_cache) == 20:
+                break
+            QTest.qWait(50)
         assert viewer._pdf_page == 1
         assert viewer.pdf_thumbnail_busy.isHidden()
         assert viewer._pdf_busy_timer.isActive() is False

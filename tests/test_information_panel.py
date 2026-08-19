@@ -1169,6 +1169,100 @@ def test_unsaved_batch_edit_still_warns_before_selection_change(tmp_path, monkey
         viewer.window.close()
 
 
+def test_unsaved_single_image_navigation_cancel_is_atomic_then_discard_proceeds(tmp_path, monkeypatch):
+    first, second = _image(tmp_path / "first.jpg"), _image(tmp_path / "second.jpg")
+    application, viewer = _viewer(tmp_path)
+    try:
+        first_item = QListWidgetItem(first.name); first_item.setData(Qt.ItemDataRole.UserRole, first)
+        second_item = QListWidgetItem(second.name); second_item.setData(Qt.ItemDataRole.UserRole, second)
+        viewer.thumbnail_list.addItem(first_item); viewer.thumbnail_list.addItem(second_item)
+        viewer.thumbnail_list.setCurrentItem(first_item, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        viewer.current_image = first; viewer._show_information_panel(); application.processEvents()
+        viewer.manual_metadata_fields["people"].setText("Unsaved Horst")
+        calls = []
+        choices = ["Abbrechen", "Verwerfen"]
+        def choose(dialog):
+            calls.append(dialog.text())
+            choice = choices.pop(0)
+            next(button for button in dialog.buttons() if button.text() == choice).click()
+        monkeypatch.setattr(QMessageBox, "exec", choose)
+
+        viewer.thumbnail_list.setCurrentItem(second_item, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        application.processEvents()
+        assert calls == ["Die Bildinformationen wurden geändert."]
+        assert viewer.current_image == first
+        assert Path(viewer.thumbnail_list.currentItem().data(Qt.ItemDataRole.UserRole)) == first
+        assert {
+            Path(item.data(Qt.ItemDataRole.UserRole))
+            for item in viewer.thumbnail_list.selectedItems()
+        } == {first}
+        assert viewer.manual_metadata_dirty
+        assert viewer.manual_metadata_fields["people"].text() == "Unsaved Horst"
+        assert viewer._pending_metadata_navigation_target is None
+
+        viewer.thumbnail_list.setCurrentItem(second_item, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        application.processEvents()
+        assert calls == ["Die Bildinformationen wurden geändert."] * 2
+        assert viewer.current_image == second
+        assert Path(viewer.thumbnail_list.currentItem().data(Qt.ItemDataRole.UserRole)) == second
+        assert not viewer.manual_metadata_dirty
+    finally:
+        viewer.window.close()
+
+
+def test_unsaved_single_image_navigation_save_and_failure_keep_correct_target(tmp_path, monkeypatch):
+    first, second = _image(tmp_path / "first.jpg"), _image(tmp_path / "second.jpg")
+    application, viewer = _viewer(tmp_path)
+    try:
+        first_item = QListWidgetItem(first.name); first_item.setData(Qt.ItemDataRole.UserRole, first)
+        second_item = QListWidgetItem(second.name); second_item.setData(Qt.ItemDataRole.UserRole, second)
+        viewer.thumbnail_list.addItem(first_item); viewer.thumbnail_list.addItem(second_item)
+        viewer.thumbnail_list.setCurrentItem(first_item, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        viewer.current_image = first; viewer._show_information_panel(); application.processEvents()
+        viewer.manual_metadata_fields["comment"].setPlainText("save me")
+        saved = []
+        def choose_save(dialog):
+            next(button for button in dialog.buttons() if button.text() == "Speichern").click()
+        monkeypatch.setattr(QMessageBox, "exec", choose_save)
+        def successful_save():
+            saved.append(viewer.current_image)
+            viewer.manual_metadata_dirty = False
+        monkeypatch.setattr(viewer, "_capture_manual_metadata", successful_save)
+        viewer.thumbnail_list.setCurrentItem(second_item, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        application.processEvents()
+        assert saved == [first] and viewer.current_image == second and not viewer.manual_metadata_dirty
+
+        viewer.thumbnail_list.setCurrentItem(first_item, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        application.processEvents()
+        viewer.manual_metadata_fields["comment"].setPlainText("do not lose me")
+        monkeypatch.setattr(viewer, "_capture_manual_metadata", lambda: None)
+        viewer.thumbnail_list.setCurrentItem(second_item, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        application.processEvents()
+        assert viewer.current_image == first
+        assert Path(viewer.thumbnail_list.currentItem().data(Qt.ItemDataRole.UserRole)) == first
+        assert viewer.manual_metadata_dirty
+        assert viewer.manual_metadata_fields["comment"].toPlainText() == "do not lose me"
+    finally:
+        viewer.window.close()
+
+
+def test_clean_single_image_navigation_never_opens_unsaved_dialog(tmp_path, monkeypatch):
+    first, second = _image(tmp_path / "first.jpg"), _image(tmp_path / "second.jpg")
+    application, viewer = _viewer(tmp_path)
+    try:
+        first_item = QListWidgetItem(first.name); first_item.setData(Qt.ItemDataRole.UserRole, first)
+        second_item = QListWidgetItem(second.name); second_item.setData(Qt.ItemDataRole.UserRole, second)
+        viewer.thumbnail_list.addItem(first_item); viewer.thumbnail_list.addItem(second_item)
+        viewer.thumbnail_list.setCurrentItem(first_item, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        viewer.current_image = first; viewer._show_information_panel(); application.processEvents()
+        monkeypatch.setattr(QMessageBox, "exec", lambda _dialog: pytest.fail("unexpected unsaved dialog"))
+        viewer.thumbnail_list.setCurrentItem(second_item, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        application.processEvents()
+        assert viewer.current_image == second
+    finally:
+        viewer.window.close()
+
+
 def test_pdf_information_is_file_only_and_does_not_read_exif(tmp_path):
     pdf_path = tmp_path / "dokument.pdf"
     pdf_path.write_bytes(b"%PDF-1.4\n")
