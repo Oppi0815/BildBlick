@@ -191,7 +191,7 @@ from i18n import LANGUAGES, LanguageManager, t
 
 
 APP_NAME = "BildBlick"
-APP_VERSION = "1.24.1"
+APP_VERSION = "1.24.2"
 APP_DESCRIPTION = "Ein schneller und komfortabler Bildbetrachter"
 LOGGER = logging.getLogger(__name__)
 FACE_AUTO_REFERENCE_MIN_CONFIDENCE = 0.80

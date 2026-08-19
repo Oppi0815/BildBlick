@@ -2,6 +2,17 @@
 
 Alle wesentlichen Änderungen an BildBlick werden in dieser Datei dokumentiert.
 
+## 1.24.2
+
+### macOS / Netzwerk
+
+- „Netzwerkort verbinden …“ verwendet auf macOS den Finder statt des nur unter
+  Linux verfügbaren GIO/GVFS und übergibt keine Zugangsdaten an BildBlick.
+- Der Verbindungsdialog erklärt die Eingabe, schlägt `smb://B650/Data%200` vor
+  und merkt sich die zuletzt verwendete Netzwerkadresse lokal.
+- Bis zu sechs eingehängte Netzwerkorte werden im Netzwerkbereich direkt ohne
+  Scrollen angezeigt.
+
 ## 1.24.1
 
 ### Fehlerbehebung
