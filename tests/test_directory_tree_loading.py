@@ -142,6 +142,14 @@ def test_network_address_suggestion_is_ready_to_confirm_on_macos():
     )
 
 
+def test_network_navigation_shows_four_mounted_volumes_without_scrolling():
+    assert bildbetrachter.network_navigation_height(4) == 92
+
+
+def test_network_navigation_limits_its_height_after_six_volumes():
+    assert bildbetrachter.network_navigation_height(10) == 136
+
+
 def test_unchanged_mount_snapshot_does_not_recreate_the_directory_model(monkeypatch):
     viewer = ImageViewer.__new__(ImageViewer)
     snapshot = (Path("/run/user/1000/gvfs/sftp:host=mac.local"),)

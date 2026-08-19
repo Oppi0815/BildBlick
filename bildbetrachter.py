@@ -368,6 +368,12 @@ def network_address_suggestion(platform: str | None = None) -> str:
     """Return the first useful example for the platform's network dialog."""
     platform = sys.platform if platform is None else platform
     return "smb://B650/Data%200" if platform == "darwin" else "sftp://mac.local/"
+
+
+def network_navigation_height(mount_count: int) -> int:
+    """Keep common mount lists visible without letting the panel take over."""
+    visible_rows = min(max(mount_count, 1), 6)
+    return visible_rows * 22 + 4
 _pictures_location = QStandardPaths.writableLocation(
     QStandardPaths.StandardLocation.PicturesLocation
 )
@@ -9363,7 +9369,7 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
         self.network_tree.setHeaderHidden(True)
         self.network_tree.setRootIsDecorated(False)
         self.network_tree.setIndentation(14)
-        self.network_tree.setMaximumHeight(66)
+        self.network_tree.setFixedHeight(network_navigation_height(0))
         self.network_tree.setStyleSheet(
             "QTreeWidget { border: 0; }"
             "QTreeWidget::item { height: 22px; padding: 0 2px; }"
@@ -9403,6 +9409,9 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
                 QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator
             )
             self.network_tree.addTopLevelItem(item)
+        self.network_tree.setFixedHeight(
+            network_navigation_height(self.network_tree.topLevelItemCount())
+        )
 
     def _populate_network_tree_item(self, item: QTreeWidgetItem) -> None:
         populated_role = Qt.ItemDataRole.UserRole.value + 1
