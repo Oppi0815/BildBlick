@@ -124,6 +124,18 @@ def test_mount_refreshes_preserve_the_selected_directory_for_later_mounts(tmp_pa
     assert restored_paths == [selected_directory, selected_directory]
 
 
+def test_connect_network_location_uses_macos_finder_mounting():
+    assert bildbetrachter.network_mount_command(
+        "smb://B650/Data%200", platform="darwin"
+    ) == ["open", "smb://B650/Data%200"]
+
+
+def test_connect_network_location_uses_gio_on_linux():
+    assert bildbetrachter.network_mount_command(
+        "sftp://mac.local/", platform="linux"
+    ) == ["gio", "mount", "sftp://mac.local/"]
+
+
 def test_unchanged_mount_snapshot_does_not_recreate_the_directory_model(monkeypatch):
     viewer = ImageViewer.__new__(ImageViewer)
     snapshot = (Path("/run/user/1000/gvfs/sftp:host=mac.local"),)

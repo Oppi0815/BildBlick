@@ -351,6 +351,16 @@ def network_mount_label(path: Path) -> str:
         share = re.search(r"(?:^|,)share=([^,]+)", name)
         return f"{server.group(1)}/{share.group(1)}" if share else server.group(1)
     return name
+
+
+def network_mount_command(address: str, platform: str | None = None) -> list[str]:
+    """Return the desktop command that mounts a user-selected network address.
+
+    macOS delegates SMB authentication and mounting to Finder through ``open``;
+    Linux Mint uses GIO/GVFS.  BildBlick never receives or stores credentials.
+    """
+    platform = sys.platform if platform is None else platform
+    return ["open", address] if platform == "darwin" else ["gio", "mount", address]
 _pictures_location = QStandardPaths.writableLocation(
     QStandardPaths.StandardLocation.PicturesLocation
 )
@@ -9422,12 +9432,14 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
             self._expand_initial_path(directory)
 
     def _connect_network_location(self) -> None:
-        """Delegate connection and authentication to the desktop's GIO/GVFS."""
+        """Delegate connection and authentication to the desktop file manager."""
         dialog = QDialog(self.window)
         dialog.setWindowTitle(t("Netzwerkort verbinden"))
         layout = QFormLayout(dialog)
         address = QLineEdit(dialog)
-        address.setPlaceholderText("sftp://mac.local/")
+        address.setPlaceholderText(
+            "smb://B650/Data%200" if sys.platform == "darwin" else "sftp://mac.local/"
+        )
         layout.addRow(t("Adresse:"), address)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok,
@@ -9439,10 +9451,10 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
         layout.addRow(buttons)
         if dialog.exec() != QDialog.DialogCode.Accepted or not address.text().strip():
             return
-        # gio invokes the existing GVFS/system authentication UI.  Credentials
-        # are deliberately neither collected nor persisted by BildBlick.
+        # The desktop invokes its own authentication UI. Credentials are
+        # deliberately neither collected nor persisted by BildBlick.
         try:
-            subprocess.Popen(["gio", "mount", address.text().strip()])
+            subprocess.Popen(network_mount_command(address.text().strip()))
         except OSError as error:
             QMessageBox.warning(self.window, t("Netzwerkort verbinden"), str(error))
 
