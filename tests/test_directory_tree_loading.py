@@ -136,6 +136,12 @@ def test_connect_network_location_uses_gio_on_linux():
     ) == ["gio", "mount", "sftp://mac.local/"]
 
 
+def test_network_address_suggestion_is_ready_to_confirm_on_macos():
+    assert bildbetrachter.network_address_suggestion(platform="darwin") == (
+        "smb://B650/Data%200"
+    )
+
+
 def test_unchanged_mount_snapshot_does_not_recreate_the_directory_model(monkeypatch):
     viewer = ImageViewer.__new__(ImageViewer)
     snapshot = (Path("/run/user/1000/gvfs/sftp:host=mac.local"),)

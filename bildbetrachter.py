@@ -200,6 +200,7 @@ FACE_SUGGESTION_SFACE = "SFACE"
 FACE_SUGGESTION_IMAGE_METADATA = "IMAGE_METADATA"
 FACE_SUGGESTION_CONFIRMED = "CONFIRMED"
 FACE_SUGGESTION_UNKNOWN = "UNKNOWN"
+NETWORK_ADDRESS_KEY = "network/last_address"
 
 _DialogResult = TypeVar("_DialogResult")
 
@@ -361,6 +362,12 @@ def network_mount_command(address: str, platform: str | None = None) -> list[str
     """
     platform = sys.platform if platform is None else platform
     return ["open", address] if platform == "darwin" else ["gio", "mount", address]
+
+
+def network_address_suggestion(platform: str | None = None) -> str:
+    """Return the first useful example for the platform's network dialog."""
+    platform = sys.platform if platform is None else platform
+    return "smb://B650/Data%200" if platform == "darwin" else "sftp://mac.local/"
 _pictures_location = QStandardPaths.writableLocation(
     QStandardPaths.StandardLocation.PicturesLocation
 )
@@ -9436,10 +9443,21 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
         dialog = QDialog(self.window)
         dialog.setWindowTitle(t("Netzwerkort verbinden"))
         layout = QFormLayout(dialog)
-        address = QLineEdit(dialog)
-        address.setPlaceholderText(
-            "smb://B650/Data%200" if sys.platform == "darwin" else "sftp://mac.local/"
+        hint = QLabel(
+            t("Gib die Netzwerkadresse ein und wähle anschließend „Verbinden“."
+              " Beispiel: {address}").format(
+                  address=network_address_suggestion()
+              ),
+            dialog,
         )
+        hint.setWordWrap(True)
+        layout.addRow(hint)
+        address = QLineEdit(dialog)
+        suggestion = self.settings.value(
+            NETWORK_ADDRESS_KEY, network_address_suggestion(), type=str
+        )
+        address.setText(suggestion)
+        address.selectAll()
         layout.addRow(t("Adresse:"), address)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok,
@@ -9451,10 +9469,13 @@ new ResizeObserver(()=>window.map.invalidateSize()).observe(document.getElementB
         layout.addRow(buttons)
         if dialog.exec() != QDialog.DialogCode.Accepted or not address.text().strip():
             return
+        selected_address = address.text().strip()
+        self.settings.setValue(NETWORK_ADDRESS_KEY, selected_address)
+        self.settings.sync()
         # The desktop invokes its own authentication UI. Credentials are
         # deliberately neither collected nor persisted by BildBlick.
         try:
-            subprocess.Popen(network_mount_command(address.text().strip()))
+            subprocess.Popen(network_mount_command(selected_address))
         except OSError as error:
             QMessageBox.warning(self.window, t("Netzwerkort verbinden"), str(error))
 

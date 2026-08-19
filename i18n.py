@@ -42,6 +42,30 @@ for _code, _words in {
 }.items():
     CATALOGUE[_code].update(_words)
 
+for _code, _words in {
+    "en": {
+        "Gib die Netzwerkadresse ein und wähle anschließend „Verbinden“. Beispiel: {address}": (
+            "Enter the network address, then choose ‘Connect’. Example: {address}"
+        ),
+    },
+    "fr": {
+        "Gib die Netzwerkadresse ein und wähle anschließend „Verbinden“. Beispiel: {address}": (
+            "Saisissez l’adresse réseau, puis choisissez « Connecter ». Exemple : {address}"
+        ),
+    },
+    "es": {
+        "Gib die Netzwerkadresse ein und wähle anschließend „Verbinden“. Beispiel: {address}": (
+            "Introduzca la dirección de red y elija « Conectar ». Ejemplo: {address}"
+        ),
+    },
+    "uk": {
+        "Gib die Netzwerkadresse ein und wähle anschließend „Verbinden“. Beispiel: {address}": (
+            "Введіть мережеву адресу, потім виберіть «Підключити». Приклад: {address}"
+        ),
+    },
+}.items():
+    CATALOGUE[_code].update(_words)
+
 # Folder face-recognition workflow (kept together so the five supported UI
 # languages cannot silently fall back to an unrelated technical string).
 for _code, _words in {
